@@ -1,5 +1,5 @@
 """
-Reports of MS Analysis (LCMS Postrun and HRMS Postrun).
+Reports of MSpektra (LCMS Analysis and HRMS Analysis).
 
 Five kinds, chosen when the report is made:
   hrms    HRMS compound report     chromatograms, spectrum, isotope pattern,
@@ -11,7 +11,7 @@ Five kinds, chosen when the report is made:
   si      Supporting Information   one figure (a to d), caption and a
                                    characterisation text to paste
   compare Comparison report        the runs of the Compare view of LCMS
-                                   Postrun as shown, the runs, their peaks
+                                   Analysis as shown, the runs, their peaks
 Each as PDF (reportlab) or Word (python-docx). The content is taken from the
 file shown in the window, as it is on screen (ranges, peaks, results); the
 comparison report from the Compare view of the window (all its runs).
@@ -462,13 +462,13 @@ def availability(frame):
     col = _spec_col(tab) if (tab is not None and data is not None) else None
     pda_ok = lc and getattr(frame, "pda_data", None) is not None
     if lc:
-        out["hrms"] = (False, "only in HRMS Postrun")
+        out["hrms"] = (False, "only in HRMS Analysis")
     else:
         out["hrms"] = (col is not None, "show a spectrum first")
     if lc:
         out["lcms"] = (pda_ok or data is not None, "open a data file first")
     else:
-        out["lcms"] = (False, "only in LCMS Postrun")
+        out["lcms"] = (False, "only in LCMS Analysis")
     dec = getattr(tab, "dec", None) if tab is not None else None
     res = getattr(dec, "result", None)
     hidden = res is None and bool(getattr(dec, "results", None))  # every result hidden in the list of open files
@@ -478,7 +478,7 @@ def availability(frame):
     # the Compare view belongs to the window: available whichever view is shown
     drawn = _compare_drawn(frame)[1]
     if not lc:
-        out["compare"] = (False, "only in LCMS Postrun")
+        out["compare"] = (False, "only in LCMS Analysis")
     else:
         out["compare"] = (bool(drawn), "show two or more files in the Compare view first")
     return out
@@ -1123,7 +1123,7 @@ def build_hrms(frame, fields, tmp):
 
     mark = want(fields, "shade", True)
     if want(fields, "chrom"):
-        # the chromatogram tiles as HRMS Postrun shows them (zoom, traces, mass chromatograms, shading)
+        # the chromatogram tiles as HRMS Analysis shows them (zoom, traces, mass chromatograms, shading)
         imgs = [p for p in (_tile_png(getattr(v, "card", None), os.path.join(tmp, "a_chrom%d.png" % i), W_FULL, 4.4,
                                       **_mark_opts(mark))
                             for i, v in enumerate(getattr(st["tab"], "views", []) or []))
@@ -1235,7 +1235,7 @@ def _lc_state(frame):
     st.update(t=t, y=y, label=label, peaks=peaks, main=main,
               total=sum(p["area"] for p in peaks))
     if pdata is not None:
-        # the UV spectrum as shown in LCMS Postrun (PDA view), else at the apex
+        # the UV spectrum as shown in LCMS Analysis (PDA view), else at the apex
         shown_uv = getattr(pda, "uv", None)
         if shown_uv is not None and len(shown_uv[0]):
             st["uv"] = np.column_stack([np.asarray(shown_uv[0], float), np.asarray(shown_uv[1], float)])
@@ -1254,7 +1254,7 @@ def _lc_state(frame):
     st["delay"] = delay
     ms = []
     if msd is not None:
-        # the mass spectra as shown in LCMS Postrun (same time range,
+        # the mass spectra as shown in LCMS Analysis (same time range,
         # background and bin width); an event without a spectrum in the
         # window: averaged over the main peak with the window's settings
         tab = getattr(frame, "ms", None)
@@ -1293,7 +1293,7 @@ def _lc_state(frame):
 
 
 def _lc_xics(frame, ms):
-    """Extracted ion chromatograms: those made in LCMS Postrun (Mass chrom.),
+    """Extracted ion chromatograms: those made in LCMS Analysis (Mass chrom.),
     else one of the base peak of the main peak per polarity. Each: key (for
     the figure choice), label, t, y."""
     msd, tab = frame.ms_data, getattr(frame, "ms", None)
@@ -1349,7 +1349,7 @@ def build_lcms(frame, fields, tmp):
     det = ("%s nm, bandwidth %s nm" % (("%.0f" % st["wl"]) if st["wl"] else "?", st["bw"])) if st["src"] == "pda" \
         else "MS: " + esc(st["label"])
     extra = [("Detection", det), ("Integration", "automatic (threshold 1 %, width 2 s)"
-              if st["auto"] else "LCMS Postrun, %d peaks" % len(peaks))]
+              if st["auto"] else "LCMS Analysis, %d peaks" % len(peaks))]
     rep.add("info", _info_common(frame, fields, si, extra))
     items = [("%.2f min" % main["rt"], "retention time, main peak"),
              ("%.1f %%" % (100 * main["area"] / total), "area %s (%d peaks)" % (
@@ -1857,10 +1857,10 @@ def build_si(frame, fields, tmp):
 
 
 # ==========================================================================
-# comparison report (Compare view of LCMS Postrun: several runs on top of each other)
+# comparison report (Compare view of LCMS Analysis: several runs on top of each other)
 # ==========================================================================
 def _compare_tab(frame):
-    """The Compare view of the window (None: not LCMS Postrun, or the view not made yet)."""
+    """The Compare view of the window (None: not LCMS Analysis, or the view not made yet)."""
     try:
         tab = vars(frame).get("_compare_tab")
     except TypeError:
@@ -2294,7 +2294,7 @@ def build_compare(frame, fields, tmp):
     files_txt = names[0] + ("" if n == 1 else " and %d more" % (n - 1) if n > 2 else " and " + names[1])
     meta = {"kind": KIND_NAMES["compare"], "sample": sample, "version": getattr(T, "APP_VERSION", ""),
             "date": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"),
-            "footer": "Compare view of LCMS Postrun  ·  " + files_txt}
+            "footer": "Compare view of LCMS Analysis  ·  " + files_txt}
     rep = Report("compare", meta)
     rep.add("title", "Comparison report", "  ·  ".join(
         [esc(compound)] * bool(compound) + ["%d run%s" % (n, "s" if n > 1 else ""), esc(long_[:1].upper() + long_[1:])]))
@@ -2371,7 +2371,7 @@ def build_compare(frame, fields, tmp):
         if p is None:
             p = _compare_fig(os.path.join(tmp, "e_compare.png"), drawn, s, W_FULL, h)
         rep.add("figure", p, W_FULL)
-        cap = "%s%s of %s" % ("As shown in the Compare view of LCMS Postrun: " if tile else "",
+        cap = "%s%s of %s" % ("As shown in the Compare view of LCMS Analysis: " if tile else "",
                               long_ if tile else long_[:1].upper() + long_[1:],
                               "%d runs, %s" % (n, layout) if n > 1 else "one run")
         if steps:
@@ -2498,7 +2498,7 @@ def build_compare(frame, fields, tmp):
         verbs = steps + ["stacked" if (s.get("layout", "stacked") == "stacked" and n > 1) else
                          "offset in a waterfall plot" if (s.get("layout") == "offset" and n > 1) else
                          "overlaid" if n > 1 else "drawn"]
-        txt += "The %s of %s %s with MS Analysis%s (LCMS Postrun, Compare view)." % (
+        txt += "The %s of %s %s with MSpektra%s (LCMS Analysis, Compare view)." % (
             esc(long_), "the %d runs were" % n if n > 1 else "the run was", esc(_cmp_join(verbs)),
             (" " + esc(ver)) if ver else "")
         if want(fields, "peaks") and p_rows:
@@ -2765,10 +2765,10 @@ def render_pdf(rep, path):
                 self.saveState()
                 self.setFillColor(C_NAVY)
                 self.setFont(bold, 8.5)
-                self.drawString(LM, PH - 12 * mm, "MS Analysis")
+                self.drawString(LM, PH - 12 * mm, "MSpektra")
                 self.setFillColor(C_MUTED)
                 self.setFont(sans, 8.5)
-                x0 = LM + self.stringWidth("MS Analysis ", bold, 8.5)
+                x0 = LM + self.stringWidth("MSpektra ", bold, 8.5)
                 self.drawString(x0, PH - 12 * mm, "·  " + meta["kind"])
                 tail = "   ·   " + meta["date"]
                 room = (PW - RM) - (x0 + self.stringWidth("·  " + meta["kind"], sans, 8.5) + 12) - \
@@ -2784,7 +2784,7 @@ def render_pdf(rep, path):
                 self.setFillColor(C_FAINT)
                 pg = "Page %d of %d" % (self._pageNumber, n)
                 room = CW - self.stringWidth(pg, sans, 6.8) - 12
-                self.drawString(LM, 8.5 * mm, self._fit("MS Analysis %s  ·  %s" % (meta["version"], meta["footer"]),
+                self.drawString(LM, 8.5 * mm, self._fit("MSpektra %s  ·  %s" % (meta["version"], meta["footer"]),
                                                         sans, 6.8, room))
                 self.drawRightString(PW - RM, 8.5 * mm, pg)
                 self.restoreState()
@@ -2792,7 +2792,7 @@ def render_pdf(rep, path):
             rl_canvas.Canvas.save(self)
 
     doc = BaseDocTemplate(path, pagesize=A4, leftMargin=LM, rightMargin=RM, topMargin=19 * mm, bottomMargin=17 * mm,
-                          title="%s: %s" % (meta["kind"], meta["sample"]), author="MS Analysis %s" % meta["version"])
+                          title="%s: %s" % (meta["kind"], meta["sample"]), author="MSpektra %s" % meta["version"])
     doc.addPageTemplates([PageTemplate(id="p", frames=[Frame(LM, 17 * mm, CW, PH - 36 * mm, id="f", leftPadding=0,
                                                              rightPadding=0, topPadding=0, bottomPadding=0)])])
     doc.build(story, canvasmaker=NC)
@@ -2860,10 +2860,10 @@ def render_docx(rep, path):
     st.font.size = Pt(9)
     meta = rep.meta
     hp = sec.header.paragraphs[0]
-    _runs(hp, "<b>MS Analysis</b> · %s    %s · %s" % (esc(meta["kind"]), esc(meta["sample"]),
+    _runs(hp, "<b>MSpektra</b> · %s    %s · %s" % (esc(meta["kind"]), esc(meta["sample"]),
                                                                    esc(meta["date"])), 8, "#5B6475")
     fp = sec.footer.paragraphs[0]
-    _runs(fp, "MS Analysis %s · %s" % (esc(meta["version"]), esc(meta["footer"])), 7, "#8A94A6")
+    _runs(fp, "MSpektra %s · %s" % (esc(meta["version"]), esc(meta["footer"])), 7, "#8A94A6")
     n_sec = [0]
 
     def para(markup, size=9, color="#1B2330", space=3, font=None, align=None):

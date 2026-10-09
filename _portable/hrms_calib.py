@@ -1,5 +1,5 @@
 """
-Internal m/z calibration for HRMS Postrun (MS Analysis).
+Internal m/z calibration for HRMS Analysis (MSpektra).
 
 Reference lists (m/z of the singly charged ions, electron mass included):
   sodium formate clusters  [Na(HCOONa)n]+  and  [HCOO(HCOONa)n]-
@@ -384,7 +384,7 @@ class Calibration(object):
             self.name(), self.rms, cv, self.rms_before, len(self.measured), self.lo, self.hi)
 
     def report(self, title, calibrant, rows):
-        lines = ["MS Analysis, HRMS Postrun: internal m/z calibration", "Data: " + title,
+        lines = ["MSpektra, HRMS: internal m/z calibration", "Data: " + title,
                  "Calibrant: " + calibrant, "Model: " + self.name(),
                  "RMS error: %.3f ppm (before: %.3f ppm)" % (self.rms, self.rms_before),
                  "Cross-validated RMS error (each calibrant predicted without it): %s" % (

@@ -126,10 +126,10 @@ def _keep(src,name):
 def _header(z):
     if z.getinfo('project.json').file_size>MAX_HEADER:raise ValueError('Project metadata is too large')
     h=json.loads(z.read('project.json'))
-    if not isinstance(h,dict) or h.get('format')!=FORMAT:raise ValueError('This is not an MS Analysis project')
+    if not isinstance(h,dict) or h.get('format')!=FORMAT:raise ValueError('This is not an MSpektra analysis')
     if h.get('version')!=VERSION:
         app=h.get('app_version')
-        raise ValueError('Saved by a newer MS Analysis%s; update to open it'%(' (%s)'%app if isinstance(app,str) else '')
+        raise ValueError('Saved by a newer MSpektra%s; update to open it'%(' (%s)'%app if isinstance(app,str) else '')
                          if isinstance(h.get('version'),int) and h['version']>VERSION else 'Unsupported project version')
     if h.get('kind') not in ('lcms','hrms') or not isinstance(h.get('sources'),list) or not 1<=len(h['sources'])<=MAX_SOURCES:
         raise ValueError('Invalid project source list')

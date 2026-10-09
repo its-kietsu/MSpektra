@@ -964,7 +964,7 @@ def _set_window_relaunch(hwnd, exe_path):
     store.SetValue(pscon.PKEY_AppUserModel_RelaunchCommand,
                    propsys.PROPVARIANTType('"%s"' % exe_path, pythoncom.VT_LPWSTR))
     store.SetValue(pscon.PKEY_AppUserModel_RelaunchDisplayNameResource,
-                   propsys.PROPVARIANTType("MS Analysis", pythoncom.VT_LPWSTR))
+                   propsys.PROPVARIANTType("MSpektra", pythoncom.VT_LPWSTR))
     store.SetValue(pscon.PKEY_AppUserModel_RelaunchIconResource,
                    propsys.PROPVARIANTType("%s,0" % exe_path, pythoncom.VT_LPWSTR))
     store.Commit()
@@ -1008,9 +1008,9 @@ def install_relaunch(root=None, frames=()):
         return
     _RELAUNCH["done"] = True
     try:
-        # MS Analysis.exe only (no relaunch properties without it): the old
+        # MSpektra.exe only (no relaunch properties without it): the old
         # UniDec.exe is not in the root any more and cannot start from elsewhere
-        exe = os.path.join(root, "MS Analysis.exe")
+        exe = os.path.join(root, "MSpektra.exe")
         if not os.path.isfile(exe):
             return
         _install_window_relaunch(exe)

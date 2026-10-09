@@ -30,7 +30,7 @@
 //    axis for every candidate (the same points: the axis is sorted), arrays that the outputs no
 //    longer need are freed before the mass grid is allocated, and temporary arrays of the
 //    iterations are allocated once instead of every iteration;
-//  * not ported (unidec.exe features MS Analysis does not use; refused with a message): ion
+//  * not ported (unidec.exe features MSpektra does not use; refused with a message): ion
 //    mobility, CD-MS, MetaUniDec/HDF5, mass list (mfile), manual assignment, DoubleDec (the only
 //    user of FFTW in the one dimensional engine; no FFT library is linked).
 #include "udengine.h"
@@ -471,7 +471,7 @@ void setup_blur(Run& r) {
     make_sparse_blur(r);
 }
 
-// ---------------------------------------------------------------- baseline (aggressiveflag 1 and 2; MS Analysis does not use it)
+// ---------------------------------------------------------------- baseline (aggressiveflag 1 and 2; MSpektra does not use it)
 void midblur_baseline(Run& r, std::vector<float>& base, int mult) {
     const int L = r.L;
     if (mult == 0) mult = L / 400;

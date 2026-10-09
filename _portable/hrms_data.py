@@ -1,5 +1,5 @@
 """
-Bruker .d reader for HRMS Postrun (MS Analysis), for the maXis / micrOTOF /
+Bruker .d reader for HRMS Analysis (MSpektra), for the maXis / micrOTOF /
 compact / impact QTOF series and other instruments that write analysis.baf,
 and for the newer TSF format (analysis.tsf + analysis.tsf_bin, written by
 otofControl 6 and later on maXis II / impact II, without ion mobility),
@@ -14,7 +14,7 @@ first. Reading analysis.tsf and analysis.tdf uses Bruker's TDF SDK library (tims
 bundled in _portable\\timsdata with its licence files); it only reads.
 
 The class has the same interface as lcms_data.LCDFile, so the mass
-spectrometry tab of LCMS Postrun works with it unchanged:
+spectrometry tab of LCMS Analysis works with it unchanged:
   n_events, events, event_scans(e), event_label(e), adduct_sign(e), rt,
   saturated, chromatogram(e, kind, mz, tol), average(e, t0, t1, bg, binw),
   scan_spectrum(e, t, binw), summary(), name, path
@@ -1195,7 +1195,7 @@ _MZML_OTHER_COMPRESSION = {
 
 
 def _mzml_compression_error(name):
-    return ("This mzML file stores its spectra with %s, which MS Analysis cannot read. Convert the data again with "
+    return ("This mzML file stores its spectra with %s, which MSpektra cannot read. Convert the data again with "
             "ProteoWizard msconvert without that option (zlib compression is fine)." % name)
 
 
@@ -1479,10 +1479,10 @@ def write_spectrum_txt(path, data):
 
 def write_spectrum_jdx(path, data, title, polarity="+", t0=None, t1=None):
     """JCAMP-DX mass spectrum (XY pairs) with the m/z to 6 decimals, the
-    polarity and the time range (the export of HRMS Postrun)."""
+    polarity and the time range (the export of HRMS Analysis)."""
     data = np.asarray(data, float).reshape(-1, 2)
     lines = ["##TITLE= %s" % title, "##JCAMP-DX= 4.24", "##DATA TYPE= MASS SPECTRUM",
-             "##ORIGIN= MS Analysis, HRMS Postrun", "##OWNER= ", "##IONIZATION MODE= ESI%s" % (polarity or "+"),
+             "##ORIGIN= MSpektra, HRMS", "##OWNER= ", "##IONIZATION MODE= ESI%s" % (polarity or "+"),
              "##XUNITS= M/Z", "##YUNITS= RELATIVE ABUNDANCE"]
     if t0 is not None:
         lines.append("##RETENTION TIME= %.3f - %.3f" % (t0 * 60, (t1 if t1 is not None else t0) * 60))

@@ -1,6 +1,6 @@
 Bruker Baf2Sql library (baf2sql_c.dll, version 2.9.0)
 
-Used by HRMS Postrun (MS Analysis) to read Bruker .d folders with
+Used by HRMS Analysis (MSpektra) to read Bruker .d folders with
 analysis.baf (maXis, impact, compact, micrOTOF and other Bruker instruments).
 
 The library is Bruker Daltonics software, freely distributed by Bruker for
@@ -11,5 +11,5 @@ Python code), which redistributes Bruker's library.
 It uses the Intel Math Kernel Library and other third-party software; their
 licence terms are in THIRD-PARTY-LICENSE-README.txt and BAF2SQL_README.txt.
 
-MS Analysis only calls the library's public C functions (via ctypes, see
+MSpektra only calls the library's public C functions (via ctypes, see
 hrms_data.py); the library itself is unchanged.

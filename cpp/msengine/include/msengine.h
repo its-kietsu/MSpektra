@@ -1,5 +1,5 @@
 /*
- * msengine: the computational core of MS Analysis in C++ (C interface).
+ * msengine: the computational core of MSpektra in C++ (C interface).
  *
  * Phase 1 of the C++ conversion. Everything the LCMS / HRMS windows compute
  * lives here: reading data files (Bruker .d via the Bruker SDKs, mzML),
@@ -307,7 +307,7 @@ MS_API const char* ms_unidec_engine(void);
 /* ---- end of the 3.1 additions (agent E) ---- */
 
 /* ---- 3.1 additions (agent P): the remaining computations of the windows ----------------------
- * Each function mirrors a Python function of MS Analysis (named in its comment) and gives its
+ * Each function mirrors a Python function of MSpektra (named in its comment) and gives its
  * results; the Python code is the fallback when the library is off. Arrays handed out are thread
  * local scratch of the function (valid until the next call of the same function in the thread).
  * Functions that return a status give MS_NOT_FOUND where the Python function returns None. */
@@ -411,7 +411,7 @@ MS_API int ms_label_maxima(const double* x, const double* y, long n, int nlab, d
 MS_API int ms_xic_multi(ms_file* f, int event, const double* mz, const double* tol, int nw, double* out, long n_out);
 /* ---- end of the 3.1 additions (agent P) ---- */
 
-/* ---- 3.31: the Compare view of LCMS Postrun (lcms_compare_core.py, src/compare.cpp) ----
+/* ---- 3.31: the Compare view of LCMS Analysis (lcms_compare_core.py, src/compare.cpp) ----
  * y minus a blank run (bt rising, by) interpolated at t as np.interp; nothing subtracted outside the
  * blank's time range or where the blank is not finite (nb < 2: y unchanged). */
 MS_API int ms_cmp_subtract_blank(const double* t, const double* y, long n, const double* bt, const double* by,

@@ -1527,7 +1527,7 @@ void run_unidec(const double* mz, const double* it, long n0, std::string folder,
     if (n < 10) throw std::invalid_argument("Too few data points in the m/z range");
     if (name.empty()) name = "spectrum";
     // the files of a UniDec run (conf.dat, the engine input and its outputs) only when asked for:
-    // MS Analysis reads none of them, the engine runs on the data in memory
+    // MSpektra reads none of them, the engine runs on the data in memory
     const bool write_files = p.inum("write_files", 0) != 0;
     std::string udir;
     ms::tick(cb, user, 2, 100);

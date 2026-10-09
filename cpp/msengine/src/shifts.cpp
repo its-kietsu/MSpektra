@@ -1,4 +1,4 @@
-// Mass shift finder on the masses of a deconvolution result (MS Analysis 3.35): which masses differ by a
+// Mass shift finder on the masses of a deconvolution result (MSpektra 3.35): which masses differ by a
 // known modification or adduct, by k tags plus at most two other shifts, which differences from the
 // reference match nothing (unknown), and the degree of conjugation. Port of the reference in
 // ms_shifts.py (find_shifts_py): the same steps, the same arithmetic in the same order, so that both give

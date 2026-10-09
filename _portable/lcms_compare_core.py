@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Data side of the Compare view of LCMS Postrun: one trace per open file (PDA chromatogram at a
+"""Data side of the Compare view of LCMS Analysis: one trace per open file (PDA chromatogram at a
 wavelength, PDA max plot, TIC, base peak chromatogram or mass chromatogram), processed the same way
 for every file (smoothing, baseline, time window, alignment on a peak, scale) and placed on top of
 each other. No wx here: the window (lcms_compare.py) draws what these functions return, and they

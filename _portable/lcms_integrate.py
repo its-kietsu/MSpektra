@@ -1,5 +1,5 @@
 """
-Chromatogram peak integration for LCMS Postrun and HRMS Postrun (MS Analysis).
+Chromatogram peak integration for LCMS Analysis and HRMS Analysis (MSpektra).
 
 Automatic integration follows the usual LC approach:
   * baseline level from a rolling lower envelope (follows gradient drift),

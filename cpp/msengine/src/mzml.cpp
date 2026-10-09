@@ -281,7 +281,7 @@ void parse_spectrum(Tokenizer& tok, const std::string& start_tag, Spec& sp) {
             if (name == "binaryDataArray" && in_bda) {
                 if (kind && have) {
                     if (!other.empty())
-                        throw Error("This mzML file stores its spectra with " + other + ", which MS Analysis cannot read. "
+                        throw Error("This mzML file stores its spectra with " + other + ", which MSpektra cannot read. "
                                     "Convert the data again with ProteoWizard msconvert without that option (zlib "
                                     "compression is fine).");
                     std::vector<double>& dst = kind == 1 ? sp.mz : sp.it;

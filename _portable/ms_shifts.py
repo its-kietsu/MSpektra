@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Mass shift finder on the masses of a deconvolution result (MS Analysis 3.35): which masses differ by a
+"""Mass shift finder on the masses of a deconvolution result (MSpektra 3.35): which masses differ by a
 known modification or adduct (Na, oxidation, water, carbamylation, ...), by k tags (a dye or another label
 attached to the protein) plus at most two other shifts, which differences match nothing (unknown adducts),
 and the degree of conjugation (the share of the species with 0, 1, 2, ... tags). No wx here. The

@@ -1,4 +1,4 @@
-// Shimadzu LabSolutions .lcd files (LCMS Postrun). Port of the Python reference
+// Shimadzu LabSolutions .lcd files (LCMS Analysis). Port of the Python reference
 // lcms_data.LCDFile / read_sample_info and lcms_pda.PDAData, on top of a port
 // of the scan decoding of OpenSZRaw (RawReader: Mass Raw Data single quad,
 // QTFL RawData centroid, TTFL Raw Data IT-TOF variants of the .lcd container).

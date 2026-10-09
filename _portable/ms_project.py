@@ -1,4 +1,4 @@
-"""Automatic Postrun workspace recovery and explicit Save, using safe portable archives.
+"""Automatic workspace recovery and explicit Save, using safe portable archives.
 
 What is written where
 * Nothing is written for a file that was only opened. After the first edit (an undo step, or a change of an
@@ -14,6 +14,7 @@ import datetime,os,traceback
 from concurrent.futures import ThreadPoolExecutor
 import wx
 import ms_project_store as S
+import unidec_theme as T
 
 DISPLAY_KEYS=('show_charge_states','tile_mode','hrms_tile_mode','tile_scale')
 OLD_SHORTCUT='Resume analysis.cmd'  # written by 3.4 to 3.55; removed when the folder is saved again
@@ -155,7 +156,7 @@ def _key(path):
     return os.path.normcase(os.path.abspath(path))
 
 def _candidates(path):
-    """Where the analysis of a raw data file is saved (Postrun out_dir: next to it, else in the user folder)."""
+    """Where the analysis of a raw data file is saved (out_dir: next to it, else in the user folder)."""
     path=path.rstrip('\\/');base=os.path.splitext(os.path.basename(path))[0]
     return [os.path.join(os.path.dirname(path),base+'_analysis',S.NAME),
             os.path.join(os.path.expanduser('~'),'MS Analysis',base,S.NAME)]
@@ -359,13 +360,13 @@ class Controller:
         if self.closed:return
         self.frame.SetStatusText(title+': '+str(ex),0)
         self.frame.SetStatusText('Analysis NOT saved',1)
-        if dialog:wx.MessageBox(title+'\n\n'+str(ex),S.FORMAT,wx.OK|wx.ICON_ERROR,self.frame)
+        if dialog:wx.MessageBox(title+'\n\n'+str(ex),T.APP_NAME,wx.OK|wx.ICON_ERROR,self.frame)
 
     def close_unsaved(self,ex):
         # A save that cannot succeed (no write access, a vanished folder) must not trap the user.
         self.error('Analysis could not be saved',ex,dialog=False)
         return wx.MessageBox('The analysis could not be saved: %s\n\nClose without saving?'%ex,
-                             S.FORMAT,wx.YES_NO|wx.NO_DEFAULT|wx.ICON_WARNING,self.frame)==wx.YES
+                             T.APP_NAME,wx.YES_NO|wx.NO_DEFAULT|wx.ICON_WARNING,self.frame)==wx.YES
 
     def release(self,path):
         if _key(path) in self.locks:
@@ -527,7 +528,7 @@ class Controller:
         if doc in self.targets:
             if self.is_blocked(doc):
                 if wx.MessageBox('Close %s without saving? Its saved analysis could not be opened and stays '
-                                 'unchanged.'%doc.file_name,S.FORMAT,wx.YES_NO|wx.NO_DEFAULT|wx.ICON_WARNING,
+                                 'unchanged.'%doc.file_name,T.APP_NAME,wx.YES_NO|wx.NO_DEFAULT|wx.ICON_WARNING,
                                  self.frame)!=wx.YES:return
             else:
                 try:self.save(synchronous=True,closing=True)
@@ -561,7 +562,7 @@ def save(frame,e=None):
         shown=frame.active if frame.active in docs else (docs[0] if docs else None)
         blocked=[d for d in docs if (d in c.targets or d is shown) and c.is_blocked(d)]
         if blocked:
-            if wx.MessageBox('Replace the saved analysis that could not be opened? The old file is kept beside it (.before-recovery).',S.FORMAT,wx.YES_NO|wx.NO_DEFAULT|wx.ICON_WARNING,frame)!=wx.YES:return
+            if wx.MessageBox('Replace the saved analysis that could not be opened? The old file is kept beside it (.before-recovery).',T.APP_NAME,wx.YES_NO|wx.NO_DEFAULT|wx.ICON_WARNING,frame)!=wx.YES:return
             for d in blocked:
                 for p in [c.project_of(d)]+_candidates(d.path):
                     if _key(p) in c.blocked:c.blocked.discard(_key(p));c.keep[_key(p)]='before-recovery';c.notes.pop(_key(p),None)
@@ -569,7 +570,7 @@ def save(frame,e=None):
     except Exception as ex:c.error('Analysis could not be saved',ex)
 
 def open_file(frame):
-    dlg=wx.FileDialog(frame,'Open a saved analysis',defaultDir=frame.folder(),wildcard='MS Analysis project (*.msanalysis)|*.msanalysis',style=wx.FD_OPEN|wx.FD_FILE_MUST_EXIST)
+    dlg=wx.FileDialog(frame,'Open a saved analysis',defaultDir=frame.folder(),wildcard='MSpektra analysis (*.msanalysis)|*.msanalysis',style=wx.FD_OPEN|wx.FD_FILE_MUST_EXIST)
     try:
         if dlg.ShowModal()==wx.ID_OK:frame.load(dlg.GetPath())
     finally:dlg.Destroy()

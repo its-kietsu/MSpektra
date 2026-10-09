@@ -224,7 +224,7 @@ def update_settings(p, update):
     if not p:
         return False
     # written whole, then swapped in: a crash cannot leave a truncated file. The
-    # temporary name is per process: the start screen, the postrun windows and
+    # temporary name is per process: the start screen, the analysis windows and
     # the Deconvolute window (own processes) save to the same file
     tmp = "%s.%d.tmp" % (p, os.getpid())
     try:
@@ -378,7 +378,7 @@ def scale_fixed_sizes(root):
 
 def _from_unidec(win):
     """A window of UniDec's own code (its sizes are in 96-dpi pixels); the
-    windows of MS Analysis give theirs with FromDIP."""
+    windows of MSpektra give theirs with FromDIP."""
     mod = type(win).__module__ or ""
     return mod == "unidec" or mod.startswith("unidec.")
 
@@ -1506,17 +1506,17 @@ def _install_last_folder():
                     FileDialogs.default_dir = directory
         except Exception:
             pass
-        # LabSolutions .lcd files are read by LCMS Postrun (UniDec cannot):
+        # LabSolutions .lcd files are read by LCMS Analysis (UniDec cannot):
         # open them there instead of failing with "Unsupported file type"
         try:
             full = os.path.join(directory, filename) if directory else filename
             if str(filename).lower().endswith(".lcd") and os.path.isfile(full):
                 import unilcms
                 unilcms.open_window(full)
-                print("Opened in LCMS Postrun:", full)
+                print("Opened in LCMS Analysis:", full)
                 return None
         except Exception as e:
-            _log("open .lcd in LCMS Postrun:", e)
+            _log("open .lcd in LCMS Analysis:", e)
         return orig_open_file(self, filename, directory, *args, **kwargs)
 
     def on_open(self, e=None):
@@ -1544,11 +1544,11 @@ def _install_last_folder():
 # --------------------------------------------------------------------------
 # 7. launcher (light frosted glass)
 # --------------------------------------------------------------------------
-APP_NAME = "MS Analysis"
-APP_VERSION = "3.76"  # +0.01 small change, +0.1 large change, +1.0 big change
+APP_NAME = "MSpektra"
+APP_VERSION = "4.0"  # +0.01 small change, +0.1 large change, +1.0 big change
 WORKSPACES = [
-    ("LCMS Postrun", "Shimadzu .lcd files", "lcms"),
-    ("HRMS Postrun", "Bruker .d and mzML files", "hrms"),
+    ("LCMS Analysis", "Shimadzu .lcd files", "lcms"),
+    ("HRMS Analysis", "Bruker .d and mzML files", "hrms"),
     ("Deconvolute", "Text, JCAMP-DX, mzML, Thermo and Waters spectra", "deconv"),
 ]
 # visible texts of the deconvolution window, renamed (UniDec's code is unchanged)
@@ -1572,10 +1572,10 @@ _GLYPHS = {
     "UniLCMS": [("line", [(3, 20), (21, 20)]),
                 ("curve", [(3, 19.5), ((6.5, 19.5), (6.5, 5), (9, 5)), ((11.5, 5), (11.5, 19.5), (14, 19.5))]),
                 ("bars", [(17, 12), (20, 8)])],
-    "LCMS Postrun": [("line", [(3, 20), (21, 20)]),
+    "LCMS Analysis": [("line", [(3, 20), (21, 20)]),
                      ("curve", [(3, 19.5), ((6.5, 19.5), (6.5, 5), (9, 5)), ((11.5, 5), (11.5, 19.5), (14, 19.5))]),
                      ("bars", [(17, 12), (20, 8)])],
-    "HRMS Postrun": [("line", [(3, 20), (21, 20)]), ("bars", [(6, 6), (9.5, 9), (13, 14), (16.5, 17)]),
+    "HRMS Analysis": [("line", [(3, 20), (21, 20)]), ("bars", [(6, 6), (9.5, 9), (13, 14), (16.5, 17)]),
                      ("line", [(18, 5), (21, 5)]), ("line", [(19.5, 3.5), (19.5, 6.5)])],
     "Deconvolute": [("line", [(3, 20), (21, 20)]), ("bars", [(5, 15), (8, 10.5), (11, 9), (14, 13)]),
                     ("line", [(16.5, 8), (19.5, 8)]), ("line", [(18, 6.5), (19.5, 8), (18, 9.5)]),
@@ -2030,7 +2030,7 @@ def _glass_class():
                 self._rects.append((lx - 4 * k, ly - 4 * k, lw + 26 * k, lh + 8 * k, idx))
 
             gc.SetFont(ui_font(8.5, 500), wx.Colour(C["faint"]))
-            cite = "MS Analysis"
+            cite = "MSpektra"
             lines = self._wrap(gc, cite, W * 0.60 - M, 2)
             ch = gc.GetTextExtent("Xg")[1]
             for j, ln in enumerate(lines):
@@ -2149,14 +2149,14 @@ CLASSIC_TOOLS = [  # (title, description, button number in UniDec's Launcher)
     ("Analysis API console", "Script the analysis with a console", 5),
 ]
 # Libraries without windows only (safe to import outside the main thread).
-# Only what LCMS Postrun and HRMS Postrun import themselves: NumPy, the parts
+# Only what LCMS Analysis and HRMS Analysis import themselves: NumPy, the parts
 # of Matplotlib a plot needs (the font list first: on the first start on a
 # computer it is built here, which takes a few seconds), and the SciPy
 # modules of the LCMS peak integration. The deconvolution methods run in the
 # worker process (deconv_worker.py), and the Deconvolute window and the
 # classic tools open in their own process, so UniDec's libraries (numba,
 # pandas, h5py ... about 10 s on a cold start) are never loaded into the
-# process of the start screen and the postrun windows. Importing is work on
+# process of the start screen and the analysis windows. Importing is work on
 # Python's global lock: a second thread does not make it faster, it only
 # slows the window being built or drawn on the main thread meanwhile. A
 # click on a tile waits for the module being imported at that moment, so
@@ -2217,7 +2217,7 @@ class hold_preload(object):
 
 
 def start_preload(delay=0.0, deconv=False):
-    """Loads the libraries of LCMS/HRMS Postrun in a background thread
+    """Loads the libraries of LCMS/HRMS Analysis in a background thread
     (once); with deconv=True also those of the Deconvolute window, for a
     start screen that opens it inside its own process."""
     if _PRE["started"]:
@@ -2276,7 +2276,7 @@ def _process_has_window(pid):
 
 
 def start_screen(ensure_unidec=None, root=None, spawn=None):
-    """The start screen (LCMS Postrun, HRMS Postrun, Deconvolute) in its own
+    """The start screen (LCMS Analysis, HRMS Analysis, Deconvolute) in its own
     wx.App; returns when every window is closed. spawn(args) starts MS
     Analysis again in a new process (launch_unidec.spawn): the Deconvolute
     window and the classic tools then open in their own process and UniDec's
@@ -2637,7 +2637,7 @@ def _install_plot_size():
 
 def configure(settings_path=None):
     """The light part (only wx): settings file, bundled fonts, size fixes on
-    scaled displays. Enough for the start screen, LCMS and HRMS Postrun."""
+    scaled displays. Enough for the start screen, LCMS and HRMS Analysis."""
     if _ST.get("configured"):
         return
     _ST["configured"] = True

@@ -1,4 +1,4 @@
-"""Undo and redo in the Postrun windows of MS Analysis (LCMS Postrun, HRMS Postrun).
+"""Undo and redo in the analysis windows of MSpektra (LCMS Analysis, HRMS Analysis).
 
 Design
 * One undo stack (with redo) per window. Every open file adds its "domains": the
@@ -16,7 +16,7 @@ Design
   commit; the domains that changed make one step (before, after). A commit runs after
   every user action: a global event filter sees the end of each mouse click, menu
   choice, button, choice, check box, spin, text entered (Enter or leaving the field)
-  and key (outside text fields) in a Postrun window or a dialog of it, and schedules a
+  and key (outside text fields) in an analysis window or a dialog of it, and schedules a
   commit once the action is done (while a modal dialog is open the commit waits for it
   to close, so a whole dialog is one step). Results that arrive later (deconvolution
   worker) commit when they arrive. Because steps are differences of snapshots, an
@@ -466,7 +466,7 @@ _PRIORITY = {"compare": 6, "dec": 5, "shift": 5, "cal": 4, "ms": 3, "pda": 2, "l
 
 # ------------------------------------------------------------------ the window
 def manager(win):
-    """The undo manager of the Postrun window of win (a view, a file (_Doc), a dialog or the window)."""
+    """The undo manager of the analysis window of win (a view, a file (_Doc), a dialog or the window)."""
     w = win
     for _ in range(60):
         if w is None:
@@ -486,7 +486,7 @@ def manager(win):
 
 
 def install(frame):
-    """Undo for a Postrun window (called while it is built, before its first file)."""
+    """Undo for an analysis window (called while it is built, before its first file)."""
     m = UndoManager(frame)
     frame.__dict__["_undo"] = m
     _install_filter()
@@ -626,7 +626,7 @@ def _is_text(w):
 
 
 class _Filter(wx.EventFilter):
-    """Sees every event first (cheap: one set lookup); the end of a user action in a Postrun window (or a dialog
+    """Sees every event first (cheap: one set lookup); the end of a user action in an analysis window (or a dialog
     of it) schedules a commit of its undo manager."""
 
     def __init__(self):

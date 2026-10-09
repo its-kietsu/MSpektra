@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Compare view of LCMS Postrun: the chromatograms of several open files stacked on top of each
+"""Compare view of LCMS Analysis: the chromatograms of several open files stacked on top of each
 other (or overlaid), each processed the same way: PDA at a wavelength, PDA max plot, TIC, base
 peak or mass chromatogram; smoothing, baseline, time window, alignment on a peak, scale. The view
 belongs to the window (not to one file): every open file is listed and can be ticked, ordered,

@@ -1,4 +1,4 @@
-// Maximum entropy charge state deconvolution (written for MS Analysis from the
+// Maximum entropy charge state deconvolution (written for MSpektra from the
 // published principle: Skilling and Bryan, Mon. Not. R. astr. Soc. 1984;
 // Ferrige et al., Rapid Commun. Mass Spectrom. 1992; the Python reference of
 // the 2.7 algorithm is ms_deconv.maxent_deconvolute, kept as the fallback).

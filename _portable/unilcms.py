@@ -1,7 +1,7 @@
 """
-LCMS Postrun (MS Analysis): LC-MS workspace for Shimadzu LabSolutions .lcd
+LCMS Analysis (MSpektra): LC-MS workspace for Shimadzu LabSolutions .lcd
 files. The shared plotting, tool bar, integration and deconvolution classes
-here are also used by HRMS Postrun (hrms.py).
+here are also used by HRMS Analysis (hrms.py).
 
 Part of the portable add-ons; the deconvolution engine itself is unchanged.
 
@@ -42,8 +42,8 @@ MUTED = "#6B7480"
 PAL = ["#2A62C4", "#E0602F", "#0BA064", "#8E5BD0", "#C99A1E", "#D2456F", "#5B6B7C", "#9C6B43"]
 AVG_COL = "#2F6FCB"
 BG_COL = "#8A94A3"
-TITLE = "LCMS Postrun"
-APP = "MS Analysis"
+TITLE = "LCMS Analysis"
+APP = "MSpektra"
 OUT_SUFFIX = "_analysis"  # per file output folder: <data file name>_analysis
 
 
@@ -5994,7 +5994,7 @@ def show_text(parent, title, text):
     dlg.Destroy()
 
 
-HELP_TEXT = """LCMS Postrun opens Shimadzu LabSolutions LC-MS files (.lcd): the mass
+HELP_TEXT = """LCMS Analysis opens Shimadzu LabSolutions LC-MS files (.lcd): the mass
 spectra and, if recorded, the PDA (UV/Vis) data. Most tools are in the
 right click menus of the plots; F9 shows or hides the side panel.
 
@@ -6049,7 +6049,7 @@ MS reading uses OpenSZRaw (Apache-2.0)."""
 
 
 class _Doc(object):
-    """One open data file of a Postrun window: its own views (tabs), data and
+    """One open data file of an analysis window: its own views (tabs), data and
     results. Methods of the window run for a file through this object, so
     they see that file (path, data, views) while the window's widgets (tool
     bar, status bar) stay shared. Views get it as their "frame"."""
@@ -6101,7 +6101,7 @@ class _VChip(object):
 
 
 class FilesPanel(wx.Panel):
-    """Left panel of a Postrun window, as the data browser of LabSolutions:
+    """Left panel of an analysis window, as the data browser of LabSolutions:
     the open files (click to show one, x or Ctrl+W to close it, + to open
     more), under each file its deconvolution results as a tree (the file
     shown is expanded, the others fold with the arrow next to their name;
@@ -7072,8 +7072,8 @@ class PostrunFrame(wx.Frame):
     """Window with a tool bar (open, tabs, file chips, Deconvolute, help), a
     list of the open files on the left, the views of the file shown and a
     status bar. Every open file keeps its own views and results (a _Doc);
-    LCMS Postrun and HRMS Postrun derive from it."""
-    TITLE = "Postrun"
+    LCMS Analysis and HRMS Analysis derive from it."""
+    TITLE = "Analysis"
     HELP = ""
     SPARE_CHIPS = ("pda", "ms")  # chips of the top bar left out first in a narrow window
     START_HINT = "Open a data file (Ctrl+O) or drop it here"
@@ -7115,7 +7115,7 @@ class PostrunFrame(wx.Frame):
         for key, label in self.chip_specs():
             self.chips[key] = Chip(tb, label)
             tb.add(self.chips[key], 3)
-        import method_presets  # the Method chip: method presets of LCMS and HRMS Postrun
+        import method_presets  # the Method chip: method presets of LCMS and HRMS Analysis
         method_presets.add_chip(self, tb)
         first.chips = {k: _VChip(self, first, k) for k in self.chips}
         tb.separator()
@@ -7549,9 +7549,9 @@ class PostrunFrame(wx.Frame):
 
     def on_help(self, e=None):
         ver = getattr(T, "APP_VERSION", "")
-        text = "MS Analysis %s\n\n%s" % (ver, self.help_text())
+        text = "MSpektra %s\n\n%s" % (ver, self.help_text())
         from ms_brand import CREDITS
-        show_text(self.window(), "About %s (MS Analysis %s)" % (self.title_text(), ver), text+"\n\n"+CREDITS)
+        show_text(self.window(), "About %s (MSpektra %s)" % (self.title_text(), ver), text+"\n\n"+CREDITS)
 
     # ---------------------------------------------------------------- report
     def make_report(self, kind=None):
@@ -7684,7 +7684,7 @@ class PostrunFrame(wx.Frame):
 
     def link_time(self, src, t=None, rng=None):
         """Time or time range chosen in one view, shown in the others (LCMS
-        Postrun: MS and PDA). Nothing here."""
+        Analysis: MS and PDA). Nothing here."""
         pass
 
     def link_menu(self):
@@ -7716,7 +7716,7 @@ class PostrunFrame(wx.Frame):
 
     def raw_open_items(self):
         """(label, function) of the raw data entries of the Open menu."""
-        if hasattr(self, "open_mzml"):  # HRMS Postrun: .d folders and mzML files, in this menu (no second one)
+        if hasattr(self, "open_mzml"):  # HRMS Analysis: .d folders and mzML files, in this menu (no second one)
             return [("Open a Bruker .d folder…", self.open_d), ("Open an mzML file…", self.open_mzml)]
         return [("Open raw data…", lambda: self.on_open(None))]
 
@@ -7791,7 +7791,7 @@ class PostrunFrame(wx.Frame):
                 wx.CallAfter(fr.SetStatusText, "Reading %s: scan %d" % (name, i), 0)
 
         t0 = time.perf_counter()
-        who = type(fr).__name__.replace("Frame", " Postrun")
+        who = type(fr).__name__.replace("Frame", " Analysis")
 
         def work():
             try:
@@ -8157,7 +8157,7 @@ class _Drop(wx.FileDropTarget):
 
 
 def open_window(path=None):
-    """The LCMS Postrun window; path: a data file or a list of them (each
+    """The LCMS Analysis window; path: a data file or a list of them (each
     opens as a file of the window)."""
     t0 = time.perf_counter()
     paths = [p for p in (path if isinstance(path, (list, tuple)) else [path]) if p]

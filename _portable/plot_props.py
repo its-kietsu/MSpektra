@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Graph properties of a plot (right click > Graph properties in the Compare view of LCMS Postrun):
+"""Graph properties of a plot (right click > Graph properties in the Compare view of LCMS Analysis):
 fonts and text sizes, axis titles and ranges, tick steps and direction, frame, grid, the line of
 each trace, legend, a title and a panel letter. The properties belong to the plot they were set on
 and last for the session (they are not saved).

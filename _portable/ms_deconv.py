@@ -1,10 +1,10 @@
 """
-Deconvolution back ends for MS Analysis (LCMS Postrun and HRMS Postrun).
+Deconvolution back ends for MSpektra (LCMS Analysis and HRMS Analysis).
 
 unidec_deconvolute   the UniDec engine (Marty et al., Anal. Chem. 2015,
                      DOI 10.1021/acs.analchem.5b00140), run in this process.
 maxent_deconvolute   maximum entropy charge state deconvolution, written for
-                     MS Analysis from the published principle (not a copy of
+                     MSpektra from the published principle (not a copy of
                      any vendor code): a positive mass x charge distribution
                      is fitted to the spectrum while its entropy relative to
                      a flat default model is kept as high as possible; the
@@ -1660,7 +1660,7 @@ def _engine_method(method, spec, folder, name, p, progress):
         mp = sys.modules.get("msengine_py")
         if method == "unidec" and mp is not None and getattr(mp, "unidec_in_library", lambda: False)():
             # the library runs UniDec's engine itself (3.1): its failure is the
-            # result; the Python code would need unidec.exe, which MS Analysis
+            # result; the Python code would need unidec.exe, which MSpektra
             # no longer uses
             raise
         print("[engine] Python %s used: %s" % (method, ex))

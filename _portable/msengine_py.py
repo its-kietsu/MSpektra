@@ -1,5 +1,5 @@
 """
-Bridge to msengine (the C++ core of MS Analysis, _portable\\msengine\\msengine.dll;
+Bridge to msengine (the C++ core of MSpektra, _portable\\msengine\\msengine.dll;
 see the cpp folder of the project for the sources).
 
 EngineFile has the interface of hrms_data.BrukerD, so the HRMS window and

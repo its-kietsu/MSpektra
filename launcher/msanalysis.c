@@ -1,5 +1,5 @@
 /*
- * MS Analysis.exe - launcher of the portable MS Analysis package.
+ * MSpektra.exe - launcher of the portable MSpektra package.
  * Starts  python\pythonw.exe -s _portable\launch_unidec.py [arguments]
  * from the folder this exe is in, without a console window.
  * Deconvolution engine UniDec: Marty et al., Anal. Chem. 2015, DOI 10.1021/acs.analchem.5b00140
@@ -18,7 +18,7 @@ static void show_error(const wchar_t *msg, const wchar_t *detail)
     wchar_t text[4096];
     _snwprintf(text, 4096, L"%ls\n\n%ls", msg, detail ? detail : L"");
     text[4095] = 0;
-    MessageBoxW(NULL, text, L"MS Analysis", MB_OK | MB_ICONERROR);
+    MessageBoxW(NULL, text, L"MSpektra", MB_OK | MB_ICONERROR);
 }
 
 /* Skip argv[0] in the raw command line (handles quoted paths). */
@@ -51,7 +51,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, PWSTR pCmdLine, int nShow)
     _snwprintf(script, MAX_PATH * 4, L"%ls\\_portable\\launch_unidec.py", dir);
     if (GetFileAttributesW(pyw) == INVALID_FILE_ATTRIBUTES ||
         GetFileAttributesW(script) == INVALID_FILE_ATTRIBUTES) {
-        show_error(L"MS Analysis.exe must stay in its program folder,\n"
+        show_error(L"MSpektra.exe must stay in its program folder,\n"
                    L"next to the 'python' and '_portable' folders.\n\nMissing:", pyw);
         return 1;
     }
@@ -75,8 +75,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, PWSTR pCmdLine, int nShow)
         wchar_t buf[512];
         FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, err, 0,
                        buf, 512, NULL);
-        show_error(L"MS Analysis could not be started (it may be blocked by security software).\n"
-                   L"Try MS Analysis.bat or MS Analysis (console).bat instead.", buf);
+        show_error(L"MSpektra could not be started (it may be blocked by security software).\n"
+                   L"Try MSpektra.bat or MSpektra (console).bat instead.", buf);
         return 1;
     }
     AllowSetForegroundWindow(pi.dwProcessId);

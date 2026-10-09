@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Mass shifts on the zero charge mass spectrum of a deconvolution result (MS Analysis 3.35): the window part
+Mass shifts on the zero charge mass spectrum of a deconvolution result (MSpektra 3.35): the window part
 of the mass shift finder (the calculation is ms_shifts.find_shifts, in the C++ library).
 
 Right click a result > Mass shifts (or Mass shifts... in the Deconvolution section of the side panel):

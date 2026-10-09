@@ -1,5 +1,5 @@
 """
-HRMS Postrun (MS Analysis): high resolution LC-MS / direct infusion data from
+HRMS Analysis (MSpektra): high resolution LC-MS / direct infusion data from
 Bruker QTOF instruments (maXis, impact, compact, micrOTOF; .d folders with
 analysis.baf, or analysis.tsf from otofControl 6 and later), timsTOF .d
 folders (analysis.tdf, ion mobility summed) and mzML files.
@@ -30,7 +30,7 @@ import hrms_calib as K
 import ms_formula as F
 from deconv_tab import TableCard
 
-TITLE = "HRMS Postrun"
+TITLE = "HRMS Analysis"
 U.TOOL_ICONS.setdefault("polymer", '<path d="M3 12l4-6 5 6 5-6 4 6M3 12l4 6 5-6 5 6 4-6"/>')
 T.ICONS.setdefault("polymer", U.TOOL_ICONS["polymer"])
 U.TOOL_ICONS.setdefault("formula", '<path d="M9 3h6M10 3v6l-5.5 9.5A1.7 1.7 0 0 0 6 21h12a1.7 1.7 0 0 0 '
@@ -1023,7 +1023,7 @@ class CalibPanel(object):
             self.status("Open a data file first")
             return False
         dlg = wx.FileDialog(parent or self.tab, "Load a calibration", defaultDir=self.frame.out_dir(),
-                            wildcard="MS Analysis calibration (*_calibration.json)|*.json",
+                            wildcard="MSpektra calibration (*_calibration.json)|*.json",
                             style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST)
         try:
             if dlg.ShowModal() != wx.ID_OK:
@@ -1729,7 +1729,7 @@ class CalibDialog(wx.Dialog):
 # ==========================================================================
 # window
 # ==========================================================================
-HELP_TEXT = """HRMS Postrun reads Bruker QTOF data (.d folders with analysis.baf or
+HELP_TEXT = """HRMS Analysis reads Bruker QTOF data (.d folders with analysis.baf or
 analysis.tsf), timsTOF data (analysis.tdf, ion mobility summed, MS/MS left
 out) and mzML files.
 
@@ -1919,7 +1919,7 @@ class HRMSFrame(U.PostrunFrame):
 
 
 def open_window(path=None):
-    """The HRMS Postrun window; path: a data file (.d folder or mzML) or a list
+    """The HRMS Analysis window; path: a data file (.d folder or mzML) or a list
     of them (each opens as a file of the window)."""
     import time
     t0 = time.perf_counter()
@@ -1929,7 +1929,7 @@ def open_window(path=None):
         wx.CallAfter(f.load, p)
     f.Show()
     f.Raise()
-    print("[HRMS Postrun] window built in %.1f s" % (time.perf_counter() - t0))
+    print("[HRMS Analysis] window built in %.1f s" % (time.perf_counter() - t0))
     return f
 
 

@@ -1,4 +1,4 @@
-"""Keyboard shortcuts of the Postrun windows of MS Analysis: one registry.
+"""Keyboard shortcuts of the analysis windows of MSpektra: one registry.
 
 Every shortcut is an entry (keys, action, where, scope, handler). The registry builds
 the accelerator table of each window (Ctrl combinations that never collide with
@@ -21,7 +21,7 @@ Scopes
 import sys
 import wx
 
-WINDOWS = {"lcms": "LCMS Postrun", "hrms": "HRMS Postrun"}
+WINDOWS = {"lcms": "LCMS Analysis", "hrms": "HRMS Analysis"}
 VIEWS = {"ms": "Mass spectrometry view", "pda": "PDA view", "compare": "Compare view"}
 
 CTRL, SHIFT, ALT = wx.MOD_CONTROL, wx.MOD_SHIFT, wx.MOD_ALT
@@ -574,10 +574,10 @@ def _layout_char(e, mods):
 
 
 def on_char_hook(frame, e):
-    """EVT_CHAR_HOOK of a Postrun window: the key goes to its shortcut (if any) before the focused control."""
+    """EVT_CHAR_HOOK of an analysis window: the key goes to its shortcut (if any) before the focused control."""
     try:
         # a key of another top level window of it (the Polymer and Kinetics windows are wx.Frame children, whose
-        # char hook comes up here too) is theirs: its grids, fields and plots get it, never the Postrun views
+        # char hook comes up here too) is theirs: its grids, fields and plots get it, never the analysis views
         w = e.GetEventObject() if isinstance(e.GetEventObject(), wx.Window) else wx.Window.FindFocus()
         if w is not None and wx.GetTopLevelParent(w) is not frame:
             e.Skip()
@@ -623,7 +623,7 @@ _NAV_KEYS = (wx.WXK_LEFT, wx.WXK_RIGHT, wx.WXK_UP, wx.WXK_DOWN, wx.WXK_NUMPAD_LE
 
 
 def install(frame):
-    """The accelerator table (Ctrl combinations) and the key dispatch of a Postrun window."""
+    """The accelerator table (Ctrl combinations) and the key dispatch of an analysis window."""
     wk = window_kind(frame)
     acc = []
     for sc in REGISTRY:

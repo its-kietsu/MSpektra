@@ -1,5 +1,5 @@
 """
-Exact mass tools for HRMS Postrun (MS Analysis): formula parser, ion m/z,
+Exact mass tools for HRMS Analysis (MSpektra): formula parser, ion m/z,
 isotope patterns and a formula finder.
 
 Monoisotopic masses and abundances: IUPAC / NIST (AME 2012, CIAAW 2013).

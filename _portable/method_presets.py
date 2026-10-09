@@ -1,4 +1,4 @@
-"""Method presets of LCMS Postrun and HRMS Postrun.
+"""Method presets of LCMS Analysis and HRMS Analysis.
 
 A method preset is a named snapshot of every setting of a window kind (the settings of its views, of
 the deconvolution, of the Compare view or the calibration), not of the data of a file (ranges, peaks,
@@ -29,7 +29,7 @@ KEY = "method_presets"  # settings: {kind: {name: {"version", "created", "modifi
 FORMAT = "MS Analysis method"
 FORMAT_VERSION = 1
 EXT = ".msmethod.json"
-KINDS = {"lcms": "LCMS Postrun", "hrms": "HRMS Postrun"}
+KINDS = {"lcms": "LCMS Analysis", "hrms": "HRMS Analysis"}
 _FRAMES = {"LCMSFrame": "lcms", "HRMSFrame": "hrms"}
 NAME_MAX = 60
 
@@ -521,7 +521,7 @@ def file_text(kind, name, preset=None):
     clean, _ = validate(kind, p.get("values"))
     return json.dumps({"format": FORMAT, "format_version": FORMAT_VERSION, "kind": kind, "window": KINDS[kind],
                        "name": name, "created": p.get("created") or _now(), "modified": p.get("modified") or "",
-                       "program": "MS Analysis %s" % getattr(T, "APP_VERSION", ""), "values": clean},
+                       "program": "MSpektra %s" % getattr(T, "APP_VERSION", ""), "values": clean},
                       indent=1, ensure_ascii=False)
 
 
@@ -549,9 +549,9 @@ def read_file(path, kind):
     try:
         d = json.loads(raw.decode("utf-8-sig"))
     except (UnicodeDecodeError, ValueError) as ex:
-        raise MethodError("%s is not a method file of MS Analysis (not readable as JSON: %s)" % (base, ex))
+        raise MethodError("%s is not a method file of MSpektra (not readable as JSON: %s)" % (base, ex))
     if not isinstance(d, dict) or d.get("format") != FORMAT or not isinstance(d.get("values"), dict):
-        raise MethodError("%s is not a method file of MS Analysis (exported with Method > Export to a file)" % base)
+        raise MethodError("%s is not a method file of MSpektra (exported with Method > Export to a file)" % base)
     k = d.get("kind")
     if k != kind:
         if k in KINDS:
@@ -827,7 +827,7 @@ def _apply_preset(window, preset, scope="file"):
     fr = _frame(window)
     kind = kind_of(fr)
     if kind is None:
-        raise MethodError("Method presets are for LCMS Postrun and HRMS Postrun")
+        raise MethodError("Method presets are for LCMS Analysis and HRMS Analysis")
     name, raw = _resolve(kind, preset)
     vals, problems = validate(kind, raw)
     doc = _doc_of(window)
@@ -1045,7 +1045,7 @@ def export(window, name, path=None):
     kind = kind_of(fr)
     if path is None:
         path = U.ask_save_file(fr, 'Export the method "%s"' % name, U.safe_file_name(name) + EXT,
-                               "MS Analysis method (*%s)|*%s" % (EXT, EXT))
+                               "MSpektra method (*%s)|*%s" % (EXT, EXT))
         if not path:
             return None
     try:
@@ -1065,7 +1065,7 @@ def import_(window, path=None, replace=None):
     kind = kind_of(fr)
     if path is None:
         dlg = wx.FileDialog(fr, "Import a method of %s" % KINDS[kind],
-                            wildcard="MS Analysis method (*%s;*.json)|*%s;*.json|All files (*.*)|*.*" % (EXT, EXT),
+                            wildcard="MSpektra method (*%s;*.json)|*%s;*.json|All files (*.*)|*.*" % (EXT, EXT),
                             style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST)
         try:
             if dlg.ShowModal() != wx.ID_OK:
@@ -1237,7 +1237,7 @@ def _chip_class():
 
 
 def add_chip(frame, toolbar):
-    """The Method chip in the top bar of LCMS and HRMS Postrun (one chip value per file, as the other
+    """The Method chip in the top bar of LCMS and HRMS Analysis (one chip value per file, as the other
     chips); nothing for other windows."""
     if kind_of(frame) is None:
         return None

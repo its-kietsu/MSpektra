@@ -1,5 +1,5 @@
 """
-Data layer for LCMS Postrun (MS Analysis): Shimadzu LabSolutions LC-MS files (.lcd).
+Data layer for LCMS Analysis (MSpektra): Shimadzu LabSolutions LC-MS files (.lcd).
 
 MS scans are read with OpenSZRaw (Apache-2.0, clean-room reader, bundled).
 On top of it this module
@@ -334,7 +334,7 @@ def write_spectrum_txt(path, data):
 
 def write_spectrum_jdx(path, data, title, polarity="+", t0=None, t1=None):
     lines = ["##TITLE= %s" % title, "##JCAMP-DX= 4.24", "##DATA_TYPE= MASS SPECTRUM",
-             "##ORIGIN= MS Analysis, LCMS Postrun", "##IONIZATION_MODE= ESI%s" % (polarity or "+"),
+             "##ORIGIN= MSpektra, LCMS", "##IONIZATION_MODE= ESI%s" % (polarity or "+"),
              "##XUNITS= m/z", "##YUNITS= RELATIVE ABUNDANCE"]
     if t0 is not None:
         lines.append("##RETENTION_TIME= %.3f - %.3f" % (t0 * 60, t1 * 60))

@@ -1,10 +1,10 @@
 """
-Launcher of MS Analysis, a portable build of UniDec 8.2.1 (unmodified code
-from PyPI) with add-ons for LC-MS and HRMS postrun analysis.
+Launcher of MSpektra, a portable build of UniDec 8.2.1 (unmodified code
+from PyPI) with add-ons for LC-MS and HRMS analysis.
 
 UniDec: Marty et al., Anal. Chem. 2015, DOI 10.1021/acs.analchem.5b00140.
 Please cite this paper in any publication that uses UniDec, including the
-deconvolution in LCMS Postrun and HRMS Postrun.
+deconvolution in LCMS Analysis and HRMS Analysis.
 
 What this launcher adds on top of a normal "pip install unidec":
   * runs from a self contained, isolated Python (no Anaconda / PATH / user
@@ -16,17 +16,17 @@ What this launcher adds on top of a normal "pip install unidec":
   * writes a log file (logs\\) when started without a console and records
     native crashes there, so problems can be diagnosed,
   * add-ons (all in this folder, UniDec's own code is unchanged):
-      unidec_theme.py      start screen (LCMS Postrun, HRMS Postrun,
+      unidec_theme.py      start screen (LCMS Analysis, HRMS Analysis,
                            Deconvolute), modern interface, sharp on scaled
                            displays, window memory,
-      unilcms.py           LCMS Postrun: Shimadzu LabSolutions .lcd files, MS
+      unilcms.py           LCMS Analysis: Shimadzu LabSolutions .lcd files, MS
                            and PDA (lcms_data.py, lcms_pda.py,
                            lcms_integrate.py),
-      hrms.py              HRMS Postrun: Bruker .d folders (Baf2Sql library)
+      hrms.py              HRMS Analysis: Bruker .d folders (Baf2Sql library)
                            and mzML; internal calibration (hrms_calib.py),
                            exact mass tools (ms_formula.py), reader
                            (hrms_data.py),
-      deconv_tab.py        deconvolution inside both postrun windows
+      deconv_tab.py        deconvolution inside both analysis windows
                            (ms_deconv.py: UniDec, maximum entropy, IsoDec),
       unidec_jcamp.py      opens JCAMP-DX (.jdx/.dx/.jcamp) mass spectra,
       unidec_ui_addons.py  right-click menu on plots, persistent and movable
@@ -34,9 +34,9 @@ What this launcher adds on top of a normal "pip install unidec":
       unidec_plotstyle.py  modern boxed plot style (Classic style switch in
                            the plot menu),
       unidec_fast.py       loads the Thermo/.NET reader only when needed,
-  * a data file given as argument (drag and drop onto MS Analysis.exe, or
-    "Open with") opens directly: .lcd in LCMS Postrun, a Bruker .d folder or
-    .mzML in HRMS Postrun, anything else in the Deconvolute window,
+  * a data file given as argument (drag and drop onto MSpektra.exe, or
+    "Open with") opens directly: .lcd in LCMS Analysis, a Bruker .d folder or
+    .mzML in HRMS Analysis, anything else in the Deconvolute window,
   * works from write-protected locations (e.g. C:\\Program Files, or a folder
     copied to C:\\ with administrator permission): UniDec normally writes its
     recent-file list and default settings into its own folder, which fails
@@ -55,7 +55,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _app_version():
-    """Version of MS Analysis (APP_VERSION in unidec_theme.py), for the log."""
+    """Version of MSpektra (APP_VERSION in unidec_theme.py), for the log."""
     try:
         import re
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "unidec_theme.py"),
@@ -150,9 +150,9 @@ def _unblock_files():
 
 
 def _apply_pending_updates():
-    """Files of an update that could not be written while MS Analysis was running (Windows locks a
+    """Files of an update that could not be written while MSpektra was running (Windows locks a
     library in use) are delivered as <name>.new next to it: they replace the old file at the next
-    start, before anything loads it. If another MS Analysis window still uses it, the next start
+    start, before anything loads it. If another MSpektra window still uses it, the next start
     tries again (the program works with the older library meanwhile)."""
     folder = os.path.join(ROOT, "_portable", "msengine")
     try:
@@ -173,19 +173,19 @@ def _apply_pending_updates():
 
 
 def _retire_old_launcher():
-    """MS Analysis.exe is the only program file of the folder: the old launcher UniDec.exe of the
+    """MSpektra.exe is the only program file of the folder: the old launcher UniDec.exe of the
     UniDec named versions (the same launcher under its old name, it starts nothing else) is moved
     to backups\\old_launcher once, so that it cannot be confused with the program."""
     if os.name != "nt" or READONLY:
         return
     old = os.path.join(ROOT, "UniDec.exe")
-    if not (os.path.isfile(old) and os.path.isfile(os.path.join(ROOT, "MS Analysis.exe"))):
+    if not (os.path.isfile(old) and os.path.isfile(os.path.join(ROOT, "MSpektra.exe"))):
         return
     dst_dir = os.path.join(ROOT, "backups", "old_launcher")
     try:
         os.makedirs(dst_dir, exist_ok=True)
         os.replace(old, os.path.join(dst_dir, "UniDec.exe"))
-        print("Moved the old launcher UniDec.exe to backups\\old_launcher (MS Analysis.exe starts the program)")
+        print("Moved the old launcher UniDec.exe to backups\\old_launcher (MSpektra.exe starts the program)")
     except OSError as ex:  # e.g. in use: tried again at the next start
         print("Old launcher UniDec.exe not moved yet: %s" % ex)
 
@@ -258,7 +258,7 @@ def _fatal(msg):
     print(msg)
     try:
         import ctypes
-        ctypes.windll.user32.MessageBoxW(None, msg, "MS Analysis", 0x10)
+        ctypes.windll.user32.MessageBoxW(None, msg, "MSpektra", 0x10)
     except Exception:
         pass
 
@@ -290,7 +290,7 @@ def main():
         faulthandler.enable(file=sys.stderr, all_threads=True)
     except Exception:
         pass
-    print("MS Analysis %s | Python %s | %s" % (_app_version(), sys.version.split()[0], ROOT))
+    print("MSpektra %s | Python %s | %s" % (_app_version(), sys.version.split()[0], ROOT))
     print("Started", time.strftime("%Y-%m-%d %H:%M:%S"))
     if READONLY:
         print("Program folder is write-protected; using", USERDIR,
@@ -303,7 +303,7 @@ def main():
     sys.path.insert(0, os.path.join(ROOT, "_portable"))
 
     # Add-ons (each one is optional; a failure only disables that add-on).
-    # Only wx is loaded before the first window. The libraries of the postrun
+    # Only wx is loaded before the first window. The libraries of the analysis
     # windows (NumPy, Matplotlib) load in the background while the start
     # screen is shown; the UniDec interface and its libraries (about 10 s on
     # a cold start) load only in the process of the Deconvolute window.
@@ -332,7 +332,7 @@ def main():
     _addon("Modern interface add-on", light)
     print("Ready for the first window after %.1f s" % (time.perf_counter() - t0))
 
-    # A single data file as argument (drag and drop onto MS Analysis.exe, or
+    # A single data file as argument (drag and drop onto MSpektra.exe, or
     # "Open with"): open it straight in the right window.
     args = [a for a in sys.argv[1:] if a.strip()]
     # Saved analyses (.msanalysis files, analysis folders) open in the window of their kind, together with
@@ -357,9 +357,9 @@ def main():
             projects[kind].append(os.path.abspath(a))
         if not projects["lcms"] and not projects["hrms"] and not args:
             return 1
-    # LCMS Postrun: "--lcms" or a Shimadzu .lcd file
+    # LCMS Analysis: "--lcms" or a Shimadzu .lcd file
     lcd = [a for a in args if a.lower().endswith(".lcd") and os.path.isfile(a)]
-    # HRMS Postrun: "--hrms", a Bruker .d folder (or a file inside it) or .mzML
+    # HRMS Analysis: "--hrms", a Bruker .d folder (or a file inside it) or .mzML
     hr = []
     try:
         if args:  # hrms_data imports NumPy: only when there is a file argument
@@ -367,7 +367,7 @@ def main():
             hr = [a for a in args if hrms_data.find_d_folder(a) or a.lower().endswith(".mzml")]
     except Exception:
         print("HRMS reader not available:\n" + traceback.format_exc())
-    # every file dropped onto MS Analysis.exe opens (one window per kind, a file each); projects first,
+    # every file dropped onto MSpektra.exe opens (one window per kind, a file each); projects first,
     # so a raw file of a project being opened is not asked about again
     lcms_paths = projects["lcms"] + [os.path.abspath(a) for a in lcd]
     hrms_paths = list(projects["hrms"])
@@ -460,12 +460,12 @@ def _relaunch_hook():
 
 
 def spawn(args):
-    """Starts MS Analysis again in a new process with the given arguments
+    """Starts MSpektra again in a new process with the given arguments
     (pythonw.exe, no console). The start screen opens the Deconvolute window
     and the classic tools this way, so UniDec's interface and its libraries
     (about 10 s on a cold start) load on another processor core and never
-    into the process of the start screen and the postrun windows; LCMS and
-    HRMS Postrun do the same for the deconvolution (deconv_worker.py)."""
+    into the process of the start screen and the analysis windows; LCMS and
+    HRMS Analysis do the same for the deconvolution (deconv_worker.py)."""
     import subprocess
     exe = sys.executable
     if os.name == "nt" and exe.lower().endswith("python.exe"):

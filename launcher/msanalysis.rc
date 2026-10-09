@@ -11,12 +11,12 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "FileDescription", "MS Analysis (portable package, deconvolution engine UniDec 8.2.1)"
-      VALUE "ProductName", "MS Analysis"
+      VALUE "FileDescription", "MSpektra (portable package, deconvolution engine UniDec 8.2.1)"
+      VALUE "ProductName", "MSpektra"
       VALUE "FileVersion", "1.0.0.0"
       VALUE "ProductVersion", "1.0"
-      VALUE "OriginalFilename", "MS Analysis.exe"
-      VALUE "InternalName", "MS Analysis"
+      VALUE "OriginalFilename", "MSpektra.exe"
+      VALUE "InternalName", "MSpektra"
       VALUE "Comments", "Deconvolution engine: UniDec by M. T. Marty. Please cite Marty et al., Anal. Chem. 2015, DOI 10.1021/acs.analchem.5b00140"
     END
   END

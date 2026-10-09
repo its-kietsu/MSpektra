@@ -1,4 +1,4 @@
-// Compare view of LCMS Postrun: port of the calculations of lcms_compare_core.py (subtract_blank,
+// Compare view of LCMS Analysis: port of the calculations of lcms_compare_core.py (subtract_blank,
 // find_apex, baseline, process, stack, the numbers of peak_rows) and of the lambda max of
 // lcms_compare.CompareTab.on_lambda_max. The smoothing, the rolling baseline, the integration and
 // the PDA traces are the library's own (ms_smooth, ms_subtract_baseline, ms_lc_integrate,

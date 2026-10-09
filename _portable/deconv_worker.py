@@ -1,6 +1,6 @@
 """
-Worker process for the deconvolutions of MS Analysis (LCMS Postrun and HRMS
-Postrun).
+Worker process for the deconvolutions of MSpektra (LCMS Analysis and HRMS
+Analysis).
 
 The deconvolution runs here, in its own Python process, and not in the
 window's process: the window stays responsive whatever the settings, a run
@@ -100,7 +100,7 @@ def main():
             out.flush()
 
     t_start = time.time()
-    _log("started (MS Analysis %s, Python %s)" % (_version(), sys.version.split()[0]))
+    _log("started (MSpektra %s, Python %s)" % (_version(), sys.version.split()[0]))
     sys.path.insert(0, HERE)
     try:
         import launch_unidec as L

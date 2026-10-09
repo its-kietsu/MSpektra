@@ -1,6 +1,6 @@
 """
-Deconvolution inside the mass spectrometry view of LCMS Postrun and HRMS
-Postrun (MS Analysis): no separate window or tab.
+Deconvolution inside the mass spectrometry view of LCMS Analysis and HRMS
+Analysis (MSpektra): no separate window or tab.
 
 Right click a spectrum > Deconvolute this spectrum (or Deconvolute in the
 top bar): a window asks for the settings (DeconvDialog); OK closes it and
@@ -14,7 +14,7 @@ The settings are kept for the next time.
   Bayesian deconvolution  Bayesian charge state deconvolution (Marty et
                           al., Anal. Chem. 2015, 87, 4370)
   Maximum entropy         charge state deconvolution by maximum entropy
-                          (ms_deconv.py, written for MS Analysis)
+                          (ms_deconv.py, written for MSpektra)
   IsoDec                  monoisotopic masses from isotope resolved data
                           (IsoDec; HRMS spectra only)
 Results (mass spectrum, peak list, input spectrum) are saved in the output
@@ -1792,7 +1792,7 @@ class DeconvPanel(object):
             return
         self.activate(ent)
         try:
-            self.frame.show_page(self.tab)  # LCMS Postrun: the MS view, if the PDA view is shown
+            self.frame.show_page(self.tab)  # LCMS Analysis: the MS view, if the PDA view is shown
         except Exception:
             pass
         if ent.row is not None:

@@ -1,17 +1,17 @@
-MS Analysis 3.76 - portable Windows package   (09.10.2026)
-==========================================
+MSpektra 4.0 - portable Windows package   (09.10.2026)
+======================================================
 
-Postrun analysis of LC-MS and HRMS data, with deconvolution:
-  * LCMS Postrun   Shimadzu LabSolutions .lcd files (MS and PDA)
-  * HRMS Postrun   Bruker .d folders (maXis and other QTOF instruments:
+Analysis of LC-MS and HRMS data, with deconvolution:
+  * LCMS Analysis   Shimadzu LabSolutions .lcd files (MS and PDA)
+  * HRMS Analysis   Bruker .d folders (maXis and other QTOF instruments:
                    analysis.baf or the newer analysis.tsf; timsTOF:
                    analysis.tdf) and mzML:
                    internal calibration, exact mass, formula finder
   * Deconvolute    the full deconvolution window for any mass spectrum
 
 The deconvolution engine is UniDec 8.2.1 by Michael T. Marty
-(https://github.com/michaelmarty/UniDec). LCMS Postrun, HRMS Postrun and
-the Deconvolute window of the postrun windows run UniDec's engine built into
+(https://github.com/michaelmarty/UniDec). LCMS Analysis, HRMS Analysis and
+the Deconvolute window of the analysis windows run UniDec's engine built into
 the library msengine.dll (compiled from UniDec's C source, BSD license, see
 LICENSES\UniDec_LICENSE.txt); the UniDec windows of the start screen use the
 unmodified UniDec 8.2.1 package with its own unidec.exe.
@@ -23,7 +23,7 @@ unmodified UniDec 8.2.1 package with its own unidec.exe.
 
 This folder contains the unmodified UniDec 8.2.1 code (from PyPI) running on
 its own private copy of Python 3.12.10 (official python.org embeddable
-build), plus the MS Analysis add-ons in _portable. Nothing is installed on
+build), plus the MSpektra add-ons in _portable. Nothing is installed on
 the computer, no admin rights are needed, and it does not touch or depend on
 Anaconda or any other Python on the PC.
 
@@ -31,9 +31,18 @@ Anaconda or any other Python on the PC.
 VERSION HISTORY
 ---------------
 The version is shown on the start screen, in the help window (?) of LCMS
-and HRMS Postrun, and in the first line of each log file. It went up by
+and HRMS Analysis, and in the first line of each log file. It went up by
 0.1 with every update until 3.3. Since 3.31 a small change adds 0.01, a
 large change 0.1 and a big change 1.0.
+
+4.0 (09.10.2026)
+* MS Analysis is now called MSpektra: MSpektra.exe, MSpektra.bat and
+  MSpektra (console).bat start it. Saved analyses, method files and
+  settings of earlier versions open as before.
+
+3.77 (09.10.2026)
+* LCMS Postrun and HRMS Postrun are now called LCMS Analysis and HRMS
+  Analysis (windows, start screen, help, reports and this manual).
 
 3.76 (09.10.2026)
 * Shortened texts in the top bar (file name, calibration and others) end
@@ -83,8 +92,8 @@ Compare
 * The chosen 100 % reference run comes back when it is ticked again.
 * Undo records only applied region values and names its steps correctly.
 * Peak times are named RT (min) everywhere and use the run's own time.
-LCMS and HRMS Postrun
-* Ctrl+O opens the raw data dialog directly; one Open menu in HRMS Postrun.
+LCMS and HRMS Analysis
+* Ctrl+O opens the raw data dialog directly; one Open menu in HRMS Analysis.
 * The peak table says No peaks when there are none.
 * Help windows are shorter and readable again, without garbled engine names
   such as "the Bayesian engine engine".
@@ -102,7 +111,7 @@ Libraries and files
 
 3.55 (08.10.2026)
 Fixes from a full review of the program.
-LCMS Postrun
+LCMS Analysis
 * Files with two scan events of the same polarity (scan and SIM): each event
   has its own name, so peaks, integration and exported spectra no longer mix
   them up.
@@ -114,7 +123,7 @@ LCMS Postrun
 * Integrating the same peak twice with Drag or Add range no longer halves its
   area %.
 * Dragging the gap between two small tiles no longer shrinks the wrong tile.
-HRMS Postrun
+HRMS Analysis
 * Averaging profile scans whose m/z axes differ (zero trimmed profiles) no
   longer doubles peak heights or shifts the apex at high m/z.
 * Averaged centroid spectra show one stick per ion, so the exact mass check
@@ -180,7 +189,7 @@ Saving, undo and settings
   in another window.
 * After a failed recovery, the last good checkpoint is kept as a separate file
   that later saves do not replace.
-* The launcher's error messages name MS Analysis and its real start files.
+* The launcher's error messages name MSpektra and its real start files.
 
 3.45 (08.10.2026)
 * Compare: with the Offset layout or a skew, the selected region is
@@ -219,7 +228,7 @@ Saving, undo and settings
   Ctrl+Shift+S, and an Open menu (raw data, analysis folder, project).
 * Compare: region areas in every run with a 100 % reference, area vs X plot,
   Excel export and kinetic fitting.
-* HRMS Postrun: polymer analysis (Mn, Mw, dispersity, repeat units, chain
+* HRMS Analysis: polymer analysis (Mn, Mw, dispersity, repeat units, chain
   lengths) and the isotope details tile.
 * Maximum entropy in its own library (msmaxent.dll).
 * Plain HRMS and deconvolution reports.
@@ -227,7 +236,7 @@ Saving, undo and settings
 * Updated display names in the workspace and reports.
 
 3.35 (04.10.2026)
-* Mass shifts on deconvolution results (LCMS Postrun and HRMS Postrun):
+* Mass shifts on deconvolution results (LCMS Analysis and HRMS Analysis):
   right click a zero charge mass spectrum > Mass shifts (or Mass shifts...
   in the Deconvolution section of the side panel). Brackets above the peaks
   join the masses that differ by a known shift (Na, K, oxidation, water,
@@ -246,18 +255,18 @@ Saving, undo and settings
   isotope resolved results by monoisotopic differences. The brackets are
   part of copied and saved images, the tables part of the reports. Computed
   in the C++ library.
-* Method presets in LCMS Postrun and HRMS Postrun: Method in the top bar
+* Method presets in LCMS Analysis and HRMS Analysis: Method in the top bar
   shows the method of the file shown; its menu saves every setting of the
   window under a name, applies a method to the file shown or to every open
   file, updates, renames, deletes, exports and imports methods
   (name.msmethod.json) and sets the default method, applied to every file
   opened in that window. A method includes the settings of the mass
   shift finder (shift list, tags, tolerances). See METHOD PRESETS below.
-* HRMS Postrun, formula finder: it opens with the element limits and the
+* HRMS Analysis, formula finder: it opens with the element limits and the
   isotope ranking used last in that file (or set by a method) instead of
   the defaults every time, and with the ion chosen under Exact mass when
   that ion has the polarity of the peak (as Check a formula does).
-* Undo and Redo in LCMS Postrun and HRMS Postrun: every edit of a window
+* Undo and Redo in LCMS Analysis and HRMS Analysis: every edit of a window
   can be undone (Ctrl+Z) and redone (Ctrl+Y or Ctrl+Shift+Z), up to 100
   steps per window. Undo and Redo are also in the top bar (greyed when
   there is nothing to undo; the tooltip names the step, e.g. "Undo: delete
@@ -266,7 +275,7 @@ Saving, undo and settings
   the status bar what was undone. Applying a method is one step, and the
   mass shift finder (on or off, reference, settings) is covered too. See
   UNDO below for what is covered.
-* Keyboard shortcuts everywhere in the Postrun windows, from one list:
+* Keyboard shortcuts everywhere in the analysis windows, from one list:
   F1 opens it (searchable, by window). Ctrl combinations work anywhere in
   the window (Ctrl+O, Ctrl+W, Ctrl+R as before; new: Ctrl+1/2/3 for the
   views, Ctrl+E export the data of the plot clicked, Ctrl+D deconvolute,
@@ -361,12 +370,12 @@ Saving, undo and settings
   lines) and lambda max of the main peak. The results are the same as
   before to the last digit (checked on 16,000 cases); the Python code stays
   as the fallback.
-* New installation folder: MS Analysis (next to MS Analysis 1.8, which is
-  left as it is). Unpacking it copies the settings of MS Analysis 1.8
+* New installation folder: MSpektra (next to MSpektra 1.8, which is
+  left as it is). Unpacking it copies the settings of MSpektra 1.8
   (config\portable_settings.json); from then on each folder keeps its own.
 
 3.3 (03.10.2026)
-* LCMS Postrun has a third view, Compare: the chromatograms of every open
+* LCMS Analysis has a third view, Compare: the chromatograms of every open
   file on top of each other (stacked, for presentations and reaction
   monitoring) or overlaid. See COMPARE VIEW below.
 * Reports: a new Comparison report (PDF or Word) of the Compare view: the
@@ -414,7 +423,7 @@ Saving, undo and settings
   delivered as msengine.dll.new; it replaces the old one at the next start.
 
 3.1 (03.10.2026)
-* UniDec runs inside MS Analysis: its engine is built into the program's
+* UniDec runs inside MSpektra: its engine is built into the program's
   library (msengine.dll, compiled from UniDec's own C source) instead of
   being started as the separate program unidec.exe. Same results (masses,
   intensities, scores and R squared agree with unidec.exe to the last
@@ -466,12 +475,12 @@ Saving, undo and settings
   offered old settings (and the calibration panel could write them back over
   newer ones); they now offer the last settings used.
 * LCMS Full window button: negative ion spectra opened as positive ions.
-* Several Bruker .d folders or mzML files dropped onto MS Analysis.exe now
+* Several Bruker .d folders or mzML files dropped onto MSpektra.exe now
   open together (only the first opened).
 * Masses added by hand to an isotope resolved result are labelled with their
   mass only (no "average" line), and the table shows "(added)" in full.
 * When every result is hidden, the report window says to show one again.
-* MS Analysis.exe is the only program file in the folder: the old launcher
+* MSpektra.exe is the only program file in the folder: the old launcher
   UniDec.exe of the UniDec named versions (it started the same program) is
   moved to backups\old_launcher at the first start.
 
@@ -579,14 +588,14 @@ Deconvolution results in the windows
 * Presets now also set the mass range; the maximum entropy fit is drawn on
   the whole spectrum; labels stay inside a tile made shorter; zoomed mass
   axes show whole numbers instead of an offset.
-HRMS Postrun
+HRMS Analysis
 * The calibrant segment is found again when a file opens (it was not with
   the C++ core of 2.4 to 2.7) and "Calibrate automatically" works.
 * The calibration window uses every scan of the calibrant range (it dropped
   the first and last); in files with both polarities a calibration applies to
   its own polarity only (the chip says "(+)" or "(-)").
 * Spectrum titles show the right scan time in files with polarity switching
-  (also LCMS Postrun).
+  (also LCMS Analysis).
 * Reports show sample name, instrument, operator, method and acquisition
   date of Bruker files and mention the DataAnalysis recalibration; the model
   table matches the calibration applied. The recalibration note shows the
@@ -600,7 +609,7 @@ HRMS Postrun
 * mzML: integer arrays and times given in seconds by accession are read;
   MS-Numpress files are refused with a message on how to convert them; a
   scan that can no longer be read is reported.
-LCMS Postrun
+LCMS Analysis
 * Files with positive and negative scans are split by the scan event stored
   with every scan, so a single damaged scan no longer mixes the polarities.
 * Saturated scans are marked again with the C++ core (red ticks and the
@@ -657,7 +666,7 @@ Robustness
   subtraction had differed below 0.1 % of the base peak).
 
 2.5 (02.10.2026)
-* Second step of the conversion to C++ (msengine.dll): LCMS Postrun now
+* Second step of the conversion to C++ (msengine.dll): LCMS Analysis now
   reads Shimadzu .lcd files (MS scans, scan events, PDA data) through the
   library; the UniDec deconvolution (preparation of the data, the UniDec
   engine, peak picking, isotope grouping) and IsoDec (through UniDec's
@@ -677,7 +686,7 @@ Robustness
 
 2.4 (02.10.2026)
 * First step of the conversion to C++: the computational core of HRMS
-  Postrun is now a C++ library, _portable\msengine\msengine.dll (source in
+  Analysis is now a C++ library, _portable\msengine\msengine.dll (source in
   the cpp folder of the project; built with GCC/MinGW, OpenMP, one self
   contained DLL): reading Bruker .d folders (analysis.baf, analysis.tsf,
   analysis.tdf through Bruker's own libraries) and mzML files, TIC, base
@@ -699,7 +708,7 @@ Robustness
 
 2.3 (02.10.2026)
 * Start screen: the Deconvolute window (and the classic UniDec tools) now
-  start as their own process, so the start screen and LCMS/HRMS Postrun no
+  start as their own process, so the start screen and LCMS/HRMS Analysis no
   longer load the UniDec interface libraries in the background. A click
   on a tile no longer waits for that loading (it waited up to the whole
   background load, 10 to 16 s on a cold start). The background loading of
@@ -708,7 +717,7 @@ Robustness
   click during the loading crashed the app). Setting
   "deconvolute_own_process": false in config\portable_settings.json
   restores the old in-process Deconvolute window. _portable ships its
-  compiled Python files; MS Analysis.bat no longer runs the PowerShell
+  compiled Python files; MSpektra.bat no longer runs the PowerShell
   Unblock-File pass over all files on the first start (the launcher does
   the needed part itself, once).
   Note on "multithreading": importing libraries in several threads does
@@ -724,7 +733,7 @@ Robustness
   result > Hide this result / Hide all results. At most 8 results are
   kept (the oldest is dropped). Each row's subtitle names the method,
   time range and mass range.
-* HRMS Postrun: the deconvolution result rows open at full size while the
+* HRMS Analysis: the deconvolution result rows open at full size while the
   chromatogram and the spectrum stay at half size.
 * Deconvolute dialog: switching the method (or a preset or the polarity)
   keeps the position and the size of the dialog.
@@ -742,7 +751,7 @@ Robustness
 * UniDec: more than 1000000 mass points (mass range / step) are refused
   with a message: the engine could stop with a crash (code 0xC0000409)
   above that, e.g. 11000 to 14000 Da at 0.002 Da.
-* HRMS Postrun: averaging a long time range of a Bruker .baf file whose
+* HRMS Analysis: averaging a long time range of a Bruker .baf file whose
   profile spectra have different m/z axes (zero trimmed) collected all
   points of all scans first: 1000 scans took gigabytes of memory, the
   computer swapped and the window froze for minutes. The scans are now
@@ -786,13 +795,13 @@ Robustness
   steps (it made every point a peak).
 * Isotope groups of two species next to each other (e.g. +16 Da) are no
   longer merged into one.
-* HRMS Postrun: m/z labels of the spectrum (and the base peak read out,
+* HRMS Analysis: m/z labels of the spectrum (and the base peak read out,
   and the report) are at the apex of the profile peak, not at its
   highest data point (on a TOF spectrum the points are 3 to 5 ppm apart,
   so labels were up to 2 ppm off). They now agree with Bruker's peak list
   within about 0.3 ppm. Clicked peaks and the calibration already used
   the apex.
-* HRMS Postrun: a recalibration saved by DataAnalysis in the .d folder
+* HRMS Analysis: a recalibration saved by DataAnalysis in the .d folder
   (calibration.sqlite) is used, and the Calibration chip and the file
   summary now say so ("file recal. (DataAnalysis, date)"). A calibration
   made here comes on top of it.
@@ -812,12 +821,12 @@ Robustness
   report; right click where no mass was found > Add the mass here adds
   the highest point there to the masses (label, table marked "added",
   _peaks.csv, report); right click it again > Remove the added mass.
-* HRMS Postrun: tiles open at half size by default (right click > Tile
+* HRMS Analysis: tiles open at half size by default (right click > Tile
   heights still offers "first 2 tiles fill the window").
 * Everything else is unchanged from 2.0.
 
 2.0 (01.10.2026)
-* HRMS Postrun reads timsTOF data: .d folders with analysis.tdf and
+* HRMS Analysis reads timsTOF data: .d folders with analysis.tdf and
   analysis.tdf_bin. Each MS1 frame is one spectrum with the ion mobility
   dimension summed (the SDK's profile of the frame); MS/MS frames (PASEF,
   DIA) are counted but not shown. TIC, base peak (the frame maxima
@@ -828,7 +837,7 @@ Robustness
   mobilograms, CCS) is not shown. Everything else is unchanged from 1.9.
 
 1.9 (01.10.2026)
-* HRMS Postrun reads the newer Bruker format: .d folders with analysis.tsf
+* HRMS Analysis reads the newer Bruker format: .d folders with analysis.tsf
   and analysis.tsf_bin instead of analysis.baf, as written by otofControl
   6 and later (e.g. maXis II). Profile and line spectra, TIC, base peak
   and mass chromatograms, averaging, background, calibration, formula
@@ -851,11 +860,11 @@ Robustness
 
 1.6 (30.09.2026)
 * Reports: the mass spectra (and the UV spectrum) are the ones shown in
-  LCMS Postrun (same time range, background and bin width); the caption
+  LCMS Analysis (same time range, background and bin width); the caption
   says which. Before, they were averaged again over the main peak without
   the background subtraction, so they could differ from the window.
 * Deconvolution: the ranges typed in are kept. "Suggest them every time
-  this window opens" is now off by default (it was on in HRMS Postrun and
+  this window opens" is now off by default (it was on in HRMS Analysis and
   replaced the mass range each time). After a deconvolution the zero
   charge spectrum shows the whole mass range deconvoluted; right click >
   Zoom to the masses found narrows it.
@@ -878,8 +887,8 @@ Robustness
 * LC-MS purity report: every graph at full width and the same height,
   larger than before: chromatogram, total ion chromatograms, UV and mass
   spectra of the main peak, then extracted ion chromatograms (those set in
-  LCMS Postrun with Mass chrom., or else the base peak of the main peak).
-* HRMS Postrun: the chromatogram and the spectrum fill the window; further
+  LCMS Analysis with Mass chrom., or else the base peak of the main peak).
+* HRMS Analysis: the chromatogram and the spectrum fill the window; further
   tiles follow below (scroll). Right click a tile > Tile heights for the
   other sizes.
 * Calibration window: opens almost full screen; the calibrant spectrum and
@@ -889,9 +898,9 @@ Robustness
 1.4 (30.09.2026)
 * Faster start: the start screen needs only the window library and appears
   in about 1 to 2 s; the libraries of the windows load in the background
-  meanwhile. LCMS and HRMS Postrun no longer load UniDec's interface at all;
+  meanwhile. LCMS and HRMS Analysis no longer load UniDec's interface at all;
   the Deconvolute window loads it when it is opened. The deconvolution
-  process starts in the background after a postrun window opens, so the
+  process starts in the background after an analysis window opens, so the
   first deconvolution does not wait for its libraries. The first-start
   preparation checks only program files (DLL, EXE), not all 11 000 files.
 * Deconvolution window: m/z range and minimum intensity in "Spectrum and
@@ -905,7 +914,7 @@ Robustness
   was left above that threshold. UniDec refuses a single charge state
   (its engine stops with one; use 1 to 2, or maximum entropy).
 * The deconvolution progress window is centred on the window.
-* LCMS Postrun, HRMS Postrun and the Deconvolute window open maximised.
+* LCMS Analysis, HRMS Analysis and the Deconvolute window open maximised.
 * Plots: black axes, ticks and labels, blue traces, thinner lines (also in
   exported images, reports and the Deconvolute window).
 * Sharper start screen and custom controls: their text is drawn by
@@ -922,7 +931,7 @@ Robustness
 * Check a formula starts with an ion of the spectrum's polarity ([M-H]-
   for negative ions) and says so when ion and spectrum do not match.
 * Negative spectra sent to the Deconvolute window open in negative mode;
-  a .lcd file opened in the Deconvolute window opens in LCMS Postrun.
+  a .lcd file opened in the Deconvolute window opens in LCMS Analysis.
 1.2 (29.09.2026)
 * Reports: HRMS compound report, LC-MS purity report, deconvolution report
   and Supporting Information page, as PDF or Word; the kind is chosen each
@@ -949,8 +958,8 @@ Robustness
 * LCMS: MS and PDA times linked; integrated peaks kept (areas measured
   again) when the wavelength or trace changes; marker lines left out of
   images.
-1.0 (29.09.2026)  first release of MS Analysis (LCMS Postrun, HRMS
-  Postrun, Deconvolute window on UniDec 8.2.1).
+1.0 (29.09.2026)  first release of MSpektra (LCMS Analysis, HRMS
+  Analysis, Deconvolute window on UniDec 8.2.1).
 
 
 QUICK START
@@ -965,39 +974,39 @@ QUICK START
    If you do put it in a protected place (C:\Program Files), it still
    works: settings, recent files, logs and caches then go to
    %LOCALAPPDATA%\UniDecPortable instead of this folder.
-3. Double-click  MS Analysis.exe . The start screen has three tiles:
-   LCMS Postrun, HRMS Postrun and Deconvolute. (The classic tools of the
+3. Double-click  MSpektra.exe . The start screen has three tiles:
+   LCMS Analysis, HRMS Analysis and Deconvolute. (The classic tools of the
    UniDec package, MetaUniDec, UniChrom, IsoDec, Data Collector, ..., are
    hidden: right click the empty background of the start screen.)
-   MS Analysis.bat does the same and stays as a fallback in case security
-   software blocks MS Analysis.exe.
+   MSpektra.bat does the same and stays as a fallback in case security
+   software blocks MSpektra.exe.
 4. Taskbar / Start menu: double-click  Create_desktop_shortcut.bat  once. It
-   makes "MS Analysis" shortcuts on the desktop and in the Start menu and
-   removes older "UniDec" shortcuts. To pin: start MS Analysis, right-click
+   makes "MSpektra" shortcuts on the desktop and in the Start menu and
+   removes older "UniDec" shortcuts. To pin: start MSpektra, right-click
    its icon in the taskbar, choose "Pin to taskbar".
    Run Create_desktop_shortcut.bat again if you move the folder.
    Updating from the UniDec-named version: the old launcher UniDec.exe is
    moved to backups\old_launcher at the first start (it is not used);
    UniDec.bat and UniDec_console.bat can be deleted after this step (an old
-   pinned UniDec icon should be unpinned and MS Analysis pinned instead).
+   pinned UniDec icon should be unpinned and MSpektra pinned instead).
 
-Opening a data file directly: drag it onto MS Analysis.exe, or use
-"Open with > MS Analysis.exe": a .lcd file opens in LCMS Postrun, a Bruker
-.d folder (or analysis.baf inside it) or an .mzML file in HRMS Postrun,
+Opening a data file directly: drag it onto MSpektra.exe, or use
+"Open with > MSpektra.exe": a .lcd file opens in LCMS Analysis, a Bruker
+.d folder (or analysis.baf inside it) or an .mzML file in HRMS Analysis,
 anything else (.jdx, .txt, .raw, ...) in the Deconvolute window.
 
-MS Analysis.exe is a small launcher that starts the bundled Python; it is
+MSpektra.exe is a small launcher that starts the bundled Python; it is
 not digitally signed, so a copy downloaded from the internet may show a
 one-time Windows "unknown publisher" prompt.
 
 
-LCMS POSTRUN: SHIMADZU .LCD FILES
----------------------------------
-LCMS Postrun reads LabSolutions LC-MS data files (.lcd, e.g. LCMS-2020 with
+LCMS ANALYSIS: SHIMADZU .LCD FILES
+----------------------------------
+LCMS Analysis reads LabSolutions LC-MS data files (.lcd, e.g. LCMS-2020 with
 PDA) directly: no export from LabSolutions is needed. Start it from the
-start screen, or drag a .lcd file onto MS Analysis.exe.
+start screen, or drag a .lcd file onto MSpektra.exe.
 
-Right click first (LCMS Postrun and HRMS Postrun)
+Right click first (LCMS Analysis and HRMS Analysis)
 * Everything is done from the plots: right click a chromatogram or a
   spectrum and choose; operations that need settings open a small window
   (average a time range and background, mass chromatogram with its window,
@@ -1056,9 +1065,9 @@ Mass spectrometry view (everything for the mass spectra in one view)
   zero between peaks), or as sticks (Spectrum display).
 * Right click a spectrum > "Deconvolute this spectrum" (or Deconvolute in
   the top bar) opens the deconvolution window with every setting; the
-  results appear in the same view (see DECONVOLUTION). LCMS Postrun also
+  results appear in the same view (see DECONVOLUTION). LCMS Analysis also
   offers "Open this spectrum in the Deconvolute window" (the UniDec
-  program); HRMS Postrun does not send spectra there, everything is in its
+  program); HRMS Analysis does not send spectra there, everything is in its
   own window. Export saves .txt or .jdx.
 * Right click a chromatogram also offers: Trace (TIC, BPC, mass
   chromatograms only), how mass chromatograms are shown, Smoothing, Scale
@@ -1143,7 +1152,7 @@ and wavelength...".
 Checked against LabSolutions exports of KUA525-POZi_027.lcd:
 * averaged positive spectrum 2 to 10 min: same m/z values; intensities agree
   (r = 0.9995) when compared peak by peak. LabSolutions exports one point
-  per peak, LCMS Postrun keeps the full profile (better for deconvolution).
+  per peak, LCMS Analysis keeps the full profile (better for deconvolution).
 * PDA chromatogram at 280 nm, 4 nm: r = 0.999 against the LabSolutions plot;
   UV spectrum at 9.398 min: maxima at 221 and 262 nm, within a few mAU.
 Not included (LabSolutions functions outside data review): instrument
@@ -1151,15 +1160,15 @@ control, method editing, calibration curves and quantitation, library
 search, peak purity, audit trail.
 
 MS reading uses OpenSZRaw 0.2.0 (Apache-2.0, bundled). For LCMS-2020 files
-it reports m/z values twice too high; LCMS Postrun detects this from the scan
+it reports m/z values twice too high; LCMS Analysis detects this from the scan
 range stored in the file and corrects it. The PDA decoder and everything
 else are part of this package (_portable\unilcms.py, lcms_data.py,
 lcms_pda.py, lcms_integrate.py).
 
 
-COMPARE VIEW (LCMS POSTRUN)
----------------------------
-Compare, the third view in the top bar of LCMS Postrun, puts the
+COMPARE VIEW (LCMS ANALYSIS)
+----------------------------
+Compare, the third view in the top bar of LCMS Analysis, puts the
 chromatograms of every open file on top of each other. Open the runs
 (several at once: Ctrl or Shift + click in Open, or drag them onto the
 window), then choose Compare.
@@ -1309,15 +1318,15 @@ Region areas and kinetics
   standard errors and the half life).
 
 
-SAVED ANALYSES (LCMS POSTRUN AND HRMS POSTRUN)
-----------------------------------------------
+SAVED ANALYSES (LCMS ANALYSIS AND HRMS ANALYSIS)
+------------------------------------------------
 * After an edit, the analysis is saved by itself in <file>_analysis\
   session.msanalysis next to each edited data file (and on closing). Files
   only opened or zoomed are not written to. Save (top bar) or Ctrl+Shift+S
   saves at once.
 * Opening a data file that has a saved analysis asks whether to resume it.
   Open > Open analysis folder / Open analysis project opens one directly, or
-  give a .msanalysis file to MS Analysis.exe.
+  give a .msanalysis file to MSpektra.exe.
 * The file keeps the views, results, Compare view, polymer and kinetics
   windows; the raw data stays where it is and is read again. The previous
   save is kept as session.msanalysis.previous.
@@ -1326,8 +1335,8 @@ SAVED ANALYSES (LCMS POSTRUN AND HRMS POSTRUN)
 * A second window does not save over an analysis open in another window.
 
 
-METHOD PRESETS (LCMS POSTRUN AND HRMS POSTRUN)
-----------------------------------------------
+METHOD PRESETS (LCMS ANALYSIS AND HRMS ANALYSIS)
+------------------------------------------------
 A method is a named set of every setting of a window: the same processing
 for every run of a series in one click, and the same settings on another
 PC. Method in the top bar (right of the File, MS and PDA or Calibration
@@ -1351,7 +1360,7 @@ applied); a click opens its menu:
   when the settings are no longer those of the method.
 * Rename, Delete: the open files keep their settings.
 * Default when a file is opened: a method applied to every file opened in
-  that window (LCMS Postrun and HRMS Postrun each have their own), or None:
+  that window (LCMS Analysis and HRMS Analysis each have their own), or None:
   a file opens with the settings of the window, as before. The settings of
   the window (deconvolution, Compare view, calibration, MS and PDA link)
   come with the first file of a window only, so that changes made while
@@ -1368,7 +1377,7 @@ applied); a click opens its menu:
 * What a method contains... lists the settings of the window.
 
 What a method contains
-LCMS Postrun:
+LCMS Analysis:
 * Mass spectrometry view: trace (TIC, BPC, mass chromatograms only),
   default mass chromatogram window and its unit (m/z or ppm), mass
   chromatograms stacked or overlaid, smoothing, scale each trace to 100 %,
@@ -1393,15 +1402,15 @@ LCMS Postrun:
 * Mass shifts (the deconvolution results): the shift list, the tags, at
   most k tags and the other shifts with them, the tolerances and the share
   of the tallest mass used (not Show every matched pair).
-HRMS Postrun:
-* Mass spectrometry view: as in LCMS Postrun, without the bin width (HRMS
+HRMS Analysis:
+* Mass spectrometry view: as in LCMS Analysis, without the bin width (HRMS
   spectra keep the m/z axis of the instrument).
 * Exact mass: ion and tolerance (the formula finder uses both). Formula
   finder: element limits, ranking by the isotope pattern.
 * Calibration: reference list (and the custom list), model, HPC order,
   search window, minimum intensity, calibrate automatically on opening.
 * Deconvolution: every setting of the deconvolution window.
-* Mass shifts: as in LCMS Postrun.
+* Mass shifts: as in LCMS Analysis.
 Not in a method: the data of a file (averaged and background ranges, the
 m/z lists of mass chromatograms, integrated peaks, labels, the formula
 checked, the calibration made on a file, results), the names, colours,
@@ -1415,8 +1424,8 @@ Methods are kept in config\portable_settings.json (key method_presets);
 settings files of older versions work as before.
 
 
-KEYBOARD SHORTCUTS (LCMS POSTRUN AND HRMS POSTRUN)
---------------------------------------------------
+KEYBOARD SHORTCUTS (LCMS ANALYSIS AND HRMS ANALYSIS)
+----------------------------------------------------
 F1 opens the list of every shortcut (search field; this window or every
 window); the help (?) in the top bar still shows the overview.
 
@@ -1458,7 +1467,7 @@ In a view (the focus on a plot or the view, not in a field or a list)
 Tools: a single letter while a plot has the focus (click it once)
   S Select, Z Zoom, P Pan, B Background, I Click (integrate a peak near
   its top), D Drag (integrate from start to end), K Split, R Delete (click
-  a peak), X Mass chrom., U Measure, L Label, F Formula (HRMS Postrun),
+  a peak), X Mass chrom., U Measure, L Label, F Formula (HRMS Analysis),
   A Align, G Guide line, M m/z on or off (Compare view; X, U and L while
   m/z is on). The tooltips of the tool bar show the letters.
 
@@ -1470,8 +1479,8 @@ open files (Up, Down, Enter, Space, Delete, Left, Right). Dialogs: Esc
 cancels, Enter confirms. The mouse is unchanged (drag, Shift + drag,
 Ctrl + drag, double click, wheel, Ctrl + wheel, Alt + click, right click).
 
-UNDO (LCMS POSTRUN AND HRMS POSTRUN)
-------------------------------------
+UNDO (LCMS ANALYSIS AND HRMS ANALYSIS)
+--------------------------------------
 Each window keeps its own list of steps (up to 100): Ctrl+Z or Undo in
 the top bar goes back one step, Ctrl+Y (or Ctrl+Shift+Z) or Redo goes
 forward again. The tooltips of the two buttons and the right click menus
@@ -1500,7 +1509,7 @@ What is undone
   step per visit of the window), the m/z tool (on or off, the peak or
   range picked, the background ranges, its settings, labels and
   measurements on its spectra).
-* HRMS Postrun: the calibration (calibrated, removed or loaded), the
+* HRMS Analysis: the calibration (calibrated, removed or loaded), the
   formula check and its isotope pattern, formula, ion and tolerance, and
   everything of the Mass spectrometry view above.
 * Deconvolution: a deconvolution is one step that adds its result; Undo
@@ -1543,8 +1552,8 @@ done (or after Cancel). The Deconvolute window (UniDec's own program) has
 no undo.
 
 
-REPORTS (LCMS POSTRUN AND HRMS POSTRUN)
----------------------------------------
+REPORTS (LCMS ANALYSIS AND HRMS ANALYSIS)
+-----------------------------------------
 Report... in the top bar (or Ctrl+R, or right click any plot > Create a
 report...) asks which report to make; reports that need something not done
 yet are greyed with the reason:
@@ -1555,7 +1564,7 @@ yet are greyed with the reason:
   LC-MS purity report    PDA chromatogram with the integrated peaks and
                          area %, UV, ESI(+) and ESI(-) spectra of the main
                          peak (the largest), m/z table, TICs. The peaks are
-                         those integrated in LCMS Postrun; if none, the
+                         those integrated in LCMS Analysis; if none, the
                          report integrates automatically (and says so).
   Deconvolution report   spectrum with fit and charge states, zero charge
                          spectrum and charge states, masses (isotope table
@@ -1587,8 +1596,8 @@ are unpacked into _portable\pylibs the first time (or into your local
 AppData if the program folder is read-only). Nothing is installed.
 
 
-DECONVOLUTION (LCMS POSTRUN AND HRMS POSTRUN, IN THE SAME VIEW)
----------------------------------------------------------------
+DECONVOLUTION (LCMS ANALYSIS AND HRMS ANALYSIS, IN THE SAME VIEW)
+-----------------------------------------------------------------
 Right click the spectrum > "Deconvolute this spectrum" (or Deconvolute in
 the top bar) opens the deconvolution window. It holds every setting, in
 sections that show only what applies to the chosen method:
@@ -1672,7 +1681,7 @@ it again > Remove the added mass.
     Maximum entropy      charge state deconvolution by maximum entropy with
                          one charge envelope shared by all masses, on a log
                          m/z grid (TOF: peak width grows with m/z), written
-                         for MS Analysis from the published principle.
+                         for MSpektra from the published principle.
     IsoDec               monoisotopic masses and charges from resolved
                          isotope patterns (HRMS spectra only).
   A better algorithm? For charge deconvolution of ESI spectra, UniDec and
@@ -1682,7 +1691,7 @@ it again > Remove the added mass.
   it is not included.
 * Comparison with Bruker DataAnalysis MaxEnt, same spectrum (G4COL,
   maXis II, 6.90 to 7.00 min, charges 2 to 3, 0.01 Da, calibrated):
-      DataAnalysis            MS Analysis, maximum entropy, resolved
+      DataAnalysis            MSpektra, maximum entropy, resolved
       2663.2901  6.80e6       2663.2935  5.68e6
       2664.2960  8.90e6       2664.2962  7.86e6
       2665.2964  6.85e6       2665.2992  6.64e6
@@ -1846,8 +1855,8 @@ gives 18366.6 Da (variant A, the reference) and 18280.7 Da, "variant B
 protein of Protein POS.d shows its oxidation (+15.9 Da).
 
 
-HRMS POSTRUN: BRUKER .D FOLDERS AND MZML
----------------------------------------
+HRMS ANALYSIS: BRUKER .D FOLDERS AND MZML
+-----------------------------------------
 Reads Bruker .d folders with analysis.baf (maXis, maXis II, impact,
 compact, micrOTOF, apex/solariX) with Bruker's Baf2Sql library (bundled in
 _portable\baf2sql), .d folders in the newer TSF format (analysis.tsf and
@@ -1857,13 +1866,13 @@ analysis.tdf_bin; MS1 frames with the ion mobility dimension summed, MS/MS
 frames left out; same SDK), and mzML files (profile or centroid; e.g.
 converted with ProteoWizard msconvert). Open:
 the Open button offers "Bruker .d folder" and "mzML file"; or drag the .d
-folder onto the window or onto MS Analysis.exe.
+folder onto the window or onto MSpektra.exe.
 The first time a .d folder is opened, Baf2Sql writes a small index file
 (analysis.sqlite) into it; for a write-protected folder a temporary copy is
 used. The m/z values are those of the last calibration saved with the file
 (e.g. in DataAnalysis); the calibration made here comes on top.
 
-One view, as in LCMS Postrun, with high resolution defaults
+One view, as in LCMS Analysis, with high resolution defaults
 * TIC, base peak and mass chromatograms per polarity; the default mass
   chromatogram window is +-0.02 m/z (each one can have its own, in m/z or
   ppm). Spectra keep the instrument's profile m/z axis (no binning); labels
@@ -1981,7 +1990,7 @@ Modern interface
   fully coloured rows.
 * Windows reopen at their last size and position; the Open dialog starts in
   the folder of the last opened file.
-* Start screen: three tiles (LCMS Postrun, HRMS Postrun, Deconvolute);
+* Start screen: three tiles (LCMS Analysis, HRMS Analysis, Deconvolute);
   arrow keys and Enter also work. Right click the background for the
   classic tools.
 * Headings, toolbar and launcher use the Plus Jakarta Sans font (bundled in
@@ -2073,7 +2082,7 @@ The add-on lives in _portable\unidec_jcamp.py; UniDec's own code is unchanged.
 START-UP SPEED
 --------------
 The start screen needs only the window library (about 1 to 2 s); LCMS and
-HRMS Postrun load NumPy and Matplotlib, the Deconvolute window loads
+HRMS Analysis load NumPy and Matplotlib, the Deconvolute window loads
 UniDec's interface (the largest part). These libraries load in the
 background while the start screen is shown. Each log file (logs\) lists
 the times: "Ready for the first window after", "start screen shown in",
@@ -2084,7 +2093,7 @@ Loading is limited by reading about 11 000 files, not by the processor
 (the deconvolution itself uses every processor core). What makes it slow:
   * OneDrive: in a OneDrive folder, files are fetched from the cloud the
     first time on each computer ("Files On-Demand"), and the sync client
-    checks every file that is opened. Keep MS Analysis in a local folder
+    checks every file that is opened. Keep MSpektra in a local folder
     that is not synchronised, e.g. C:\MSAnalysis, or right click the
     folder > OneDrive > "Always keep on this device". To compare: copy the
     folder to C:\MSAnalysis, start both copies twice and compare the times
@@ -2102,7 +2111,7 @@ the deconvolution process only at the first deconvolution.
 
 IF SOMETHING GOES WRONG
 -----------------------
-* Start  MS Analysis (console).bat  instead. It shows all messages in a black
+* Start  MSpektra (console).bat  instead. It shows all messages in a black
   console window; the window stays open after a crash so the error can be
   read (or photographed / copied).
 * UniDec opens but nothing can be processed: the program folder or the
@@ -2110,7 +2119,7 @@ IF SOMETHING GOES WRONG
   "<datafile>_unidecfiles" folder next to every data file, so keep data in
   a folder you can write to. (Program-folder protection is handled
   automatically since the launcher update of 24.09.2026.)
-* When started with MS Analysis.exe or MS Analysis.bat, the same messages are written to the
+* When started with MSpektra.exe or MSpektra.bat, the same messages are written to the
   "logs" folder (last 20 sessions are kept), or to
   %LOCALAPPDATA%\UniDecPortable\logs if the program folder is
   write-protected. Native crashes are recorded there as well.
@@ -2127,7 +2136,7 @@ IF SOMETHING GOES WRONG
   the program starts without it if that file is removed.
 * The plot style choice, window positions and the last data folder are
   stored in config\portable_settings.json (delete it to reset them).
-* If Windows shows a security prompt for MS Analysis.exe/.bat or python, that is the
+* If Windows shows a security prompt for MSpektra.exe/.bat or python, that is the
   "downloaded from the internet" flag. Step 1 above prevents it; the
   package also removes this flag from its own files on the first start.
 
@@ -2145,7 +2154,7 @@ WHAT IS DIFFERENT FROM THE OFFICIAL ZIP
   site-packages or matplotlib settings from Anaconda etc. can interfere.
 * Readable logs of every session.
 * The deconvolution engine (unidec.exe / unideclib.dll with Intel MKL, used
-  by the UniDec windows of the start screen; LCMS Postrun, HRMS Postrun and
+  by the UniDec windows of the start screen; LCMS Analysis, HRMS Analysis and
   the Deconvolute window run the engine in msengine.dll),
   the Thermo RawFileReader and the Waters MassLynx DLLs are the developer's
   own binaries, unchanged.
@@ -2158,7 +2167,7 @@ Supported: Thermo .raw, Waters .raw folders, mzML, mzXML, text (.txt/.dat/
 I2MS (.dmt/.i2ms), UniDec HDF5 files.
 Deconvolute window, not in UniDec 8.2.1 (removed upstream in 8.1.0):
 Agilent .d and Sciex .wiff direct import, Isotope mode. (Bruker .d: use
-HRMS Postrun, which can send spectra to the Deconvolute window.) Convert those files to mzML with ProteoWizard
+HRMS Analysis, which can send spectra to the Deconvolute window.) Convert those files to mzML with ProteoWizard
 MSConvert first.
 Thermo .raw reading uses the .NET Framework 4.x that ships with Windows
 10/11 (nothing to install).
@@ -2169,11 +2178,11 @@ The optional MassQL query tool is not included.
 
 CONTENTS
 --------
-MS Analysis.exe             start MS Analysis (no console window); the only
+MSpektra.exe             start MSpektra (no console window); the only
                             program file in this folder, the shortcuts and
                             the taskbar point to it
-MS Analysis.bat             same, fallback if MS Analysis.exe is blocked
-MS Analysis (console).bat   start with a console for troubleshooting
+MSpektra.bat             same, fallback if MSpektra.exe is blocked
+MSpektra (console).bat   start with a console for troubleshooting
 Create_desktop_shortcut.bat make desktop and Start menu shortcuts
 Convert_JDX_to_TXT.bat      convert .jdx files to text files (drag and drop)
 _portable\                  launcher and add-ons (baf2sql\ and timsdata\: Bruker readers)

@@ -29,6 +29,6 @@ def display(text):
     return text
 
 
-CREDITS=('Third-party software: MS Analysis uses UniDec. Please cite Marty et al., '
+CREDITS=('Third-party software: MSpektra uses UniDec. Please cite Marty et al., '
          'Analytical Chemistry 2015, DOI: 10.1021/acs.analchem.5b00140 when publishing results obtained with that engine. '
          'Copyright and licence notices are retained in the LICENSES folder.')

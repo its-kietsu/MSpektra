@@ -1,7 +1,7 @@
 """
 PDA (photodiode array, UV/Vis) data from Shimadzu LabSolutions .lcd files.
 
-Clean-room decoder, written for LCMS Postrun (MS Analysis) from the structure of the file
+Clean-room decoder, written for LCMS Analysis (MSpektra) from the structure of the file
 itself (no LabSolutions code or third-party decoder was used).
 
 Layout of the OLE stream "PDA 3D Raw Data/3D Raw Data", one record per
