@@ -10,6 +10,23 @@ import ms_kinetics as N
 def number(value):
     return 'unavailable' if not math.isfinite(value) else '%.8g' % value
 
+
+# the models of the Model list: key, name, native model (None: the best of the decay orders)
+CHOICES = (('auto', 'Best order (automatic)', None), ('zero', 'Zero order', 0), ('first', 'First order', 1),
+           ('second', 'Second order', 3), ('rise', 'Rise to a final level', 2))
+AUTO_MODELS = (0, 1, 3)  # compared by Best order
+OLD_CHOICE = {0: 1, 1: 2, 2: 4}  # Model list position saved by projects before 4.1: straight line, decay, rise
+FIT_COLOURS = {0: '#7B8594', 1: '#0072B2', 3: '#009E73', 2: '#CC79A7'}
+
+
+def best_fit(fits):
+    """The fit with the lowest AICc (AIC when AICc is not defined for one of them: too few points)."""
+    ok = [f for f in fits if f[1] is not None]
+    if not ok:
+        return None
+    key = 'aicc' if all(math.isfinite(f[1].aicc) for f in ok) else 'aic'
+    return min(ok, key=lambda f: getattr(f[1], key))
+
 class KineticsFrame(wx.Frame):
     """Owns a snapshot of the selected region; changing Compare cannot alter a saved fit."""
     def __init__(self, tab, rows, relative, metadata):
@@ -27,8 +44,9 @@ class KineticsFrame(wx.Frame):
         self.y = np.asarray([r['relative'] if relative else r['area'] for r in rows], dtype=float)
         self.fit_result = None
         self.fit_data = None
-        self.model = wx.Choice(self, choices=['Straight line', 'Exponential decay', 'Rise to a final level'])
-        self.model.SetSelection(1)
+        self.fits = []  # Best order: [(native model, result or None, fitted, residuals, xx, yy)] of every order
+        self.model = wx.Choice(self, choices=[c[1] for c in CHOICES])
+        self.model.SetSelection(0)
         self.offset = wx.CheckBox(self, label='Fit baseline')
         self.offset.SetValue(True)
         self.unit = wx.TextCtrl(self, value='', size=self.FromDIP(wx.Size(75, -1)))
@@ -62,8 +80,8 @@ class KineticsFrame(wx.Frame):
         from deconv_tab import TableCard
         self.result_side = wx.Panel(self.body)
         self.result_side.SetBackgroundColour(C['bg'])
-        self.result_side.SetMinSize(self.FromDIP(wx.Size(310, -1)))
-        self.results_card = TableCard(self.result_side, 'Fit results', [('Result', 170), ('Value', 100)],
+        self.result_side.SetMinSize(self.FromDIP(wx.Size(340, -1)))
+        self.results_card = TableCard(self.result_side, 'Fit results', [('Result', 170), ('Value', 150)],
                                       empty='Press Fit')
         self.equation = wx.StaticText(self.result_side)
         self.equation.SetFont(ui_font(9))
@@ -98,22 +116,40 @@ class KineticsFrame(wx.Frame):
         self.charts.GetSizer().SetDimension(0, 0, w, height)
         event.Skip()
 
+    def choice_key(self):
+        return CHOICES[max(0, self.model.GetSelection())][0]
+
+    def set_choice(self, value):
+        """The Model list from a project: its key (4.1), or its position in the list of earlier versions."""
+        keys = [c[0] for c in CHOICES]
+        if isinstance(value, str) and value in keys:
+            self.model.SetSelection(keys.index(value))
+        elif isinstance(value, int):
+            self.model.SetSelection(OLD_CHOICE.get(value, 0))
+
+    def equation_text(self):
+        native = CHOICES[max(0, self.model.GetSelection())][2]
+        if native is None and self.fit_result is not None:
+            native = self.fit_result.model
+        return N.EQUATIONS[native] if native is not None else ''
+
     def on_settings(self, e=None):
-        model = self.model.GetSelection()
-        self.offset.Enable(model != 0)
-        self.offset.SetLabel('Fit final level' if model == 1 else 'Fit starting level')
-        self.equation.SetLabel(N.EQUATIONS[model])
-        self.equation.Wrap(self.FromDIP(290))
+        key = self.choice_key()
+        self.offset.Enable(key != 'zero')
+        self.offset.SetLabel('Fit starting level' if key == 'rise' else 'Fit final level')
         self.clear_result('Press Fit')
+        self.equation.SetLabel(self.equation_text())
+        self.equation.Wrap(self.FromDIP(290))
 
     def on_result_size(self, event):
-        self.equation.SetLabel(N.EQUATIONS[self.model.GetSelection()])
+        self.equation.SetLabel(self.equation_text())
         self.equation.Wrap(max(10, self.result_side.GetClientSize().width - self.FromDIP(16)))
         self.result_side.Layout()
         event.Skip()
 
     def clear_result(self, message):
         self.fit_result = self.fit_data = None
+        self.fits = []
         self.export_button.Enable(False)
         self.summary.ChangeValue(message)
         self.results_card.set_rows([], message)
@@ -139,21 +175,56 @@ class KineticsFrame(wx.Frame):
         unit = self.unit.GetValue().strip()
         return self.xlabel + (' (%s)' % unit if unit else '')
 
+    def _fit_one(self, native):
+        result, fitted, residuals = N.fit(self.x, self.y, native, self.offset.GetValue())
+        xx = np.linspace(float(min(self.x)), float(max(self.x)), 401)
+        return native, result, fitted, residuals, xx, N.predict(result, xx)
+
     def on_fit(self, e=None):
         self.clear_result('Fitting…')
+        native = CHOICES[max(0, self.model.GetSelection())][2]
         try:
-            result, fitted, residuals = N.fit(self.x, self.y, self.model.GetSelection(), self.offset.GetValue())
-            xx = np.linspace(float(min(self.x)), float(max(self.x)), 401)
-            yy = N.predict(result, xx)
+            if native is None:  # every decay order; the one with the lowest AICc is the fit
+                fits, errors = [], []
+                for m in AUTO_MODELS:
+                    try:
+                        fits.append(self._fit_one(m))
+                    except (ValueError, RuntimeError) as ex:
+                        fits.append((m, None, None, None, None, None))
+                        errors.append('%s: %s' % (N.MODELS[m], ex))
+                best = best_fit(fits)
+                if best is None:
+                    raise ValueError('\n'.join(errors))
+            else:
+                fits, best = [], self._fit_one(native)
         except (ValueError, RuntimeError, OSError) as ex:
             self.summary.ChangeValue('Cannot fit: %s' % ex)
             self.results_card.set_rows([], 'Fit failed')
             wx.MessageBox(str(ex), 'Kinetic fitting', wx.OK | wx.ICON_INFORMATION, parent=self)
             return None
+        _m, result, fitted, residuals, xx, yy = best
+        self.fits = fits
         self.fit_result = result
         self.fit_data = (fitted, residuals, xx, yy)
-        self.card.ax.plot(xx, yy, color='#E56B32', lw=1.6, label='Fit')
+        self.draw_fit()
+        self.show_summary()
+        self.export_button.Enable(True)
+        return result
+
+    def draw_fit(self):
+        """The fit (and with Best order the other orders, dashed) over the points, and its differences."""
+        result = self.fit_result
+        fitted, residuals, xx, yy = self.fit_data
+        for m, r, _f, _res, fx, fy in self.fits:
+            if r is not None and r is not result:
+                self.card.ax.plot(fx, fy, color=FIT_COLOURS.get(m, '#7B8594'), lw=1.0, ls=(0, (4, 3)),
+                                  label=N.MODELS[m])
+        self.card.ax.plot(xx, yy, color=FIT_COLOURS.get(result.model, '#E56B32'), lw=1.6,
+                          label=N.MODELS[result.model] + (' (best)' if self.fits else ''))
         self.card.ax.legend(loc='best', fontsize=8)
+        self.equation.SetLabel(self.equation_text())
+        self.equation.Wrap(max(10, self.result_side.GetClientSize().width - self.FromDIP(16)))
+        self.result_side.Layout()
         self.residual_card.ax.scatter(self.x, residuals, color=C['accent'], s=25)
         self.residual_card.extra_scale = [(self.x, residuals)]
         self.residual_card.ax.axhline(0, color=U.INK, lw=.7)
@@ -162,23 +233,35 @@ class KineticsFrame(wx.Frame):
         self.card.ax.autoscale_view()
         self.residual_card.ax.update_datalim(np.column_stack((self.x, residuals)))
         self.residual_card.ax.autoscale_view()
-        self.show_summary()
-        self.export_button.Enable(True)
         self.card.draw();self.residual_card.draw()
-        return result
 
     def parameters(self):
         r = self.fit_result
         unit = self.unit.GetValue().strip() or 'X unit'
-        name = ('Starting value', 'Final value', 'Starting value')[r.model]
+        name = ('Starting value', 'Final value', 'Starting value', 'Final value')[r.model]
         items = [(name, r.values[0], r.errors[0], self.ylabel)]
         if r.model == 0:
             items.append(('Slope', r.values[1], r.errors[1], self.ylabel + ' / ' + unit))
+        elif r.model == 3:  # k in 1 / (signal x X): the rate k x A is not a constant of a second order decay
+            items += [('Signal change', r.values[1], r.errors[1], self.ylabel),
+                      ('Rate constant k', r.k2, r.k2_error, '1 / (%s × %s)' % (self.ylabel, unit)),
+                      ('Half-life', r.half_life, r.half_life_error, unit)]
         else:
             items += [('Signal change', r.values[1], r.errors[1], self.ylabel),
-                      ('Rate', r.values[2], r.errors[2], '1 / ' + unit),
+                      ('Rate constant k', r.values[2], r.errors[2], '1 / ' + unit),
                       ('Half-life' if r.model == 1 else 'Half-rise time', r.half_life, r.half_life_error, unit)]
         return items
+
+    def compared(self):
+        """Best order: (name, R², AICc or AIC, best) of every order fitted."""
+        out = []
+        key = 'aicc' if all(math.isfinite(f[1].aicc) for f in self.fits if f[1] is not None) else 'aic'
+        for m, r, *_ in self.fits:
+            if r is None:
+                out.append((N.MODELS[m], None, None, False))
+            else:
+                out.append((N.MODELS[m], r.r2, getattr(r, key), r is self.fit_result))
+        return key.upper().replace('AICC', 'AICc'), out
 
     def show_summary(self):
         r = self.fit_result
@@ -186,12 +269,14 @@ class KineticsFrame(wx.Frame):
             return
         unit = self.unit.GetValue().strip()
         time_suffix = (' (%s)' % unit) if unit else ''
-        rows = [('Model', self.model.GetStringSelection()), ('Data points', str(r.count)),
+        rows = [('Model', N.MODELS[r.model]),
+                ('Reaction order', '%d%s' % (N.ORDERS[r.model], ' (best fit)' if self.fits else '')),
+                ('Data points', str(r.count)),
                 ('First X value' + time_suffix, number(r.origin)),
                 ('Fit quality (R²)', number(r.r2)), ('Fit error (RMSE)', number(r.rmse))]
         for name, value, error, _ in self.parameters():
             suffix = time_suffix if name in ('Half-life', 'Half-rise time') else (
-                (' (1/%s)' % unit) if name == 'Rate' and unit else '')
+                (' (1/%s)' % unit) if name == 'Rate constant k' and unit and r.model != 3 else '')
             rows.append((name + suffix, number(value)))
             if math.isfinite(error):
                 rows.append((name + ' uncertainty' + suffix, number(error)))
@@ -201,6 +286,11 @@ class KineticsFrame(wx.Frame):
             rows.append(('Uncertainty', 'Unavailable'))
         if r.warnings & 4:
             rows.append(('Time points', 'More needed'))
+        if self.fits:
+            crit, comp = self.compared()
+            for name, r2, ic, best in comp:
+                rows.append((name + (' (best)' if best else ''),
+                             'no fit' if r2 is None else 'R² %.4f, %s %.1f' % (r2, crit, ic)))
         self.results_card.set_rows(rows)
         self.summary.ChangeValue('\n'.join('%s: %s' % row for row in rows))
 
@@ -218,7 +308,9 @@ class KineticsFrame(wx.Frame):
                 if not path.lower().endswith('.xlsx'):
                     path += '.xlsx'
         r = self.fit_result
-        meta = self.metadata + [('Model', N.MODELS[r.model]), ('Equation', N.EQUATIONS[r.model]),
+        meta = self.metadata + [('Model', N.MODELS[r.model]), ('Reaction order', N.ORDERS[r.model]),
+            ('Order chosen', 'automatically (lowest AICc)' if self.fits else 'by the user'),
+            ('Equation', N.EQUATIONS[r.model]),
             ('X axis', self.xlabel), ('X unit', self.unit.GetValue().strip() or 'unspecified X unit'),
             ('Y', self.ylabel), ('First X value', r.origin), ('Data points', r.count),
             ('Fitted parameters', r.parameters), ('Residual degrees of freedom', r.dof),
@@ -226,6 +318,12 @@ class KineticsFrame(wx.Frame):
             ('R squared', r.r2), ('RMSE', r.rmse), ('Residual sum of squares', r.sse)]
         for name, v, se, unit in self.parameters():
             meta += [(name, v), (name + ' uncertainty', se if math.isfinite(se) else 'unavailable'), (name + ' unit', unit)]
+        meta += [('AIC', r.aic), ('AICc', r.aicc if math.isfinite(r.aicc) else 'unavailable')]
+        if self.fits:
+            crit, comp = self.compared()
+            for name, r2, ic, best in comp:
+                meta += [(name + ' R squared', r2 if r2 is not None else 'no fit'),
+                         (name + ' ' + crit, ic if ic is not None else 'no fit')]
         meta += [('Fit warnings', ' '.join(N.warnings(r)) or 'none'),
                  ('Method', 'Least squares')]
         fitted, residuals, _, _ = self.fit_data

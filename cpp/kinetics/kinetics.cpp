@@ -7,18 +7,30 @@
 #include <stdexcept>
 #include <vector>
 #define API extern "C" __declspec(dllexport)
+// Models: 0 straight line (zero order), 1 first-order decay, 2 first-order rise, 3 second-order decay
+// y = C + A / (1 + q (X - X0)), with q = k A (k: the second-order rate constant, in 1 / (signal x X)).
 struct Result {
     int model, count, parameters, dof, warnings;
     double origin, values[3], errors[3], sse, rmse, r2, half_life, half_life_error;
+    // ABI 2: reaction order, Akaike criteria (to compare models on the same data; AICc NaN when n <= p + 1),
+    // the second-order rate constant k = q / A and its uncertainty (NaN for the other models)
+    int order, reserved;
+    double aic, aicc, k2, k2_error;
 };
 static thread_local char last_error[256];
 static constexpr double missing_value = std::numeric_limits<double>::quiet_NaN();
-API unsigned kin_abi() { return 1; }
+API unsigned kin_abi() { return 2; }
 API unsigned kin_result_size() { return sizeof(Result); }
 API const char* kin_error() { return last_error; }
 struct Trial { double c=0, a=0, sse=0; };
 static double shape(int model, double q, double t) {
+    if(model==3) return 1.0/(1.0+q*t);
     return model==1 ? std::exp(-q*t) : -std::expm1(-q*t);
+}
+// d shape / d q
+static double dshape(int model, double q, double t) {
+    if(model==3) { double d=1.0+q*t; return -t/(d*d); }
+    return (model==1?-1:1)*t*std::exp(-q*t);
 }
 // Solve C and A exactly at each log-rate. Centered sums avoid intercept cancellation.
 static Trial trial(const std::vector<double>& t, const std::vector<double>& y,
@@ -56,7 +68,7 @@ API int kin_fit(const double* x, const double* y, int n, int model, int offset,
     try {
         if(!x||!y||!result||!fitted||!residuals) throw std::runtime_error("Missing fit buffers");
         if(n<2||n>100000) throw std::runtime_error("Provide between 2 and 100000 observations");
-        if(model<0||model>2||(offset!=0&&offset!=1)) throw std::runtime_error("Invalid model or baseline option");
+        if(model<0||model>3||(offset!=0&&offset!=1)) throw std::runtime_error("Invalid model or baseline option");
         int p=model==0?2:(offset?3:2);
         if(n<=p) throw std::runtime_error("More observations than fitted parameters are required");
         std::vector<double> sorted(x,x+n);
@@ -113,7 +125,10 @@ API int kin_fit(const double* x, const double* y, int n, int model, int offset,
         out.values[0]=c*ys+((model==0||offset)?ymin:0);
         out.values[1]=model==0?a*ys/span:a*ys;
         out.values[2]=model==0?missing_value:q/span;
-        if(model!=0) out.half_life=std::log(2.)/out.values[2];
+        // half of the change: ln 2 / k (first order), 1 / (k A) (second order)
+        if(model!=0) out.half_life=(model==3?1.0:std::log(2.))/out.values[2];
+        out.order=model==0?0:(model==3?2:1);
+        out.k2=out.k2_error=missing_value;
         double info[3][3]={}, inv[3][3]={};
         long double sse=0, normalized_sse=0, mean=0;
         for(int i=0;i<n;++i) mean+=y[i];
@@ -126,10 +141,15 @@ API int kin_fit(const double* x, const double* y, int n, int model, int offset,
             double nr=residuals[i]/ys; normalized_sse+=(long double)nr*nr;
             sst+=(y[i]-mean)*(y[i]-mean);
             double j[3]={1,f,0};
-            if(model) { j[2]=(model==1?-1:1)*a*t[i]*std::exp(-q*t[i]); if(!offset) {j[0]=j[1];j[1]=j[2];} }
+            if(model) { j[2]=a*dshape(model,q,t[i]); if(!offset) {j[0]=j[1];j[1]=j[2];} }
             for(int u=0;u<p;++u) for(int w=0;w<p;++w) info[u][w]+=j[u]*j[w];
         }
         out.sse=double(sse);out.rmse=double(std::sqrt(sse/n));out.r2=1-double(sse/sst);
+        {   // Akaike: n ln(SSE/n) + 2p (+ the small sample term); a perfect fit is held at a tiny SSE
+            double s=std::max(double(sse/n), 1e-300);
+            out.aic=n*std::log(s)+2.0*p;
+            out.aicc=(n-p-1>0)?out.aic+2.0*p*(p+1)/double(n-p-1):missing_value;
+        }
         if(!std::isfinite(out.sse)||!std::isfinite(out.rmse)||!std::isfinite(out.r2))
             throw std::runtime_error("Numerical scale exceeded; rescale the input values");
         bool ok=inverse(info,p,inv);
@@ -143,9 +163,16 @@ API int kin_fit(const double* x, const double* y, int n, int model, int offset,
                 out.errors[1]=e[offset?1:0]*ys;out.errors[2]=e[offset?2:1]/span;
                 out.half_life_error=out.half_life*out.errors[2]/out.values[2];
                 if(out.errors[2]>=out.values[2]) warnings|=4;
+                if(model==3) {  // k = q / A, with the covariance of A and q
+                    int ia=offset?1:0, iq=offset?2:1;
+                    double ra=out.errors[1]/out.values[1], rq=out.errors[2]/out.values[2];
+                    double cov=inv[ia][iq]*sigma/(a*q);  // relative covariance (scale factors cancel)
+                    out.k2_error=std::abs(out.values[2]/out.values[1])*std::sqrt(std::max(0.,ra*ra+rq*rq-2*cov));
+                }
             }
         } else warnings|=2;
         for(int i=0;i<3;++i) if(!std::isfinite(out.errors[i]) && (model!=0||i<2)) warnings|=2;
+        if(model==3) out.k2=out.values[2]/out.values[1];
         out.warnings=warnings;
         for(int i=0;i<3;++i) if(i!=2||model!=0)
             if(!std::isfinite(out.values[i])) throw std::runtime_error("Fitted parameters exceed numerical range");
@@ -156,7 +183,7 @@ API int kin_fit(const double* x, const double* y, int n, int model, int offset,
 // Prediction is native too, including the dense curve shown/exported by the interface.
 API int kin_predict(const Result* r, const double* x, int n, double* y) {
     last_error[0]=0;
-    if(!r||!x||!y||n<1||r->model<0||r->model>2) { std::strcpy(last_error,"Invalid prediction input");return 1; }
+    if(!r||!x||!y||n<1||r->model<0||r->model>3) { std::strcpy(last_error,"Invalid prediction input");return 1; }
     for(int i=0;i<n;++i) {
         double dt=x[i]-r->origin;
         y[i]=r->values[0]+r->values[1]*(r->model==0?dt:shape(r->model,r->values[2],dt));

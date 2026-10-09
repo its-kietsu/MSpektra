@@ -3307,6 +3307,14 @@ class TabBase(wx.Panel):
         self.tool = "select"
         self.side = SidePanel(self, 318)
 
+    def tree_changed(self):
+        """The traces or spectra of this view changed: the tree of the files panel is drawn again (once, after
+        the change)."""
+        fp = getattr(self.frame, "files", None)
+        if fp is not None and not getattr(fp, "_tree_due", False):
+            fp._tree_due = True
+            wx.CallAfter(fp.tree_refresh)
+
     def status(self, text):
         try:
             self.frame.SetStatusText(text, 0)
@@ -4155,6 +4163,7 @@ class MSTab(TabBase):
         self.data = None
         self.cols = []
         self.xics = {}
+        self.xic_hidden = set()  # (event, xic_key) of mass chromatograms hidden in the files panel tree
         self.xic_views = []
         self.xic_rows = []
         self._xic_sig = None
@@ -4347,9 +4356,21 @@ class MSTab(TabBase):
         self.scroller.refit()
         self.views = [c["view"] for c in self.cols] + self.xic_views
 
+    def xic_shown(self, e):
+        """The mass chromatograms of an event that are drawn (not hidden in the files panel tree)."""
+        return [x for x in self.xics.get(e, []) if (e, xic_key(x)) not in self.xic_hidden]
+
+    def set_xic_hidden(self, e, x, hidden):
+        k = (e, xic_key(x))
+        if hidden:
+            self.xic_hidden.add(k)
+        else:
+            self.xic_hidden.discard(k)
+        self.on_update()
+
     def _build_xic_rows(self):
         stacked = self.xic_mode.GetSelection() == 0
-        lists = [list(self.xics.get(c["e"], [])) for c in self.cols]
+        lists = [self.xic_shown(c["e"]) for c in self.cols]
         sig = (stacked, tuple(tuple(xic_key(x) for x in l) for l in lists))
         if sig == self._xic_sig:
             return
@@ -4424,6 +4445,7 @@ class MSTab(TabBase):
         return _pol_short(self.pol(e), e, self.data.events if self.data else None)
 
     def on_update(self, e=None):
+        self.tree_changed()
         if not self.data:
             self.plot_chroms()
             return
@@ -4455,7 +4477,7 @@ class MSTab(TabBase):
                 lab = "TIC" if k == 0 else "BPC"
                 traces.append({"name": "%s %s" % (lab, short), "label": lab, "t": t, "y": LI.smooth(y, n),
                                "key": "main:%d" % ev})
-            xl = self.xics.get(ev, [])
+            xl = self.xic_shown(ev)
             labs = [("m/z " + self.PIN_FMT) % x["mz"] for x in xl]
             for j, x in enumerate(xl):
                 t, y = self.data.chromatogram(ev, "xic", x["mz"], xic_tol(x))
@@ -4701,12 +4723,14 @@ class MSTab(TabBase):
 
     def remove_xic(self, e, x, update=True):
         self.xics[e] = [v for v in self.xics.get(e, []) if xic_key(v) != xic_key(x)]
+        self.xic_hidden.discard((e, xic_key(x)))
         self._set_xic_field(e)
         if update:
             self.on_update()
 
     def clear_xic(self, e):
         self.xics[e] = []
+        self.xic_hidden = set(k for k in self.xic_hidden if k[0] != e)
         self._set_xic_field(e)
         self.on_update()
 
@@ -4940,6 +4964,7 @@ class MSTab(TabBase):
         return state["out"]
 
     def plot_spec(self, col, keep_view=False):
+        self.tree_changed()
         card = col["spec_card"]
         ax = card.ax
         view = ax.get_xlim() if (keep_view and card.full) else None
@@ -5577,6 +5602,7 @@ class PDATab(TabBase):
 
     # ------------------------------------------------------ chromatogram
     def on_update(self, e=None, keep=True):
+        self.tree_changed()
         if self.pda is None:
             self.view.traces = []
             self.plot_chroms()
@@ -5708,6 +5734,7 @@ class PDATab(TabBase):
         self.plot_uv(keep_view=True)
 
     def plot_uv(self, keep_view=False):
+        self.tree_changed()
         card = self.spec_card
         ax = card.ax
         view = ax.get_xlim() if (keep_view and card.full) else None
@@ -6110,16 +6137,17 @@ class _VChip(object):
 
 
 class FilesPanel(wx.Panel):
-    """Left panel of an analysis window, as the data browser of LabSolutions:
-    the open files (click to show one, x or Ctrl+W to close it, + to open
-    more), under each file its deconvolution results as a tree (the file
-    shown is expanded, the others fold with the arrow next to their name;
-    a result: click to show it in the table and scroll to its row, eye to
-    hide it or show it again, x to close it) and below them the data files
-    of the folder, newest first with date, size and sample name (double
-    click to open). The results tell the panel when they change (see
-    watch_results); nothing is polled."""
-    ROW, HEAD, FROW, FHEAD, BROW = 46, 38, 36, 34, 36
+    """Left panel of an analysis window, an analysis tree as in Bruker DataAnalysis: the open files (click to
+    show one, x or Ctrl+W to close it, + to open more); under the file shown (or one unfolded with its arrow)
+    its chromatograms (eye: hide a mass chromatogram or show it again, x: remove it), spectra, PDA traces and
+    deconvolution results (eye, x; Up, Down, Space, Delete) and below them the data files of the folder,
+    newest first (double click to open). Drag its right edge to make it wider or narrower (the width is kept).
+    The views and results tell the panel when they change (tree_changed, watch_results); nothing is polled."""
+    HEAD, ROW, LROW, FHEAD, FROW, GRIP = 30, 24, 21, 28, 21, 5  # heights and the grip at the right edge (DIP)
+    WIDTH, WIDTH_MIN, WIDTH_MAX = 150, 110, 560
+    GROUP_COL = {"Chromatograms": "#0BA064", "Spectra": "#C99A1E", "PDA": "#E0602F", "Deconvolution": "#8E5BD0"}
+    BG, BAND, BAND_LINE, EDGE = "#FFFFFF", "#F1F4F8", "#E3E7ED", "#B7CBEE"
+    SEL, HOT = "#DCE7FB", "#F1F4F9"
 
     def __init__(self, parent, frame):
         wx.Panel.__init__(self, parent, style=wx.BORDER_NONE | wx.WANTS_CHARS)
@@ -6128,15 +6156,26 @@ class FilesPanel(wx.Panel):
         self.hover, self.hover_x, self.top, self.fsel = -1, False, 0, None
         self.hover_part = None  # "eye", "x" or "chev" of the item under the mouse
         self.kcur = None  # (deconvolution panel, result) with the keyboard cursor
+        self.nsel = None  # key of the trace or spectrum clicked last
         self._acting = False  # a change made here (the cursor stays) rather than elsewhere
+        self._drag = None  # (mouse x on the screen, width) while the right edge is dragged
+        self._tree_due = False
         self.folder, self.fitems, self._fsig, self._info = "", [], None, {}
-        self.collapsed = bool(settings().get("files_collapsed", False))
+        st = settings()
+        self.collapsed = bool(st.get("files_collapsed", False))
+        try:
+            self.width_dip = int(st.get("files_width") or self.WIDTH)
+        except (TypeError, ValueError):
+            self.width_dip = self.WIDTH
+        self.width_dip = min(max(self.width_dip, self.WIDTH_MIN), self.WIDTH_MAX)
         self._apply_width()
         self.Bind(wx.EVT_PAINT, self._paint)
         self.Bind(wx.EVT_SIZE, lambda e: (self._clamp_top(), self.Refresh(), e.Skip()))
         self.Bind(wx.EVT_MOTION, self._motion)
         self.Bind(wx.EVT_LEAVE_WINDOW, self._leave)
         self.Bind(wx.EVT_LEFT_DOWN, self._click)
+        self.Bind(wx.EVT_LEFT_UP, self._up)
+        self.Bind(wx.EVT_MOUSE_CAPTURE_LOST, lambda e: self._end_drag())
         self.Bind(wx.EVT_LEFT_DCLICK, self._dclick)
         self.Bind(wx.EVT_RIGHT_UP, self._menu)
         self.Bind(wx.EVT_MOUSEWHEEL, self._wheel)
@@ -6147,6 +6186,15 @@ class FilesPanel(wx.Panel):
         self.Bind(wx.EVT_TIMER, lambda e: self.refresh_folder(), self.timer)
         self.timer.Start(15000)  # new runs of a sequence appear by themselves
         self.Bind(wx.EVT_WINDOW_DESTROY, self._destroyed)
+
+    def tree_refresh(self):
+        """A view changed its traces or spectra (TabBase.tree_changed)."""
+        self._tree_due = False
+        try:
+            self._clamp_top()
+            self.Refresh()
+        except RuntimeError:  # (the window closed meanwhile)
+            pass
 
     def _destroyed(self, e):
         if e.GetEventObject() is self:
@@ -6206,8 +6254,17 @@ class FilesPanel(wx.Panel):
 
     # geometry
     def _apply_width(self):
-        """Width (narrower on a small screen); True when it changed."""
-        w = self.FromDIP(24) if self.collapsed else screen_dip(self, 220, 184)
+        """Width: the one dragged (at most 45 % of the window), 24 DIP when folded; True when it changed."""
+        if self.collapsed:
+            w = self.FromDIP(24)
+        else:
+            w = self.FromDIP(self.width_dip)
+            try:
+                fw = wx.GetTopLevelParent(self).GetClientSize()[0]
+                if fw > 200:
+                    w = min(w, int(fw * 0.45))
+            except Exception:
+                pass
         if self.GetMinSize().width == w and self.GetSize()[0] == w:
             return False
         self.SetMinSize(wx.Size(w, -1))
@@ -6217,63 +6274,113 @@ class FilesPanel(wx.Panel):
     def rows(self):
         return [d for d in self.frame.docs if d.path or d.loading]
 
-    def _items(self):
-        """The open files and, under the expanded ones, their results:
-        ([(kind, file index, file, (panel, result) or None, rect)], y below
-        the last one), kind "row" (a file) or "res" (a result); scrolled."""
+    @staticmethod
+    def _sample(d):
+        try:
+            return ((d.attrs.get("sample_info") or {}).get("sample_name") or "").strip()
+        except Exception:
+            return ""
+
+    def _lines(self, d):
+        """The tree under a file: [("grp", (name, count)), ("node", node), ("res", (panel, result))], a node a dict
+        (key, label, tip, page; shown and toggle for an eye, remove for an x)."""
+        chrom, spec, pda = [], [], []
+        for _, pg in getattr(d, "pages", None) or []:
+            try:
+                if hasattr(pg, "xics") and hasattr(pg, "cols") and getattr(pg, "data", None) is not None:
+                    try:
+                        k = pg.kind.GetSelection()
+                    except Exception:
+                        k = 0
+                    for col in pg.cols:
+                        e = col["e"]
+                        sh = pg.ev_short(e)
+                        try:
+                            evl = pg.data.event_label(e)
+                        except Exception:
+                            evl = ""
+                        if k in (0, 1):
+                            chrom.append({"key": ("main", id(pg), e), "page": pg, "tip": evl,
+                                          "label": ("%s %s" % ("TIC" if k == 0 else "BPC", sh)).strip()})
+                        for x in pg.xics.get(e, []):
+                            hid = (e, xic_key(x)) in pg.xic_hidden
+                            chrom.append({"key": ("xic", id(pg), e, xic_key(x)), "page": pg,
+                                          "label": (("m/z " + pg.PIN_FMT) % x["mz"] + (" " + sh if sh else "")),
+                                          "tip": "%s, window %s" % (evl, xic_window_text(x)), "shown": not hid,
+                                          "toggle": lambda pg=pg, e=e, x=x, h=hid: pg.set_xic_hidden(e, x, not h),
+                                          "remove": lambda pg=pg, e=e, x=x: pg.remove_xic(e, x)})
+                    for col in pg.cols:
+                        if col.get("spec") is not None:
+                            sh = pg.ev_short(col["e"])
+                            desc = col.get("desc") or ""
+                            spec.append({"key": ("spec", id(pg), col["e"]), "page": pg, "tip": desc,
+                                         "label": ("MS %s %s" % (sh, desc.split(",")[0])).replace("  ", " ").strip()})
+                elif hasattr(pg, "uv_desc") and getattr(pg, "pda", None) is not None:
+                    if pg.wl_sel is not None:
+                        pda.append({"key": ("pdawl", id(pg)), "page": pg, "label": "%.0f nm" % pg.wl_sel,
+                                    "tip": "PDA chromatogram at %.1f nm" % pg.wl_sel})
+                    if pg.uv is not None:
+                        pda.append({"key": ("uv", id(pg)), "page": pg, "tip": pg.uv_desc,
+                                    "label": ("UV " + pg.uv_desc.split(",")[0]).strip()})
+            except Exception as ex:  # (a view being built or closed)
+                _log("files tree: %s" % ex)
         out = []
-        r, br = self.FromDIP(self.ROW), self.FromDIP(self.BROW)
-        x, w, ind = self.FromDIP(6), self.GetClientSize()[0] - self.FromDIP(12), self.FromDIP(15)
+        for name, nodes in (("Chromatograms", chrom), ("Spectra", spec), ("PDA", pda)):
+            if nodes:
+                out.append(("grp", (name, len(nodes))))
+                out += [("node", n) for n in nodes]
+        bs = self._branches(d)
+        if bs:
+            out.append(("grp", ("Deconvolution", len(bs))))
+            out += [("res", b) for b in bs]
+        return out
+
+    def _items(self):
+        """The open files and, under the expanded ones, their tree: ([(kind, file index, file, payload, rect)],
+        y below the last one), kind "row" (a file), "grp", "node" or "res"; scrolled."""
+        out = []
+        r, lr = self.FromDIP(self.ROW), self.FromDIP(self.LROW)
+        x, w = self.FromDIP(4), self.GetClientSize()[0] - self.FromDIP(8 + self.GRIP)
+        ind = {"grp": self.FromDIP(14), "node": self.FromDIP(26), "res": self.FromDIP(26)}
         y = self.FromDIP(self.HEAD) - self.top
         rows = self.rows()
         for i, d in enumerate(rows):
-            out.append(("row", i, d, None, wx.Rect(x, y, w, r - self.FromDIP(4))))
+            out.append(("row", i, d, None, wx.Rect(x, y, w, r)))
             y += r
-            if self._expanded(d):
-                bs = self._branches(d)
-                for b in bs:
-                    out.append(("res", i, d, b, wx.Rect(x + ind, y, w - ind, br - self.FromDIP(3))))
-                    y += br
-                if bs:
-                    y += self.FromDIP(6)
+            if self._expanded(d) and not d.loading:
+                for kind, pl in self._lines(d):
+                    out.append((kind, i, d, pl, wx.Rect(x + ind[kind], y, w - ind[kind], lr)))
+                    y += lr
+                y += self.FromDIP(3)
         if not rows:
             y += r  # the hint takes the place of one file
         return out, y
 
-    def _row_rect(self, i):
-        for kind, k, d, b, rr in self._items()[0]:
-            if kind == "row" and k == i:
-                return rr
-        r, hd = self.FromDIP(self.ROW), self.FromDIP(self.HEAD)
-        return wx.Rect(self.FromDIP(6), hd + i * r - self.top, self.GetClientSize()[0] - self.FromDIP(12),
-                       r - self.FromDIP(4))
-
     def _fhead_y(self, end=None):
-        return (self._items()[1] if end is None else end) + self.FromDIP(8)
+        return (self._items()[1] if end is None else end) + self.FromDIP(6)
 
     def _frow_rect(self, i, fhead=None):
         y0 = (self._fhead_y() if fhead is None else fhead) + self.FromDIP(self.FHEAD)
         r = self.FromDIP(self.FROW)
-        return wx.Rect(self.FromDIP(6), y0 + i * r, self.GetClientSize()[0] - self.FromDIP(12), r - self.FromDIP(2))
+        return wx.Rect(self.FromDIP(4), y0 + i * r, self.GetClientSize()[0] - self.FromDIP(8 + self.GRIP), r)
 
     def _x_rect(self, rr):
-        s = self.FromDIP(18)
-        return wx.Rect(rr.x + rr.width - s - self.FromDIP(6), rr.y + (rr.height - s) // 2, s, s)
+        s = self.FromDIP(16)
+        return wx.Rect(rr.x + rr.width - s - self.FromDIP(3), rr.y + (rr.height - s) // 2, s, s)
 
     def _chev_rect(self, rr):
-        """Fold arrow of a file with results, left of its x."""
-        s = self.FromDIP(18)
-        xr = self._x_rect(rr)
-        return wx.Rect(xr.x - s - self.FromDIP(2), xr.y, s, s)
+        """Fold arrow of a file, at the left of its row."""
+        s = self.FromDIP(14)
+        return wx.Rect(rr.x + self.FromDIP(1), rr.y + (rr.height - s) // 2, s, s)
 
     def _eye_rect(self, rr):
-        s = self.FromDIP(18)
-        return wx.Rect(rr.x + self.FromDIP(4), rr.y + (rr.height - s) // 2, s, s)
+        s = self.FromDIP(16)
+        return wx.Rect(rr.x, rr.y + (rr.height - s) // 2, s, s)
 
     def _full_height(self):
         """Height of everything in the panel (unscrolled)."""
         end = self._items()[1] + self.top
-        return end + self.FromDIP(8) + self.FromDIP(self.FHEAD) + len(self.fitems) * self.FromDIP(self.FROW) + \
+        return end + self.FromDIP(6) + self.FromDIP(self.FHEAD) + len(self.fitems) * self.FromDIP(self.FROW) + \
             self.FromDIP(10)
 
     def _clamp_top(self):
@@ -6285,17 +6392,23 @@ class FilesPanel(wx.Panel):
             self.top = int(room)
 
     def _head_buttons(self, fhead=None):
-        s, y = self.FromDIP(22), self.FromDIP(8)
-        w = self.GetClientSize()[0]
+        s, y = self.FromDIP(20), self.FromDIP(5)
+        w = self.GetClientSize()[0] - (0 if self.collapsed else self.FromDIP(self.GRIP))
         if self.collapsed:
+            w = self.GetClientSize()[0]
             return {"expand": wx.Rect((w - s) // 2, y, s, s),
                     "open": wx.Rect((w - s) // 2, y + s + self.FromDIP(6), s, s)}
-        fy = (self._fhead_y() if fhead is None else fhead) + self.FromDIP(6)
-        return {"collapse": wx.Rect(w - s - self.FromDIP(6), y - self.top, s, s),
-                "open": wx.Rect(w - 2 * s - self.FromDIP(10), y - self.top, s, s),
-                "folder": wx.Rect(w - s - self.FromDIP(6), fy, s, s)}
+        fy = (self._fhead_y() if fhead is None else fhead) + self.FromDIP(4)
+        return {"collapse": wx.Rect(w - s - self.FromDIP(4), y - self.top, s, s),
+                "open": wx.Rect(w - 2 * s - self.FromDIP(6), y - self.top, s, s),
+                "folder": wx.Rect(w - s - self.FromDIP(4), fy, s, s)}
+
+    def _on_grip(self, pt):
+        return not self.collapsed and pt.x >= self.GetClientSize()[0] - self.FromDIP(self.GRIP)
 
     def _hit(self, pt):
+        if self._on_grip(pt):
+            return ("grip", None)
         items, end = self._items() if not self.collapsed else ([], 0)
         fhead = self._fhead_y(end) if not self.collapsed else None
         for k, r in self._head_buttons(fhead).items():
@@ -6303,20 +6416,28 @@ class FilesPanel(wx.Panel):
                 return ("button", k)
         if self.collapsed:
             return (None, None)
-        for kind, i, d, b, rr in items:
+        for kind, i, d, pl, rr in items:
             if not rr.Contains(pt):
                 continue
             if kind == "row":
                 if self._x_rect(rr).Contains(pt):
                     return ("x", i)
-                if self._branches(d) and self._chev_rect(rr).Contains(pt):
+                if self._chev_rect(rr).Contains(pt):
                     return ("chev", i)
                 return ("row", i)
+            if kind == "grp":
+                return ("grp", (i, d))
+            if kind == "node":
+                if pl.get("toggle") and self._eye_rect(rr).Contains(pt):
+                    return ("neye", (i, d, pl))
+                if pl.get("remove") and self._x_rect(rr).Contains(pt):
+                    return ("nx", (i, d, pl))
+                return ("node", (i, d, pl))
             if self._eye_rect(rr).Contains(pt):
-                return ("eye", (i, d) + b)
+                return ("eye", (i, d) + pl)
             if self._x_rect(rr).Contains(pt):
-                return ("rx", (i, d) + b)
-            return ("res", (i, d) + b)
+                return ("rx", (i, d) + pl)
+            return ("res", (i, d) + pl)
         for i in range(len(self.fitems)):
             if self._frow_rect(i, fhead).Contains(pt):
                 return ("frow", i)
@@ -6392,23 +6513,36 @@ class FilesPanel(wx.Panel):
     # drawing
     def _paint(self, e):
         dc = wx.AutoBufferedPaintDC(self)
-        dc.SetBackground(wx.Brush(wx.Colour("#E8EDF5")))
+        dc.SetBackground(wx.Brush(wx.Colour(self.BG)))
         dc.Clear()
         gc = T.crisp(dc)
         w, h = self.GetClientSize()
         k = self.FromDIP(10) / 10.0
-        gc.SetPen(gc.CreatePen(wx.GraphicsPenInfo(wx.Colour(C["line2"])).Width(1)))
-        gc.StrokeLine(w - 0.5, 0, w - 0.5, h)
         items, end = self._items() if not self.collapsed else ([], 0)
         fy = self._fhead_y(end)
         btn = self._head_buttons(fy)
 
-        def button(r, glyph, hot):
+        def header_band(y, hh):
+            gc.SetPen(wx.TRANSPARENT_PEN)
+            gc.SetBrush(wx.Brush(wx.Colour(self.BAND)))
+            gc.DrawRectangle(0, y, w, hh)
+            gc.SetPen(gc.CreatePen(wx.GraphicsPenInfo(wx.Colour(self.BAND_LINE)).Width(1)))
+            gc.StrokeLine(0, y + hh - 0.5, w, y + hh - 0.5)
+            if y > 0:
+                gc.StrokeLine(0, y + 0.5, w, y + 0.5)
+
+        def edge():
+            grip_hot = self.hover == "grip" or self._drag is not None
+            gc.SetPen(gc.CreatePen(wx.GraphicsPenInfo(wx.Colour(C["accent"] if grip_hot else self.EDGE))
+                                   .Width(2 * k if grip_hot else 1)))
+            gc.StrokeLine(w - 0.5 - (k if grip_hot else 0), 0, w - 0.5 - (k if grip_hot else 0), h)
+
+        def button(r, glyph, hot, colour=None):
             if hot:
                 gc.SetPen(wx.TRANSPARENT_PEN)
                 gc.SetBrush(wx.Brush(wx.Colour("#D6DEEB")))
-                gc.DrawRoundedRectangle(r.x, r.y, r.width, r.height, 5 * k)
-            gc.SetPen(gc.CreatePen(wx.GraphicsPenInfo(wx.Colour(C["muted"])).Width(1.6 * k)))
+                gc.DrawRoundedRectangle(r.x, r.y, r.width, r.height, 4 * k)
+            gc.SetPen(gc.CreatePen(wx.GraphicsPenInfo(wx.Colour(colour or C["muted"])).Width(1.5 * k)))
             gc.SetBrush(wx.TRANSPARENT_BRUSH)
             cx, cy, q = r.x + r.width / 2.0, r.y + r.height / 2.0, r.width * 0.22
             if glyph == "+":
@@ -6427,8 +6561,27 @@ class FilesPanel(wx.Panel):
                 gc.DrawRoundedRectangle(cx - q * 1.1, cy - q * 0.6, q * 2.2, q * 1.5, 1.5 * k)
                 gc.StrokeLine(cx - q * 1.1, cy - q * 0.6, cx - q * 0.3, cy - q * 0.6)
 
+        def square(x, cy, colour, s=8.0):
+            gc.SetPen(wx.TRANSPARENT_PEN)
+            gc.SetBrush(wx.Brush(wx.Colour(colour)))
+            gc.DrawRoundedRectangle(x, cy - s * k / 2.0, s * k, s * k, 2 * k)
+            return x + s * k + self.FromDIP(5)
+
+        def band(rr, colour):
+            gc.SetPen(wx.TRANSPARENT_PEN)
+            gc.SetBrush(wx.Brush(wx.Colour(colour)))
+            gc.DrawRoundedRectangle(rr.x, rr.y + k, rr.width, rr.height - 2 * k, 4 * k)
+
+        def text(t, x, rr, font, colour, room):
+            gc.SetFont(font, wx.Colour(colour))
+            t = _ellipsize(gc, t, room)
+            tw, th = gc.GetTextExtent(t)
+            gc.DrawText(t, x, rr.y + (rr.height - th) / 2.0)
+            return tw
+
         hk = self.hover if isinstance(self.hover, str) else None
         if self.collapsed:
+            edge()
             button(btn["expand"], ">", hk == "expand")
             button(btn["open"], "+", hk == "open")
             n = len(self.rows())
@@ -6438,74 +6591,82 @@ class FilesPanel(wx.Panel):
                 tw, th = gc.GetTextExtent(t)
                 gc.DrawText(t, (w - tw) / 2.0, btn["open"].y + btn["open"].height + self.FromDIP(10))
             return
-        gc.SetFont(ui_font(8, 700), wx.Colour(C["muted"]))
-        gc.DrawText("OPEN FILES", self.FromDIP(12), self.FromDIP(13) - self.top)
+        header_band(-self.top, self.FromDIP(self.HEAD) - self.FromDIP(2))
+        gc.SetFont(ui_font(7.8, 700), wx.Colour(C["muted"]))
+        gc.DrawText("ANALYSES", self.FromDIP(9), self.FromDIP(8) - self.top)
         button(btn["open"], "+", hk == "open")
         button(btn["collapse"], "<", hk == "collapse")
         rows = self.rows()
         if not rows:
             gc.SetFont(ui_font(8, 400), wx.Colour(C["faint"]))
-            gc.DrawText("No files open", self.FromDIP(12), self.FromDIP(self.HEAD + 6) - self.top)
-        # tree lines from each expanded file to its results
-        guide = {}
-        for kind, i, d, b, rr in items:
-            if kind == "res":
-                guide.setdefault(i, []).append(rr)
-        gc.SetPen(gc.CreatePen(wx.GraphicsPenInfo(wx.Colour(C["line2"])).Width(1.2 * k)))
-        for i, rects in guide.items():
-            gx = rects[0].x - self.FromDIP(9)
-            y0 = rects[0].y - self.FromDIP(6)
-            y1 = rects[-1].y + rects[-1].height / 2.0
-            if y1 >= 0 and y0 <= h:
-                gc.StrokeLine(gx, y0, gx, y1)
-                for rr in rects:
-                    ym = rr.y + rr.height / 2.0
-                    gc.StrokeLine(gx, ym, rr.x - self.FromDIP(2), ym)
-        for kind, i, d, b, rr in items:
+            gc.DrawText("No files open", self.FromDIP(9), self.FromDIP(self.HEAD + 4) - self.top)
+        for kind, i, d, pl, rr in items:
             if rr.y + rr.height < 0 or rr.y > h:
                 continue
-            if kind == "res":
-                self._paint_result(gc, k, rr, d, b[0], b[1], button)
-                continue
-            active = d is self.frame.active
-            hot = self.hover == ("r", i)
-            if active or hot:
-                gc.SetPen(gc.CreatePen(wx.GraphicsPenInfo(wx.Colour(C["line2"] if active else "#D6DEEB")).Width(1)))
-                gc.SetBrush(wx.Brush(wx.Colour("#FFFFFF" if active else "#F4F7FB")))
-                gc.DrawRoundedRectangle(rr.x, rr.y, rr.width, rr.height, 7 * k)
-            if active:
-                gc.SetPen(wx.TRANSPARENT_PEN)
-                gc.SetBrush(wx.Brush(wx.Colour(C["accent"])))
-                gc.DrawRoundedRectangle(rr.x + 3 * k, rr.y + 9 * k, 3 * k, rr.height - 18 * k, 1.5 * k)
-            nres = len(self._branches(d))
-            room = rr.width - self.FromDIP(40 if not nres else 64)
-            x = rr.x + self.FromDIP(12)
-            gc.SetFont(ui_font(9, 700 if active else 600), wx.Colour(C["text"]))
-            gc.DrawText(_ellipsize(gc, d.file_name, room), x, rr.y + self.FromDIP(6))
-            if d.loading:
-                sub = "reading …"
-            elif any(getattr(pn, "busy", False) for _, pg in d.pages for pn in getattr(pg, "panels", [])):
-                sub = "deconvoluting …"
-            else:
-                sub = d.file_kind
-            if nres and not d.loading and sub != "deconvoluting …":
-                sub = ("%d result%s  ·  " % (nres, "s" if nres != 1 else "")) + (sub or "")
-            gc.SetFont(ui_font(7.5, 400), wx.Colour(C["accent_text"] if d.loading else C["faint"]))
-            gc.DrawText(_ellipsize(gc, sub, room), x, rr.y + self.FromDIP(23))
-            if nres:
+            if kind == "row":
+                active = d is self.frame.active
+                hot = self.hover == ("r", i)
+                if active:
+                    band(rr, self.SEL)
+                elif hot:
+                    band(rr, self.HOT)
                 cr = self._chev_rect(rr)
                 button(cr, "v" if self._expanded(d) else ">", hot and self.hover_part == "chev")
-            if active or hot:
-                button(self._x_rect(rr), "x", hot and self.hover_x)
+                x = square(cr.x + cr.width + self.FromDIP(2), rr.y + rr.height / 2.0, C["accent"], 9.0)
+                end = rr.x + rr.width - self.FromDIP(22 if (active or hot) else 4)
+                tw = text(d.file_name, x, rr, ui_font(8.6, 700 if active else 600), C["text"], end - x)
+                if d.loading:
+                    sub, col = "reading …", C["accent_text"]
+                elif any(getattr(pn, "busy", False) for _, pg in d.pages for pn in getattr(pg, "panels", [])):
+                    sub, col = "deconvoluting …", C["accent_text"]
+                else:
+                    sub, col = self._sample(d), C["faint"]
+                room = end - (x + tw + self.FromDIP(6))
+                if sub and room > self.FromDIP(24):
+                    text(sub, x + tw + self.FromDIP(6), rr, ui_font(7.6, 400), col, room)
+                if active or hot:
+                    button(self._x_rect(rr), "x", hot and self.hover_x)
+            elif kind == "grp":
+                name, n = pl
+                x = square(rr.x, rr.y + rr.height / 2.0, self.GROUP_COL.get(name, C["muted"]))
+                tw = text(name, x, rr, ui_font(8, 600), C["muted"], rr.x + rr.width - x)
+                if rr.x + rr.width - (x + tw) > self.FromDIP(20):
+                    text(str(n), x + tw + self.FromDIP(5), rr, ui_font(7.5, 400), C["faint"], self.FromDIP(30))
+            elif kind == "node":
+                hot = self.hover == ("n", pl["key"])
+                sel = self.nsel == pl["key"] and d is self.frame.active
+                if sel:
+                    band(rr, self.SEL)
+                elif hot:
+                    band(rr, self.HOT)
+                shown = pl.get("shown", True)
+                if pl.get("toggle"):
+                    er = self._eye_rect(rr)
+                    if hot and self.hover_part == "eye":
+                        gc.SetPen(wx.TRANSPARENT_PEN)
+                        gc.SetBrush(wx.Brush(wx.Colour("#D6DEEB")))
+                        gc.DrawRoundedRectangle(er.x, er.y, er.width, er.height, 4 * k)
+                    self._paint_eye(gc, k, er, shown, C["muted"] if shown else "#A0A8B4")
+                    x = er.x + er.width + self.FromDIP(4)
+                else:
+                    x = rr.x + self.FromDIP(20)
+                end = rr.x + rr.width - self.FromDIP(22 if (hot and pl.get("remove")) else 4)
+                text(pl["label"], x, rr, ui_font(8.3, 600 if sel else 400), C["text"] if shown else "#8E97A3",
+                     end - x)
+                if hot and pl.get("remove"):
+                    button(self._x_rect(rr), "x", self.hover_part == "x")
+            else:
+                self._paint_result(gc, k, rr, d, pl[0], pl[1], button, band, text)
         # folder
-        gc.SetPen(gc.CreatePen(wx.GraphicsPenInfo(wx.Colour(C["line2"])).Width(1)))
-        gc.StrokeLine(self.FromDIP(10), fy, w - self.FromDIP(10), fy)
-        gc.SetFont(ui_font(8, 700), wx.Colour(C["muted"]))
-        gc.DrawText("FOLDER", self.FromDIP(12), fy + self.FromDIP(6))
+        header_band(fy, self.FromDIP(self.FHEAD) - self.FromDIP(2))
+        gc.SetFont(ui_font(7.8, 700), wx.Colour(C["muted"]))
+        gc.DrawText("FOLDER", self.FromDIP(9), fy + self.FromDIP(8))
+        tw = gc.GetTextExtent("FOLDER")[0]
         button(btn["folder"], "folder", hk == "folder")
-        gc.SetFont(ui_font(7.5, 400), wx.Colour(C["faint"]))
+        gc.SetFont(ui_font(7.6, 400), wx.Colour(C["faint"]))
         fname = os.path.basename(self.folder.rstrip("\\/")) if self.folder else "no folder"
-        gc.DrawText(_ellipsize(gc, fname, w - self.FromDIP(50)), self.FromDIP(12), fy + self.FromDIP(19))
+        gc.DrawText(_ellipsize(gc, fname, btn["folder"].x - self.FromDIP(16) - tw - self.FromDIP(9)),
+                    self.FromDIP(9) + tw + self.FromDIP(6), fy + self.FromDIP(8))
         for i, it in enumerate(self.fitems):
             rr = self._frow_rect(i, fy)
             if rr.y + rr.height < 0:
@@ -6515,68 +6676,62 @@ class FilesPanel(wx.Panel):
             opened = self._is_open(it["path"])
             hot = self.hover == ("f", i)
             sel = self.fsel == it["path"]
-            if hot or sel:
-                gc.SetPen(wx.TRANSPARENT_PEN)
-                gc.SetBrush(wx.Brush(wx.Colour("#DCE5F3" if sel else "#F4F7FB")))
-                gc.DrawRoundedRectangle(rr.x, rr.y, rr.width, rr.height, 5 * k)
-            x = rr.x + self.FromDIP(10)
-            room = rr.width - self.FromDIP(16)
-            gc.SetFont(ui_font(8.5, 700 if opened else 500), wx.Colour(C["accent_text"] if opened else C["text"]))
-            gc.DrawText(_ellipsize(gc, it["name"], room), x, rr.y + self.FromDIP(3))
-            info = self._finfo(it)
-            t = datetime.datetime.fromtimestamp(it["mtime"]).strftime("%d.%m.%Y %H:%M")
-            parts = [t] + (["%.1f MB" % (it["size"] / 1048576.0)] if it["size"] else []) + \
-                ([info["sample_name"]] if info.get("sample_name") else [])
-            gc.SetFont(ui_font(7.3, 400), wx.Colour(C["faint"]))
-            gc.DrawText(_ellipsize(gc, "  ·  ".join(parts), room), x, rr.y + self.FromDIP(18))
+            if sel:
+                band(rr, self.SEL)
+            elif hot:
+                band(rr, self.HOT)
+            x = rr.x + self.FromDIP(6)
+            gc.SetFont(ui_font(7.5, 400))
+            t = datetime.datetime.fromtimestamp(it["mtime"]).strftime("%d.%m %H:%M")
+            dw = gc.GetTextExtent(t)[0]
+            show_date = rr.width > self.FromDIP(150)
+            room = rr.width - self.FromDIP(12) - (dw + self.FromDIP(6) if show_date else 0)
+            text(it["name"], x, rr, ui_font(8.3, 700 if opened else 400), C["text"], room)
+            if show_date:
+                text(t, rr.x + rr.width - self.FromDIP(6) - dw, rr, ui_font(7.5, 400), C["faint"], dw + 2)
+        edge()
 
-    def _paint_result(self, gc, k, rr, d, dec, ent, button):
-        """One result under its file: eye (shown or hidden), method and
-        masses, time and mass range; the one in the table is white."""
+    def _paint_result(self, gc, k, rr, d, dec, ent, button, band, text):
+        """One deconvolution result on one line: eye (shown or hidden), method and masses (the time and mass
+        range in its tooltip); the one in the table is highlighted."""
         active = ent is dec.active
         hot = self.hover == ("b", id(ent))
         shown = ent.visible
-        if active or hot:
-            gc.SetPen(gc.CreatePen(wx.GraphicsPenInfo(wx.Colour(C["line2"] if active else "#D6DEEB")).Width(1)))
-            gc.SetBrush(wx.Brush(wx.Colour("#FFFFFF" if active else "#F4F7FB")))
-            gc.DrawRoundedRectangle(rr.x, rr.y, rr.width, rr.height, 6 * k)
+        if active and d is self.frame.active:
+            band(rr, self.SEL)
+        elif hot:
+            band(rr, self.HOT)
         cur = self.kcur[1] if self.kcur is not None else (dec.active if d is self.frame.active else None)
         if cur is ent and self.HasFocus():
             gc.SetPen(gc.CreatePen(wx.GraphicsPenInfo(wx.Colour(C["accent"])).Width(1).Style(wx.PENSTYLE_SHORT_DASH)))
             gc.SetBrush(wx.TRANSPARENT_BRUSH)
-            gc.DrawRoundedRectangle(rr.x + 1, rr.y + 1, rr.width - 2, rr.height - 2, 6 * k)
+            gc.DrawRoundedRectangle(rr.x + 1, rr.y + 1, rr.width - 2, rr.height - 2, 4 * k)
         er = self._eye_rect(rr)
         eye_hot = hot and self.hover_part == "eye"
         if eye_hot:
             gc.SetPen(wx.TRANSPARENT_PEN)
             gc.SetBrush(wx.Brush(wx.Colour("#D6DEEB")))
-            gc.DrawRoundedRectangle(er.x, er.y, er.width, er.height, 5 * k)
+            gc.DrawRoundedRectangle(er.x, er.y, er.width, er.height, 4 * k)
         self._paint_eye(gc, k, er, shown, C["accent_text"] if (shown and (active or eye_hot)) else
                         (C["muted"] if shown else "#A0A8B4"))
         try:
-            line1, line2, tip = dec.tree_text(ent)
+            line1 = dec.tree_text(ent)[0]
         except Exception:
-            line1, line2 = ent.res.get("method", "Result"), ""
-        x = er.x + er.width + self.FromDIP(5)
-        end = rr.x + rr.width - self.FromDIP(28 if hot else 6)  # the x appears under the mouse only
-        room = end - x
+            line1 = ent.res.get("method", "Result")
+        x = er.x + er.width + self.FromDIP(4)
+        end = rr.x + rr.width - self.FromDIP(22 if hot else 4)  # the x appears under the mouse only
         poor = False
         try:
             qa = ent.res.get("quality")
             poor = isinstance(qa, dict) and str(qa.get("level", "")).lower() == "poor"
         except Exception:
             pass
-        if poor:
-            room -= self.FromDIP(14)
-        gc.SetFont(ui_font(8.5, 700 if active else 600), wx.Colour(C["text"] if shown else "#8E97A3"))
-        t1 = _ellipsize(gc, line1, room)
-        gc.DrawText(t1, x, rr.y + self.FromDIP(4))
-        if poor:  # warning triangle after the first line
-            tw = gc.GetTextExtent(t1)[0]
-            self._paint_warning(gc, k, x + tw + self.FromDIP(5), rr.y + self.FromDIP(5), self.FromDIP(11))
-        gc.SetFont(ui_font(7.3, 400), wx.Colour(C["faint"] if shown else "#A0A8B4"))
-        sub = line2 if shown else ("hidden  ·  " + line2)
-        gc.DrawText(_ellipsize(gc, sub, end - x), x, rr.y + self.FromDIP(19))
+        room = end - x - (self.FromDIP(14) if poor else 0)
+        tw = text(line1 if shown else "hidden · " + line1, x, rr, ui_font(8.3, 700 if active else 400),
+                  C["text"] if shown else "#8E97A3", room)
+        if poor:  # warning triangle after the text
+            s = self.FromDIP(10)
+            self._paint_warning(gc, k, x + tw + self.FromDIP(4), rr.y + (rr.height - s) / 2.0, s)
         if hot:
             button(self._x_rect(rr), "x", self.hover_part == "x")
 
@@ -6623,17 +6778,33 @@ class FilesPanel(wx.Panel):
 
     # mouse
     def _motion(self, e):
+        if self._drag is not None:
+            x0, w0 = self._drag
+            sx = self.ClientToScreen(e.GetPosition()).x
+            wd = int(round(self.ToDIP(w0 + sx - x0)))
+            wd = min(max(wd, self.WIDTH_MIN), self.WIDTH_MAX)
+            if wd != self.width_dip:
+                self.width_dip = wd
+                if self._apply_width():
+                    self.GetParent().Layout()
+                self.Refresh()
+            return
         kind, v = self._hit(e.GetPosition())
+        self.SetCursor(wx.Cursor(wx.CURSOR_SIZEWE if kind == "grip" else wx.CURSOR_ARROW))
         if kind in ("row", "x", "chev"):
             hv = ("r", v)
         elif kind in ("res", "eye", "rx"):
             hv = ("b", id(v[3]))
+        elif kind in ("node", "neye", "nx"):
+            hv = ("n", v[2]["key"])
         elif kind == "frow":
             hv = ("f", v)
+        elif kind == "grip":
+            hv = "grip"
         else:
             hv = v if kind == "button" else -1
         hx = kind == "x"
-        part = {"eye": "eye", "rx": "x", "chev": "chev"}.get(kind)
+        part = {"eye": "eye", "rx": "x", "chev": "chev", "neye": "eye", "nx": "x"}.get(kind)
         if hv != self.hover or hx != self.hover_x or part != self.hover_part:
             self.hover, self.hover_x, self.hover_part = hv, hx, part
             tip = ""
@@ -6642,11 +6813,9 @@ class FilesPanel(wx.Panel):
                 if hx:
                     tip = "Close this file (Ctrl+W)"
                 elif kind == "chev":
-                    n = len(self._branches(d))
-                    tip = ("Hide the list of its results (%d)" if self._expanded(d) else
-                           "Show the list of its results (%d)") % n
+                    tip = "Fold" if self._expanded(d) else "Unfold"
                 else:
-                    tip = d.path or d.load_path or ""
+                    tip = "\n".join(t for t in (d.path or d.load_path or "", self._sample(d)) if t)
             elif kind in ("res", "eye", "rx"):
                 dec, ent = v[2], v[3]
                 if kind == "eye":
@@ -6659,10 +6828,19 @@ class FilesPanel(wx.Panel):
                         tip = dec.tree_text(ent)[2]
                     except Exception:
                         tip = ""
+            elif kind in ("node", "neye", "nx"):
+                nd = v[2]
+                if kind == "neye":
+                    tip = "Hide" if nd.get("shown", True) else "Show again"
+                elif kind == "nx":
+                    tip = "Remove"
+                else:
+                    tip = nd.get("tip") or nd["label"]
             elif kind == "frow":
                 it = self.fitems[v]
                 info = self._finfo(it)
-                lines = [it["name"]]
+                lines = [it["name"], datetime.datetime.fromtimestamp(it["mtime"]).strftime("%d.%m.%Y %H:%M") +
+                         ("  ·  %.1f MB" % (it["size"] / 1048576.0) if it["size"] else "")]
                 for key, lab in (("sample_name", "Sample"), ("sample_id", "Sample ID"), ("operator", "Acquired by"),
                                  ("method_file", "Method"), ("vial", "Vial")):
                     if info.get(key):
@@ -6677,19 +6855,49 @@ class FilesPanel(wx.Panel):
             self.Refresh()
 
     def _leave(self, e):
-        self.hover, self.hover_x, self.hover_part = -1, False, None
+        if self._drag is None:
+            self.hover, self.hover_x, self.hover_part = -1, False, None
+            self.Refresh()
+
+    def _end_drag(self):
+        if self._drag is None:
+            return
+        self._drag = None
+        if self.HasCapture():
+            self.ReleaseMouse()
+        T._save({"files_width": int(self.width_dip)})
         self.Refresh()
 
+    def _up(self, e):
+        self._end_drag()
+
     def _click(self, e):
+        if self._on_grip(e.GetPosition()):  # the right edge: dragged to a new width
+            self._drag = (self.ClientToScreen(e.GetPosition()).x, self.GetSize()[0])
+            self.CaptureMouse()
+            self.Refresh()
+            return
         self._acting = True
         try:
             self._do_click(e)
         finally:
             self._acting = False
 
+    def _show_node(self, d, nd):
+        """A trace or spectrum of the tree: its file and its view shown."""
+        if d is not self.frame.active:
+            self.frame.activate(d)
+        try:
+            if nd.get("page") is not None:
+                self.frame.show_page(nd["page"])
+        except Exception as ex:
+            _log("files tree: %s" % ex)
+        self.nsel = nd["key"]
+        self.Refresh()
+
     def _do_click(self, e):
         kind, v = self._hit(e.GetPosition())
-        if kind in ("row", "x", "chev", "res", "eye", "rx"):
+        if kind in ("row", "x", "chev", "res", "eye", "rx", "node", "neye", "nx", "grp"):
             self.SetFocus()  # arrow keys, Space and Delete for the results
         if kind == "button":
             if v == "open":
@@ -6714,6 +6922,15 @@ class FilesPanel(wx.Panel):
             wx.CallAfter(self.frame.close_doc, self.rows()[v])
         elif kind == "chev":
             self.toggle_tree(self.rows()[v])
+        elif kind == "grp":
+            if v[1] is not self.frame.active:
+                self.frame.activate(v[1])
+        elif kind == "node":
+            self._show_node(v[1], v[2])
+        elif kind == "neye":
+            v[2]["toggle"]()
+        elif kind == "nx":
+            wx.CallAfter(v[2]["remove"])
         elif kind == "res":
             self._focus_result(v[1], v[2], v[3])
         elif kind == "eye":
@@ -6733,11 +6950,17 @@ class FilesPanel(wx.Panel):
 
     def _dclick(self, e):
         kind, v = self._hit(e.GetPosition())
-        if kind == "frow":
+        if kind == "grip":  # double click on the edge: back to the usual width
+            self.width_dip = self.WIDTH
+            T._save({"files_width": self.WIDTH})
+            if self._apply_width():
+                self.GetParent().Layout()
+            self.Refresh()
+        elif kind == "frow":
             self.frame.load(self.fitems[v]["path"])
         elif kind == "row":
             self.frame.activate(self.rows()[v])
-        elif kind in ("res", "chev", "eye"):
+        elif kind in ("res", "chev", "eye", "neye", "node"):
             self._click(e)  # a quick second click: as a click (the arrow and the eye switch back)
 
     def _menu(self, e):
@@ -6749,13 +6972,18 @@ class FilesPanel(wx.Panel):
             items = [("Close %s (Ctrl+W)" % d.file_name, lambda: self.frame.close_doc(d))]
             if len(rows) > 1:
                 items.append(("Close the other files", lambda: self.frame.close_others(d)))
-            items += [("Close every file", self.frame.close_all), (None, None)]
-            n = len(self._branches(d))
-            if n:
-                items += [("Hide the list of its results" if self._expanded(d) else
-                           "Show the list of its results (%d)" % n, lambda: self.toggle_tree(d)), (None, None)]
-            items += [("Show in folder", lambda: _show_in_folder(d.path or d.load_path)),
+            items += [("Close every file", self.frame.close_all), (None, None),
+                      ("Fold" if self._expanded(d) else "Unfold", lambda: self.toggle_tree(d)), (None, None),
+                      ("Show in folder", lambda: _show_in_folder(d.path or d.load_path)),
                       ("Copy the path", lambda: _copy_text(d.path or d.load_path or "")), (None, None)]
+        elif kind in ("node", "neye", "nx"):
+            d, nd = v[1], v[2]
+            items = [("Show it", lambda: self._show_node(d, nd))]
+            if nd.get("toggle"):
+                items.append(("Hide" if nd.get("shown", True) else "Show again", nd["toggle"]))
+            if nd.get("remove"):
+                items.append(("Remove", nd["remove"]))
+            items.append((None, None))
         elif kind in ("res", "eye", "rx"):
             d, dec, ent = v[1], v[2], v[3]
             self.kcur = (dec, ent)

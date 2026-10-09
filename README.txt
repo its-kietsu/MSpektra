@@ -1,4 +1,4 @@
-MSpektra 4.1 - portable Windows package   (09.10.2026)
+MSpektra 4.2 - portable Windows package   (10.10.2026)
 ======================================================
 
 Analysis of LC-MS and HRMS data, with deconvolution:
@@ -36,6 +36,22 @@ The version is shown on the start screen, in the help window (?) of LCMS
 and HRMS Analysis, and in the first line of each log file. It went up by
 0.1 with every update until 3.3. Since 3.31 a small change adds 0.01, a
 large change 0.1 and a big change 1.0.
+
+4.2 (10.10.2026)
+New left panel, kinetic orders and Compare view fixes.
+* The left panel is an analysis tree: each open file unfolds into its
+  chromatograms (hide or remove a mass chromatogram there), spectra, PDA
+  traces and deconvolution results; the folder is listed below. Drag its
+  right edge to make it wider or narrower (the width is kept).
+* Kinetic fitting: zero, first and second order, and Best order, which fits
+  all three and keeps the one with the lowest AICc. The results name the
+  model and its reaction order; second order gives its rate constant k.
+* Compare view: "Use ... as 100 % area reference" also from the table (right
+  click a row) and first in the plot menu; the run clicked is the trace
+  nearest on screen.
+* Compare table: the relative area right after the trace name, the actual
+  areas and heights after the percentages.
+* Compare view, Offset: every trace starts at the left end of the time axis.
 
 4.1 (09.10.2026)
 Files of every vendor open in their own raw formats.

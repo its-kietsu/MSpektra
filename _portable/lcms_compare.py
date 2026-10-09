@@ -251,7 +251,7 @@ class CompareTab(U.TabBase):
         import deconv_tab as D
         self.table = D.TableCard(self.rows, "Peaks of each trace", [("Trace", 160)], on_select=self.on_row,
                                  empty="No peaks")
-        self.table.extra_menu = lambda: [("Export the table (CSV)…", self.on_export_table)]
+        self.table.extra_menu = self._table_menu
         # m/z tool (a toggle in the tool bar): the ESI+ and ESI- spectra of a peak clicked on a trace, in a row of
         # two tiles between the plot and the table, shown only while the tool is on
         self.mz_on = False
@@ -919,6 +919,29 @@ class CompareTab(U.TabBase):
         self._fill_entry_fields()
         self.replot(keep_view=True, quick=True)
 
+    def _table_menu(self):
+        """Right click on the table: the run of the row under the mouse as the 100 % area reference."""
+        items = []
+        lst = self.table.list
+        i = -1
+        try:
+            pos = lst.ScreenToClient(wx.GetMousePosition())
+            if lst.GetClientRect().Contains(pos):  # (the menu key: the row selected)
+                i = lst.HitTest(pos)[0]
+        except Exception:
+            i = -1
+        if i < 0:
+            sel = self.table.selected()
+            i = sel[0] if sel else -1
+        if i < 0 and self.sel is not None and self.sel < len(self.entries):  # the run chosen (the table is refilled)
+            en = self.entries[self.sel]
+            i = next((k for k, o in enumerate(self.drawn) if o["entry"] is en), -1)
+        if self.area_range is not None and 0 <= i < len(self.drawn):
+            o = self.drawn[i]
+            items += [("Use %s as 100 %% area reference" % o["label"], lambda o=o: self.set_area_reference(o)),
+                      (None, None)]
+        return items + [("Export the table (CSV)…", self.on_export_table)]
+
     def on_row(self, i):
         """A row of the table: its file is chosen."""
         if 0 <= i < len(self.drawn):
@@ -1095,6 +1118,7 @@ class CompareTab(U.TabBase):
         offset = s["layout"] == "offset" and len(out) > 1
         top_dy = max([o["dy"] for o in out] + [0.0])
         fill_a = min(max(float(P.get("fill_alpha", 16)), 0.0), 100.0) / 100.0
+        starts = []  # offset: (trace, its start, level there, line style) for the baseline drawn before it
         for n, o in enumerate(out):
             pr, col = o["proc"], o["colour"]
             x, y = pr["t"] + o["dx"], pr["y"] + o["dy"]
@@ -1107,6 +1131,12 @@ class CompareTab(U.TabBase):
             ln = U.plot_trace(ax, x, y, fill=fill, fill_base=o["dy"], color=col, lw=float(tp.get("lw") or lw),
                               ls=tp.get("ls") or "-", zorder=z)
             ln._cmp = o
+            if offset:
+                fin = np.flatnonzero(np.isfinite(y))
+                if len(fin):
+                    head = y[fin[:5]]  # the level where the run starts (not one spike of noise)
+                    starts.append((float(x[fin[0]]), float(np.median(head)), col, float(tp.get("lw") or lw),
+                                   tp.get("ls") or "-", z, fill, o["dy"]))
             if n < len(self.area_results):
                 self._draw_area(ax, o, self.area_results[n], z)
             if o["i"] == self.sel and len(out) > 1:  # the file chosen in the list: a halo, on screen only
@@ -1139,6 +1169,15 @@ class CompareTab(U.TabBase):
         if view or card.full:
             ax.set_xlim(*(view if view else card.full))
         x0, x1 = ax.get_xlim()
+        # offset: every trace starts at the left end of the axis, on a flat line at the level where its run
+        # starts (an empty wedge under the traces moved right looked unfinished); drawn only, not data
+        x_left = min(x0, lo) if lo is not None else x0
+        for xs0, lev, col, w, ls, z, fill, base in starts:
+            if xs0 > x_left:
+                ext = U.plot_trace(ax, np.array([x_left, xs0]), np.array([lev, lev]), fill=fill, fill_base=base,
+                                   color=col, lw=w, ls=ls, zorder=z)
+                ext._no_scale = True
+        ax.set_xlim(x0, x1)  # (adding the lines rescaled the view)
         for g in s["guides"]:  # guide lines (their times above the frame: _place_labels)
             if x0 <= g <= x1:
                 gl = ax.axvline(g, color="#7B8594", lw=0.8, ls=(0, (4, 3)), zorder=2)
@@ -1702,21 +1741,23 @@ class CompareTab(U.TabBase):
         each run (before its shift), as the main peak of the table."""
         units = sorted(set(r.get("units", "") for r in self.area_results))
         unit = units[0] if len(units) == 1 else ""
-        cols = [("Region peak (min)", 110), (("Region height (%s)" % unit) if unit else "Region height", 120),
-                (("Region area (%s·s)" % unit) if unit else "Region area", 130), ("Relative area (%)", 110),
-                ("100 %", 50), (self._area_xlabel_used.strip() or "X", 90)]
+        cols = [("Relative area (%)", 110), ("100 %", 50), ("Region peak (min)", 110),
+                (("Region area (%s·s)" % unit) if unit else "Region area", 130),
+                (("Region height (%s)" % unit) if unit else "Region height", 120),
+                (self._area_xlabel_used.strip() or "X", 90)]
         rows = []
         for i, o in enumerate(out):
             r = self.area_results[i] if i < len(self.area_results) else None
             if r is None:
                 rows.append([""] * len(cols))
                 continue
-            rows.append(["%.3f" % (r["rt"] - self._shift_of(o)) if r["rt"] is not None else "",
-                         K.number(r["height"]) if r["height"] is not None else "",
-                         "%.9g" % r["area"] if r["area"] is not None else "no data",
-                         "%.3f" % r["relative"] if r["relative"] is not None else
+            rows.append(["%.3f" % r["relative"] if r["relative"] is not None else
                          ("" if r["area"] is None else "undefined"),
-                         "yes" if r["reference"] else "", "%.9g" % r["x"] if r["x"] is not None else ""])
+                         "yes" if r["reference"] else "",
+                         "%.3f" % (r["rt"] - self._shift_of(o)) if r["rt"] is not None else "",
+                         "%.9g" % r["area"] if r["area"] is not None else "no data",
+                         K.number(r["height"]) if r["height"] is not None else "",
+                         "%.9g" % r["x"] if r["x"] is not None else ""])
         return cols, rows
 
     def _area_info(self):
@@ -1843,12 +1884,16 @@ class CompareTab(U.TabBase):
         ents = [{"label": o["label"], "proc": o["proc"], "units": o["units"], "shift": self._shift_of(o)}
                 for o in out]
         hdr, rows, _pk = K.peak_rows(ents, s["guides"], s.get("integ_thr", 1.0))
-        # the results first (they were out of sight to the right of the file details)
+        # the results first (they were out of sight to the right of the file details); percentages before the
+        # areas and heights they come from: Trace, Area %, Main peak, the area % at the guide lines, Height, Area
         widths = [160, 105, 100, 115, 68] + [110] * max(0, len(hdr) - 5)
-        pcols = [(h, widths[i]) for i, h in enumerate(hdr)]
+        order = [0, 4, 1] + list(range(5, len(hdr))) + [2, 3]
+        pcols = [(hdr[i], widths[i]) for i in order]
+        rows = [[r[i] if i < len(r) else "" for i in order] for r in rows]
         acols, arows = self._area_cells(out) if self.area_range is not None else ([], [[] for _ in out])
         fcols = [("Shift (min)", 80), ("File", 150), ("Sample", 130), ("Acquired", 120)]
-        cols = pcols + acols + fcols
+        # with a region: its relative area (and which run is the 100 %) right after the trace
+        cols = pcols[:1] + acols + pcols[1:] + fcols
         full, peaks = [], []
         for o, r, ar, en in zip(out, rows, arows, ents):
             d = o["entry"]["doc"]
@@ -1858,7 +1903,7 @@ class CompareTab(U.TabBase):
             sh = en["shift"]
             det = ["%+.3f" % sh if abs(sh) > 1e-9 else "0", os.path.basename(d.attrs.get("path") or ""),
                    si.get("sample_name", ""), acq]
-            full.append(list(r) + list(ar) + det)
+            full.append(list(r[:1]) + list(ar) + list(r[1:]) + det)
             peaks.append(list(r) + det)
         if [c[0] for c in self.table.cols] != [c[0] for c in cols]:
             self.table.set_columns(cols)
@@ -1872,15 +1917,34 @@ class CompareTab(U.TabBase):
                                                                 zip(out, arows)]) if acols else None
 
     # ------------------------------------------------------------------ mouse
-    def _nearest(self, x, y):
+    def _nearest(self, x, y, reach_px=10.0):
+        """The trace drawn nearest to a point of the plot, by the distance on screen to its line within
+        reach_px pixels left and right of the point (only straight above or below the point, a click just
+        beside the top of a narrow peak went to the baseline of the trace above it)."""
         best, bd = None, None
+        ax = self.card.ax
+        try:
+            tr = ax.transData
+            px, py = tr.transform((x, y))
+            x0, x1 = ax.get_xlim()
+            half = reach_px * (x1 - x0) / max(ax.bbox.width, 1.0)
+        except Exception:
+            tr, half = None, 0.0
         for o in self.drawn:
             pr = o["proc"]
             xs = pr["t"] + o["dx"]
-            if not (xs[0] <= x <= xs[-1]):
+            if not len(xs) or x < xs[0] - half or x > xs[-1] + half:
                 continue
-            v = float(np.interp(x, xs, pr["y"])) + o["dy"]
-            dd = abs(v - y)
+            if tr is None:
+                v = float(np.interp(x, xs, pr["y"])) + o["dy"]
+                dd = abs(v - y)
+            else:
+                i0, i1 = np.searchsorted(xs, x - half), np.searchsorted(xs, x + half, side="right")
+                cx = np.concatenate((xs[i0:i1], [min(max(x, xs[0]), xs[-1])]))
+                cy = np.concatenate((pr["y"][i0:i1], [np.interp(cx[-1], xs, pr["y"])])) + o["dy"]
+                d = tr.transform(np.column_stack((cx, cy)))
+                with np.errstate(invalid="ignore"):
+                    dd = float(np.nanmin(np.hypot(d[:, 0] - px, d[:, 1] - py))) if len(d) else float("nan")
             if not np.isfinite(dd):  # no value there (a gap): it would win every comparison
                 continue
             if bd is None or dd < bd:
@@ -2042,9 +2106,10 @@ class CompareTab(U.TabBase):
             if n_bg > (1 if mine else 0):
                 items.append(("Remove every background range", lambda: self.clear_mz_bg(None)))
         if o is not None:
+            if self.area_range is not None:  # first: the run clicked as the 100 % reference of the region
+                items[:0] = [("Use %s as 100 %% area reference" % o["label"], lambda o=o: self.set_area_reference(o)),
+                             (None, None)]
             items.append((None, None))
-            if self.area_range is not None:
-                items.append(("Use %s as 100 %% area reference" % o["label"], lambda o=o: self.set_area_reference(o)))
             items.append(("Leave out %s" % o["label"], lambda o=o: self.leave_out(o["i"])))
         items += [(None, None), ("Graph properties\u2026", self.on_graph_props),
                   (None, None), ("Export the traces (CSV)…", self.on_export_traces),

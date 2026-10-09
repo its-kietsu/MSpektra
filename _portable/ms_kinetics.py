@@ -3,16 +3,18 @@ import ctypes as C
 from pathlib import Path
 import numpy as np
 
-MODELS = ('Linear trend', 'First-order decay', 'First-order growth')
+MODELS = ('Zero order (straight line)', 'First order decay', 'First order rise', 'Second order decay')
+ORDERS = (0, 1, 1, 2)
 EQUATIONS = ('y = C + slope × (X − X₀)', 'y = C + A × exp[−k × (X − X₀)]',
-             'y = C + A × (1 − exp[−k × (X − X₀)])')
+             'y = C + A × (1 − exp[−k × (X − X₀)])', 'y = C + A / (1 + k × A × (X − X₀))')
 PD = C.POINTER(C.c_double)
 _LIB = None
 
 class Result(C.Structure):
     _fields_ = [(k, C.c_int) for k in ('model', 'count', 'parameters', 'dof', 'warnings')] + [
         ('origin', C.c_double), ('values', C.c_double * 3), ('errors', C.c_double * 3)] + [
-        (k, C.c_double) for k in ('sse', 'rmse', 'r2', 'half_life', 'half_life_error')]
+        (k, C.c_double) for k in ('sse', 'rmse', 'r2', 'half_life', 'half_life_error')] + [
+        ('order', C.c_int), ('reserved', C.c_int)] + [(k, C.c_double) for k in ('aic', 'aicc', 'k2', 'k2_error')]
 
 def library():
     global _LIB
@@ -24,7 +26,7 @@ def library():
             raise RuntimeError('mskinetics.dll is missing')
         dll = C.CDLL(str(path))
         dll.kin_abi.restype = dll.kin_result_size.restype = C.c_uint
-        if dll.kin_abi() != 1 or dll.kin_result_size() != C.sizeof(Result):
+        if dll.kin_abi() != 2 or dll.kin_result_size() != C.sizeof(Result):
             raise RuntimeError('mskinetics.dll does not match this version')
         dll.kin_error.restype = C.c_char_p
         dll.kin_fit.argtypes = [PD, PD, C.c_int, C.c_int, C.c_int, C.POINTER(Result), PD, PD]
