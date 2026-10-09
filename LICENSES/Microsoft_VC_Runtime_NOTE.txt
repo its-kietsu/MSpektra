@@ -1,0 +1,7 @@
+Microsoft Visual C++ 2015-2022 Redistributable runtime DLLs (v14.44.35211)
+in the python folder: msvcp140*.dll, vcruntime140*.dll, concrt140.dll,
+vcomp140.dll. Redistributed unmodified as permitted by the Visual Studio
+redistributable license (https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files).
+They are the official files from Microsoft's vc_redist.x64.exe and are
+included so the package works even on PCs without (or with an outdated)
+Visual C++ runtime installed.

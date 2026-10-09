@@ -1,0 +1,27 @@
+#include <winver.h>
+1 ICON "msanalysis.ico"
+1 24 "launcher.manifest"
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "FileDescription", "MS Analysis (portable package, deconvolution engine UniDec 8.2.1)"
+      VALUE "ProductName", "MS Analysis"
+      VALUE "FileVersion", "1.0.0.0"
+      VALUE "ProductVersion", "1.0"
+      VALUE "OriginalFilename", "MS Analysis.exe"
+      VALUE "InternalName", "MS Analysis"
+      VALUE "Comments", "Deconvolution engine: UniDec by M. T. Marty. Please cite Marty et al., Anal. Chem. 2015, DOI 10.1021/acs.analchem.5b00140"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

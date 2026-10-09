@@ -1,0 +1,18 @@
+# in the release zip, not in the repository
+/python/
+/_portable/baf2sql/
+/_portable/timsdata/
+# created at run time
+__pycache__/
+*.pyc
+/_portable/pylibs/
+/config/
+/logs/
+/backups/
+*_analysis/
+*.tmp
+*.lock
+# builds
+/cpp/*/build*/
+/cpp/**/*.dll
+/launcher/*.o

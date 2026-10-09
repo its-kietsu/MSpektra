@@ -1,0 +1,7 @@
+/* Linux: the library exports the C interface only. Everything else (the SQLite and miniz
+   copies, C++ template instantiations) stays local, so that libraries loaded later in the
+   same process (the Bruker SDKs bring their own SQLite and C++ code) never bind to it. */
+{
+  global: ms_*;
+  local: *;
+};
