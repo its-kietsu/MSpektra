@@ -720,11 +720,11 @@ def _controls():
                 lo, hi = 0, len(value)
                 while lo < hi:
                     mid = (lo + hi + 1) // 2
-                    if gc.GetTextExtent(value[:mid] + "â€¦")[0] <= room:
+                    if gc.GetTextExtent(value[:mid] + "…")[0] <= room:
                         lo = mid
                     else:
                         hi = mid - 1
-                value = value[:lo] + "â€¦" if room > gc.GetTextExtent("â€¦")[0] else ""
+                value = value[:lo] + "…" if room > gc.GetTextExtent("…")[0] else ""
             gc.DrawText(value, x + w1, (h - th) / 2.0)
 
     class ModernToolbar(wx.Panel):
@@ -1545,7 +1545,7 @@ def _install_last_folder():
 # 7. launcher (light frosted glass)
 # --------------------------------------------------------------------------
 APP_NAME = "MS Analysis"
-APP_VERSION = "3.75"  # +0.01 small change, +0.1 large change, +1.0 big change
+APP_VERSION = "3.76"  # +0.01 small change, +0.1 large change, +1.0 big change
 WORKSPACES = [
     ("LCMS Postrun", "Shimadzu .lcd files", "lcms"),
     ("HRMS Postrun", "Bruker .d and mzML files", "hrms"),

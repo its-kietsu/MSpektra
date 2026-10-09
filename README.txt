@@ -1,4 +1,4 @@
-MS Analysis 3.75 - portable Windows package   (09.10.2026)
+MS Analysis 3.76 - portable Windows package   (09.10.2026)
 ==========================================
 
 Postrun analysis of LC-MS and HRMS data, with deconvolution:
@@ -34,6 +34,12 @@ The version is shown on the start screen, in the help window (?) of LCMS
 and HRMS Postrun, and in the first line of each log file. It went up by
 0.1 with every update until 3.3. Since 3.31 a small change adds 0.01, a
 large change 0.1 and a big change 1.0.
+
+3.76 (09.10.2026)
+* Shortened texts in the top bar (file name, calibration and others) end
+  with "…" again instead of three broken characters.
+* The deconvolution log is written as UTF-8, so names with special
+  characters no longer stop it from being saved.
 
 3.75 (09.10.2026)
 The windows follow the screen they are on (laptops, scaled displays, large

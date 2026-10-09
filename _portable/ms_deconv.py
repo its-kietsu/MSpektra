@@ -796,7 +796,7 @@ def unidec_deconvolute(spec, folder, name, p, progress=None):
     finally:
         ud.exe_call = original_call
     try:
-        with open(c.outfname + "_log.txt", "w") as fh:
+        with open(c.outfname + "_log.txt", "w", encoding="utf-8") as fh:
             fh.write(log["text"])
     except Exception:
         pass
@@ -1015,7 +1015,7 @@ def engine_dscores(log_text):
 def engine_uniscore(error_file):
     """The engine's UniScore ("uniscore = x" in <name>_error.txt), 0 if absent."""
     try:
-        for line in open(error_file):
+        for line in open(error_file, encoding="utf-8", errors="replace"):
             k, _, v = line.partition("=")
             if k.strip() == "uniscore":
                 return float(v)
