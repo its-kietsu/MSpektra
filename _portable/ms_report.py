@@ -23,7 +23,6 @@ import os
 import re
 import sys
 import html
-import zipfile
 import tempfile
 import datetime
 
@@ -43,47 +42,14 @@ KIND_NAMES = {k: n for k, n, _ in KINDS}
 # ==========================================================================
 # libraries and fonts
 # ==========================================================================
-def _lib_dirs():
-    out = [os.path.join(HERE, "pylibs")]
-    la = os.environ.get("LOCALAPPDATA")
-    if la:
-        out.append(os.path.join(la, "MS Analysis", "pylibs"))
-    out.append(os.path.join(os.path.expanduser("~"), ".msanalysis", "pylibs"))
-    return out
-
-
 def ensure_libs():
-    """reportlab and python-docx importable (unpacked from the wheels next to
-    this file the first time). Returns the folder used, or None."""
+    """reportlab and python-docx importable (unpacked from the wheels in
+    _portable\\wheels the first time, see pylibs_loader). Returns the folder used."""
+    import pylibs_loader
     try:
-        import reportlab  # noqa: F401
-        import docx  # noqa: F401
-        return "installed"
-    except ImportError:
-        pass
-    wdir = os.path.join(HERE, "wheels")
-    wheels = sorted(f for f in os.listdir(wdir) if f.endswith(".whl")) if os.path.isdir(wdir) else []
-    if not wheels:
-        raise RuntimeError("the report libraries are missing (_portable\\wheels)")
-    for d in _lib_dirs():
-        try:
-            os.makedirs(d, exist_ok=True)
-            for w in wheels:
-                mark = os.path.join(d, "." + w + ".ok")
-                if not os.path.exists(mark):
-                    with zipfile.ZipFile(os.path.join(wdir, w)) as z:
-                        z.extractall(d)
-                    open(mark, "w").close()
-            if d not in sys.path:
-                sys.path.insert(0, d)
-            import importlib
-            importlib.invalidate_caches()
-            import reportlab  # noqa: F401,F811
-            import docx  # noqa: F401,F811
-            return d
-        except (OSError, ImportError):
-            continue
-    raise RuntimeError("the report libraries could not be unpacked (no writable folder)")
+        return pylibs_loader.ensure_pylibs("reportlab", "docx")
+    except RuntimeError as ex:
+        raise RuntimeError("the report libraries could not be loaded (%s)" % ex)
 
 
 def _font_files():
@@ -408,8 +374,16 @@ def _instrument(frame):
         except Exception:
             pass
         return "Shimadzu LC-MS (LabSolutions)"
-    si = sample_info(frame)
-    return si.get("instrument") or ("Bruker QTOF" if os.path.isdir(path) else "")
+    try:
+        si = sample_info(frame)
+    except Exception:  # (the Compare report: a path only)
+        import lcms_sources
+        si = lcms_sources.read_sample_info(path)
+    props = getattr(getattr(frame, "ms_data", None), "props", None) or {}
+    if si.get("instrument") or props.get("InstrumentName"):
+        return si.get("instrument") or str(props["InstrumentName"])
+    import data_formats
+    return "Bruker QTOF" if data_formats.detect(path)[1] == "bruker_d" else ""
 
 
 def _spec_col(tab, e=None):
@@ -2492,9 +2466,13 @@ def build_compare(frame, fields, tmp):
     if want(fields, "methods"):
         meths = sorted(set(i.get("method_file") for i in infos if i.get("method_file")))
         ver = getattr(T, "APP_VERSION", "")
-        txt = "The LC-MS runs were recorded on %s (LabSolutions%s). " % (
-            esc(" and ".join("a " + i_.replace(" (LabSolutions)", "") for i_ in insts)) or "a Shimadzu LC-MS",
-            ", method %s" % esc(meths[0]) if len(meths) == 1 else "")
+        if all(_cmp_path(d).lower().endswith(".lcd") for d in docs):
+            txt = "The LC-MS runs were recorded on %s (LabSolutions%s). " % (
+                esc(" and ".join("a " + i_.replace(" (LabSolutions)", "") for i_ in insts)) or "a Shimadzu LC-MS",
+                ", method %s" % esc(meths[0]) if len(meths) == 1 else "")
+        else:  # other vendors (lcms_sources)
+            txt = "The runs were recorded on %s%s. " % (
+                esc(" and ".join(insts)) or "an LC system", " (method %s)" % esc(meths[0]) if len(meths) == 1 else "")
         verbs = steps + ["stacked" if (s.get("layout", "stacked") == "stacked" and n > 1) else
                          "offset in a waterfall plot" if (s.get("layout") == "offset" and n > 1) else
                          "overlaid" if n > 1 else "drawn"]

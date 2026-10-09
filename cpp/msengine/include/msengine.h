@@ -210,6 +210,19 @@ MS_API const char* ms_sample_info(ms_file* f);
  * and ignore it: MS_UNSUPPORTED. */
 MS_API int ms_file_set_bin_width(ms_file* f, double binw);
 
+/* A file from scans read elsewhere (LCMS Analysis: Agilent, Waters, Thermo, mzXML,
+ * ANDI files read in Python), handled as a Shimadzu file (float32 spectra summed
+ * on bins, ms_file_set_bin_width). n_scans MS1 scans in time order: rt (min),
+ * event (0 .. n_events-1), the spectrum of scan k = points offsets[k] to
+ * offsets[k+1]-1 of mz / it (offsets: n_scans+1 values from 0), tic and bpc per
+ * scan. Per event: polarity (+1 / -1; 0 unknown, reported as +1) and m/z range
+ * (ev_lo / ev_hi may be NULL; 0 = unknown). The arrays are copied. kind is
+ * returned by ms_file_kind. NULL on failure (ms_last_error). */
+MS_API ms_file* ms_open_arrays(const char* kind, const char* instrument, long n_scans, const double* rt,
+                               const int* event, const long long* offsets, const double* mz, const double* it,
+                               const double* tic, const double* bpc, int n_events, const int* ev_polarity,
+                               const double* ev_lo, const double* ev_hi, long n_msms);
+
 /* ------------------------------------------------- LC peak integration */
 typedef struct { double t0, t1, rt, height, area, base0, base1; } ms_lc_peak;
 /* Automatic integration of a chromatogram: peaks above threshold_pct of the
@@ -572,6 +585,36 @@ MS_API int ms_mass_shifts(const double* mass, const double* height, const double
                           long* npairs, const ms_shift_species** species, const int** comp, const double** conj,
                           long* ref_used);
 /* ---- end of the 3.35 additions ---- */
+
+/* ---- 4.1 additions: data files read by the caller -----------------------------------------------
+ * For formats whose vendor library the caller loads (Agilent MassHunter .D, Waters MassLynx .raw,
+ * Thermo .raw): the caller lists the MS1 scans and serves their spectra through a callback; events,
+ * averages, scans and mass chromatograms then work as for the files the library reads itself. */
+typedef struct {
+    double rt;            /* minutes; the scans in time order */
+    int polarity;         /* +1 / -1 (with events given: the event's) */
+    int profile;          /* 1: the spectrum of the scan is a profile */
+    int event;            /* index into the events given, or -1 when none are given (events = polarities) */
+    double mz_lo, mz_hi;  /* acquisition range, 0 = unknown */
+    double tic, bpc;      /* negative: summed / largest centroid */
+} ms_vendor_scan;
+/* what 0: the spectrum of the scan (its profile, or its centroids for a centroid scan); what 1: its
+ * centroids (n = 0 for a profile scan: the library centroids the profile as ms_centroid with rel 0.002).
+ * Sets *mz, *it (arrays of the caller, copied at once) and *n; returns 0, or not 0 when the scan cannot be
+ * read (the library call then fails with MS_ERROR). Called in the thread of the library call, one call at a
+ * time per file (for the centroids of every scan while ms_open_vendor runs); it must not call functions
+ * of the same file. */
+typedef int (*ms_vendor_fn)(void* user, long scan, int what, const double** mz, const double** it, long* n);
+/* events: n_events scan events (polarity, mz_lo, mz_hi used), each scan naming its own; 0 = one event per
+ * polarity. common_axis: every profile scan has the same m/z axis (summed point by point). The callback
+ * and user must stay valid until the file is closed. */
+MS_API ms_file* ms_open_vendor(const char* kind, const char* instrument, long n_msms, const ms_vendor_scan* scans,
+                               long n, const ms_vendor_scan* events, int n_events, int common_axis,
+                               ms_vendor_fn fn, void* user, ms_progress_fn cb, void* cbuser);
+/* LZF decompression (the liblzf format; Agilent MassHunter stores profile spectra so): *n_out receives the
+ * bytes written to out; MS_NOT_FOUND when the data need more than cap bytes, MS_ERROR for damaged data. */
+MS_API int ms_lzf_decompress(const unsigned char* in, long n_in, unsigned char* out, long cap, long* n_out);
+/* ---- end of the 4.1 additions ---- */
 
 #ifdef __cplusplus
 }

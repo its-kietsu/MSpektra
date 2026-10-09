@@ -1,6 +1,6 @@
 """
-LCMS Analysis (MSpektra): LC-MS workspace for Shimadzu LabSolutions .lcd
-files. The shared plotting, tool bar, integration and deconvolution classes
+LCMS Analysis (MSpektra): LC-MS and HPLC workspace for Shimadzu LabSolutions
+.lcd files and the files of other vendors (lcms_sources.py). The shared plotting, tool bar, integration and deconvolution classes
 here are also used by HRMS Analysis (hrms.py).
 
 Part of the portable add-ons; the deconvolution engine itself is unchanged.
@@ -16,7 +16,9 @@ PDA tab
   More wavelengths, max plot, UV averages with background subtraction,
   overlay of the MS trace with an adjustable delay, peak integration, export.
 
-Data readers: lcms_data.py (MS, uses OpenSZRaw) and lcms_pda.py (PDA).
+Data readers: lcms_data.py (MS, uses OpenSZRaw) and lcms_pda.py (PDA) for .lcd
+files; lcms_sources.py for Agilent, Waters, Thermo, mzML, mzXML and ANDI files
+(data_formats.py tells the formats apart).
 """
 import os
 import sys
@@ -34,6 +36,7 @@ from unidec_theme import C, ui_font
 import lcms_data
 import lcms_pda
 import lcms_integrate as LI
+import data_formats
 
 INK = "#000000"  # axes, ticks and labels
 TRACE = "#1D4ED8"  # the main trace (spectra, chromatograms, UV)
@@ -1904,9 +1907,10 @@ def _spaced_locator(spacing_pt=32.0):
     return SpacedLocator(nbins=4, steps=[1, 2, 2.5, 5, 10], min_n_ticks=3)
 
 
-def _x_locator():
+def _x_locator(steps=(1, 2, 2.5, 5, 10)):
     """At most 8 labelled ticks on the x axis, fewer where the plot is too narrow for their numbers
-    (a copied journal sized image of a mass spectrum had its 5 digit numbers run into each other)."""
+    (a copied journal sized image of a mass spectrum had its 5 digit numbers run into each other).
+    steps: the tick steps allowed (times: without 2.5, which gave 2.5, 5.0, 7.5 min)."""
     from matplotlib.ticker import MaxNLocator
 
     class WidthLocator(MaxNLocator):
@@ -1924,7 +1928,7 @@ def _x_locator():
             except Exception:
                 pass
             return MaxNLocator.__call__(self)
-    return WidthLocator(nbins=8, steps=[1, 2, 2.5, 5, 10])
+    return WidthLocator(nbins=8, steps=list(steps))
 
 
 def _titles_state(fig):
@@ -3505,7 +3509,7 @@ class TabBase(wx.Panel):
         return []  # extra legend entries [(colour, label)]
 
     def empty_text(self, view):
-        return "Open a LabSolutions .lcd file"
+        return "Open a data file"
 
     def plot_view(self, v, keep_view=False):
         card = v.card
@@ -4144,7 +4148,7 @@ class MSTab(TabBase):
     PICK_MIN = 0.3  # smallest m/z window for clicking a peak
     TOL_DEFAULT = "0.5"
     FULL_WINDOW = True  # offer the separate Deconvolute window (UniDec GUI) for this kind of data
-    OPEN_HINT = "Open a LabSolutions .lcd file or drop it here"
+    OPEN_HINT = "Open a data file or drop it here"
 
     def __init__(self, parent, frame):
         TabBase.__init__(self, parent, frame)
@@ -4480,7 +4484,8 @@ class MSTab(TabBase):
             sub = "m/z %g to %g" % (e_["mz_low"], e_["mz_high"]) if e_["mz_low"] else ""
             if n >= 3:
                 sub += (", " if sub else "") + "smoothed (%d points)" % n
-            col["view"].card.set_title(_pol_name(self.pol(ev), ev), sub)
+            col["view"].card.set_title(_pol_name(self.pol(ev), ev) if self.pol(ev) or not getattr(
+                self.data, "labels", None) else self.data.event_label(ev), sub)  # (labels: lcms_sources)
         self.update_trace_choice()
         self.plot_chroms(keep_view=True)
 
@@ -5066,7 +5071,7 @@ class MSTab(TabBase):
 
     def on_export_spectrum(self, e=None):
         if not self.data:
-            self.status("Open a .lcd file first")
+            self.status("Open a data file first")
             return
         e = self._chosen(e)
         col = self.cols[e]
@@ -5436,7 +5441,7 @@ class PDATab(TabBase):
     def empty_text(self, v):
         if self.frame.path and not self.pda:
             return "This file has no PDA data"
-        return "Open a LabSolutions .lcd file with PDA data"
+        return "Open a data file with PDA data"
 
     def set_data(self, pda, ms):
         self.pda, self.ms = pda, ms
@@ -5726,7 +5731,9 @@ class PDATab(TabBase):
             ln._ui_only = True
             ln._no_scale = True
             self._uv_marker = card.add_live(ln)
-        card.full = (float(wl[0]), float(wl[-1]))
+        card.full = (float(wl[0]), float(wl[-1])) if wl[-1] > wl[0] else (wl[0] - 1.0, wl[0] + 1.0)
+        if len(wl) == 1:  # one wavelength: a point
+            ax.plot(wl, a, "o", color=TRACE, ms=3)
         ax.set_xlim(*(view if view else card.full))
         card.autoscale_y(pad=0.12)
         self._uv_labels = [card.add_live(t) for t in self._label_uv(ax, wl, a)]
@@ -5847,11 +5854,12 @@ class PDATab(TabBase):
         comp = self.cscale.GetSelection() != 1
         norm = PowerNorm(0.4, vmin=0, vmax=vmax) if comp else Normalize(vmin=0, vmax=vmax)
         t, wl = self.pda.times, self.pda.wavelengths
+        w0, w1 = (float(wl[0]), float(wl[-1])) if wl[-1] > wl[0] else (wl[0] - 1.0, wl[0] + 1.0)  # (one wavelength)
         ax.imshow(img, origin="lower", aspect="auto", cmap="viridis", norm=norm,
-                  extent=[t[0], t[-1], wl[0], wl[-1]], interpolation="nearest")
+                  extent=[t[0], t[-1], w0, w1], interpolation="nearest")
         ax.yaxis.set_major_formatter(ScalarFormatter())
         card.full = (float(t[0]), float(t[-1]))
-        card.full_y = (float(wl[0]), float(wl[-1]))
+        card.full_y = (w0, w1)
         ax.set_xlim(*card.full)
         ax.set_ylim(*card.full_y)
         card.set_title("Wavelength map", "colour 0 to %.0f mAU%s" % (vmax, ", compressed scale" if comp else ""))
@@ -5994,8 +6002,9 @@ def show_text(parent, title, text):
     dlg.Destroy()
 
 
-HELP_TEXT = """LCMS Analysis opens Shimadzu LabSolutions LC-MS files (.lcd): the mass
-spectra and, if recorded, the PDA (UV/Vis) data. Most tools are in the
+HELP_TEXT = """LCMS Analysis opens LC-MS and HPLC files: Shimadzu .lcd, Agilent .D,
+Waters .raw, Thermo .raw, mzML, mzXML and ANDI .cdf. Sciex .wiff: convert
+to mzML first (ProteoWizard MSConvert). Most tools are in the
 right click menus of the plots; F9 shows or hides the side panel.
 
 Mass spectrometry
@@ -6354,8 +6363,7 @@ class FilesPanel(wx.Panel):
         self.fitems = items[:300]
         self._clamp_top()  # a shorter list: no empty space scrolled into view
         self.Refresh()
-        todo = [it["path"] for it in self.fitems if it["path"].lower().endswith(".lcd")
-                and (it["path"], it["mtime"]) not in self._info]
+        todo = [it["path"] for it in self.fitems if (it["path"], it["mtime"]) not in self._info]
         if todo:
             threading.Thread(target=self._read_infos, args=(todo, {it["path"]: it["mtime"] for it in self.fitems}),
                              daemon=True).start()
@@ -6363,7 +6371,8 @@ class FilesPanel(wx.Panel):
     def _read_infos(self, paths, mt):
         for p in paths:
             try:
-                info = lcms_data.read_sample_info(p)
+                import lcms_sources
+                info = lcms_sources.read_sample_info(p)
             except Exception:
                 info = {}
             self._info[(p, mt.get(p))] = info
@@ -6882,11 +6891,12 @@ def _copy_text(text):
 
 def _file_kind(path):
     try:
+        name = data_formats.kind_name(data_formats.detect(path)[1])
         if os.path.isdir(path):
-            return "Bruker .d folder"
+            return name + " folder" if name else "Folder"
         ext = os.path.splitext(path)[1].lstrip(".") or "file"
         mb = os.path.getsize(path) / 1048576.0
-        return "%s  ·  %.0f MB" % ({"lcd": "LabSolutions .lcd", "mzml": "mzML"}.get(ext.lower(), ext), mb)
+        return "%s  ·  %.0f MB" % (name or ext, mb)
     except OSError:
         return ""
 
@@ -7832,11 +7842,13 @@ class PostrunFrame(wx.Frame):
             return
         doc.path = path
         fr.files.folder_override = None
-        if path.lower().endswith(".lcd"):
+        si = doc.attrs.pop("source_info", None)  # read with the data (lcms_sources)
+        if si is None and path.lower().endswith(".lcd"):
             try:
                 si = lcms_data.read_sample_info(path)
             except Exception:
                 si = {}
+        if si is not None:
             doc.sample_info = si
             bits = [si.get("sample_name") or ""] + ([si["acquired"].strftime("%d.%m.%Y %H:%M")]
                                                    if si.get("acquired") else [])
@@ -7879,7 +7891,7 @@ def _read_problem(path, detail):
 class LCMSFrame(PostrunFrame):
     TITLE = TITLE
     HELP = HELP_TEXT
-    START_HINT = "Open a LabSolutions .lcd file (Ctrl+O) or drop it here"
+    START_HINT = "Open a data file (Ctrl+O) or drop it here"
     FOLDER_KEY = "lcms_folder"
     _linking = False
 
@@ -8056,12 +8068,33 @@ class LCMSFrame(PostrunFrame):
         return [("file", "File"), ("ms", "MS"), ("pda", "PDA")]
 
     def accepts(self, path):
-        return path.lower().endswith(".lcd") and os.path.isfile(path)
+        return data_formats.detect(path)[1] in data_formats.LCMS_KINDS
+
+    def browse_accepts(self, path):
+        """Data sets listed in the file panel (a Thermo .raw file without
+        reading its header)."""
+        low = path.lower().rstrip("\\/")
+        if low.endswith((".raw", ".lcd", ".mzml", ".mzxml", ".cdf")):
+            return os.path.isfile(path) or data_formats.detect(path)[1] == "waters_raw"
+        return low.endswith(".d") and data_formats.detect(path)[1] == "agilent_chemstation"
+
+    def load(self, path):
+        path = data_formats.data_path(path)
+        if data_formats.detect(path)[1] == "sciex_wiff":
+            import lcms_sources
+            wx.MessageBox(lcms_sources.WIFF_TEXT, self.TITLE, wx.ICON_INFORMATION)
+            return
+        PostrunFrame.load(self, path)
+
+    def raw_open_items(self):
+        return [("Open raw data…", self.open_files), ("Open a .D or .raw folder…", self.open_folder)]
 
     def on_open(self, e=None):
-        dlg = wx.FileDialog(self.window(), "Open LabSolutions LC-MS data",
-                            defaultDir=self.folder(),
-                            wildcard="LabSolutions LC-MS data (*.lcd)|*.lcd|All files (*.*)|*.*",
+        self.open_files()
+
+    def open_files(self):
+        dlg = wx.FileDialog(self.window(), "Open LC-MS or HPLC data", defaultDir=self.folder(),
+                            wildcard=data_formats.LCMS_WILDCARD,
                             style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST | wx.FD_MULTIPLE)
         try:
             if dlg.ShowModal() == wx.ID_OK:
@@ -8070,7 +8103,28 @@ class LCMSFrame(PostrunFrame):
         finally:
             dlg.Destroy()
 
+    def open_folder(self):
+        dlg = wx.DirDialog(self.window(), "Open an Agilent .D or Waters .raw folder", defaultPath=self.folder(),
+                           style=wx.DD_DEFAULT_STYLE | wx.DD_DIR_MUST_EXIST)
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            path = dlg.GetPath()
+        finally:
+            dlg.Destroy()
+        if not self.accepts(path):
+            wx.MessageBox("%s is not a data folder LCMS Analysis can read." % path, self.TITLE, wx.ICON_WARNING)
+            return
+        self.load(path)
+
     def read_data(self, path, progress):
+        if data_formats.detect(path)[1] != "shimadzu_lcd":  # other vendors: lcms_sources
+            import lcms_sources
+            data, notes = lcms_sources.read(path, progress)
+            self.source_info = data.pop("info", {})
+            if data.get("ms") is None and data.get("pda") is None:
+                raise RuntimeError("no MS or UV data in this file")
+            return data, notes
         ms = pda = None
         errors = []
         engine = None
@@ -8111,7 +8165,8 @@ class LCMSFrame(PostrunFrame):
             self.chips["ms"].SetValue("ESI " + txt if all(pols) else txt)
         else:
             self.chips["ms"].SetValue("none")
-        self.chips["pda"].SetValue(("%.0f to %.0f nm" % (pda.wavelengths[0], pda.wavelengths[-1])) if pda else "none")
+        self.chips["pda"].SetValue(("%.0f to %.0f nm" % (pda.wavelengths[0], pda.wavelengths[-1]) if
+                                    len(pda.wavelengths) > 1 else "%.0f nm" % pda.wavelengths[0]) if pda else "none")
         self.ms.set_data(ms)
         self.pda.set_data(pda, ms)
         self.enable_segment(0, ms is not None)

@@ -1,11 +1,13 @@
-MSpektra 4.0 - portable Windows package   (09.10.2026)
+MSpektra 4.1 - portable Windows package   (09.10.2026)
 ======================================================
 
 Analysis of LC-MS and HRMS data, with deconvolution:
-  * LCMS Analysis   Shimadzu LabSolutions .lcd files (MS and PDA)
+  * LCMS Analysis   LC-MS and HPLC files (MS and PDA): Shimadzu .lcd,
+                   Agilent .D, Waters .raw, Thermo .raw, mzML, mzXML, ANDI
   * HRMS Analysis   Bruker .d folders (maXis and other QTOF instruments:
                    analysis.baf or the newer analysis.tsf; timsTOF:
-                   analysis.tdf) and mzML:
+                   analysis.tdf), Agilent MassHunter .D folders, Waters
+                   .raw folders, Thermo .raw files and mzML:
                    internal calibration, exact mass, formula finder
   * Deconvolute    the full deconvolution window for any mass spectrum
 
@@ -34,6 +36,25 @@ The version is shown on the start screen, in the help window (?) of LCMS
 and HRMS Analysis, and in the first line of each log file. It went up by
 0.1 with every update until 3.3. Since 3.31 a small change adds 0.01, a
 large change 0.1 and a big change 1.0.
+
+4.1 (09.10.2026)
+Files of every vendor open in their own raw formats.
+* LCMS Analysis opens Agilent ChemStation/OpenLab .D and .dx, Waters .raw,
+  Thermo .raw, mzML, mzXML and ANDI/AIA .cdf files (MS, PDA/UV or both,
+  also HPLC files without MS).
+* HRMS Analysis opens Agilent MassHunter .D (TOF, Q-TOF), Waters .raw and
+  Thermo .raw (Orbitrap) files, besides Bruker .d and mzML.
+* Sciex .wiff files give a short note to convert them to mzML with
+  ProteoWizard MSConvert.
+* Files dropped onto MSpektra.exe open in the window that fits their format.
+* Reports name the instrument of every vendor.
+* Agilent files are read with rainbow 1.5.3 (LGPL, see LICENSES), Waters
+  files with rainbow (LCMS) or the Waters MassLynx library (HRMS), Thermo
+  files with Thermo's RawFileReader; averaging, calibration and everything
+  else run in the C++ core as for Shimadzu and Bruker data.
+* Compare view figures in journal style: Arial, open frame (time axis and
+  scale bar for stacked and offset traces), whole number time ticks,
+  colour-blind safe colours, retention times clear of the other traces.
 
 4.0 (09.10.2026)
 * MS Analysis is now called MSpektra: MSpektra.exe, MSpektra.bat and
@@ -991,9 +1012,11 @@ QUICK START
    pinned UniDec icon should be unpinned and MSpektra pinned instead).
 
 Opening a data file directly: drag it onto MSpektra.exe, or use
-"Open with > MSpektra.exe": a .lcd file opens in LCMS Analysis, a Bruker
-.d folder (or analysis.baf inside it) or an .mzML file in HRMS Analysis,
-anything else (.jdx, .txt, .raw, ...) in the Deconvolute window.
+"Open with > MSpektra.exe": LC-MS and HPLC files (.lcd, Agilent .D, Waters
+.raw, Thermo .raw, ANDI .cdf) open in LCMS Analysis; a Bruker .d folder (or
+analysis.baf inside it), an Agilent MassHunter .d, a Thermo Orbitrap .raw
+or an .mzML file in HRMS Analysis; anything else (.jdx, .txt, ...) in the
+Deconvolute window.
 
 MSpektra.exe is a small launcher that starts the bundled Python; it is
 not digitally signed, so a copy downloaded from the internet may show a
@@ -1164,6 +1187,35 @@ it reports m/z values twice too high; LCMS Analysis detects this from the scan
 range stored in the file and corrects it. The PDA decoder and everything
 else are part of this package (_portable\unilcms.py, lcms_data.py,
 lcms_pda.py, lcms_integrate.py).
+
+
+LCMS ANALYSIS: FILES OF OTHER VENDORS
+-------------------------------------
+Open raw data... (Ctrl+O), Open a .D or .raw folder..., or drag the file or
+folder onto the window. A file may hold MS data, PDA (UV/Vis) data or both.
+* Agilent ChemStation / OpenLab .D folders: DAD spectra (*.uv), single
+  wavelength signals (*.ch, shown together as a PDA map when there are no
+  spectra), single quad MS (MSD1.MS ...: one scan event per signal, polarity
+  from the acquisition method). OpenLab .dx files too.
+* Waters .raw folders: MS functions (polarity per function) and the PDA
+  function (stored in micro AU, shown in mAU); the PDA analog channels when
+  there is no PDA function.
+* Thermo .raw files: MS1 scans (the centroids of profile FT scans), events
+  by polarity and analyzer; PDA or UV channels.
+* mzML and mzXML (MS only).
+* ANDI / AIA netCDF (.cdf), exported by Empower, Chromeleon, OpenLab,
+  LabSolutions and others: MS data or one chromatogram channel.
+* Sciex .wiff / .wiff2 cannot be read: convert them to mzML (ProteoWizard
+  MSConvert).
+Spectra are averaged on m/z bins (bin width setting) as for .lcd files
+(mzML files as in HRMS Analysis).
+Other detectors (ELSD, CAD, FID, analog signals) and MRM data are not shown;
+the status bar names them.
+Agilent and Waters files are read with rainbow 1.5.3 (LGPL 3.0, unmodified,
+_portable\wheels; see LICENSES\rainbow_LICENSE_LGPL-3.0.txt), Thermo files
+with Thermo's RawFileReader (shipped with the UniDec package, licence in
+LICENSES\Thermo_RawFileReader_License.doc), mzXML with pyteomics, netCDF
+with SciPy.
 
 
 COMPARE VIEW (LCMS ANALYSIS)
@@ -1430,8 +1482,8 @@ F1 opens the list of every shortcut (search field; this window or every
 window); the help (?) in the top bar still shows the overview.
 
 Anywhere in the window (also while the cursor is in a field)
-  Ctrl+O                      open a data file (.lcd; HRMS: a Bruker .d
-                              folder; mzML from the Open menu)
+  Ctrl+O                      open a data file (.lcd; HRMS: a .d folder;
+                              .raw and mzML from the Open menu)
   Ctrl+Shift+S                save the analysis
   Ctrl+W                      close the file shown
   Ctrl+R                      create a report
@@ -1855,8 +1907,8 @@ gives 18366.6 Da (variant A, the reference) and 18280.7 Da, "variant B
 protein of Protein POS.d shows its oxidation (+15.9 Da).
 
 
-HRMS ANALYSIS: BRUKER .D FOLDERS AND MZML
------------------------------------------
+HRMS ANALYSIS: DATA FILES
+-------------------------
 Reads Bruker .d folders with analysis.baf (maXis, maXis II, impact,
 compact, micrOTOF, apex/solariX) with Bruker's Baf2Sql library (bundled in
 _portable\baf2sql), .d folders in the newer TSF format (analysis.tsf and
@@ -1865,8 +1917,26 @@ in _portable\timsdata), timsTOF .d folders (analysis.tdf and
 analysis.tdf_bin; MS1 frames with the ion mobility dimension summed, MS/MS
 frames left out; same SDK), and mzML files (profile or centroid; e.g.
 converted with ProteoWizard msconvert). Open:
-the Open button offers "Bruker .d folder" and "mzML file"; or drag the .d
-folder onto the window or onto MSpektra.exe.
+the Open button offers "Bruker or Agilent .d folder", "Waters .raw folder"
+and "mzML or Thermo .raw file"; or drag the folder or file onto the window.
+Other vendors (MS1 scans; MS/MS scans are counted, not shown):
+* Agilent MassHunter .D folders (TOF, Q-TOF): AcqData\MSScan.bin with
+  MSProfile.bin (profile, run length or LZF compressed) and/or MSPeak.bin
+  (centroids), read with the rainbow library (rainbow-api 1.5.3, LGPL,
+  _portable\wheels). The m/z values are those of the calibration stored
+  with each scan (MSMassCal.bin, or DefaultMassCal.xml). One event per
+  polarity (and per collision energy when there are several).
+* Waters .raw folders (Synapt, Xevo, also quadrupoles) with Waters'
+  MassLynx library (MassLynxRaw.dll in the private Python): the m/z values
+  with the calibration of the file; lock mass correction is not applied
+  (use the calibration of HRMS Analysis). One event per MS function.
+* Thermo .raw files (Orbitrap, LTQ FT) with Thermo's RawFileReader: profile
+  scans with their centroid lists; one event per polarity and analyzer
+  (FTMS, ITMS) and SIM apart from full scans.
+* Sciex .wiff: not readable without Sciex's licensed library; convert to
+  mzML with ProteoWizard msconvert.
+The spectra of these files are read in Python; averaging, mass
+chromatograms and everything after run in msengine as for Bruker data.
 The first time a .d folder is opened, Baf2Sql writes a small index file
 (analysis.sqlite) into it; for a write-protected folder a temporary copy is
 used. The m/z values are those of the last calibration saved with the file

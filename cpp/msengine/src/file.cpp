@@ -413,22 +413,19 @@ void closed_cancel(const FileRef& ref) {
     if (ref->closing.load()) throw ms::Cancelled("cancelled: the file was closed");
 }
 
-}  // namespace
-
-extern "C" {
-
-MS_API ms_file* ms_open(const char* path, const char* sdk_dir, ms_progress_fn cb, void* user) {
-    ms_file* out = nullptr;
-    ms::guarded([&] {
-        if (!path) throw std::invalid_argument("ms_open: null path");
-        const std::string p(path);
-        if (p.empty()) throw std::invalid_argument("ms_open: empty path");
+// ms_open, ms_open_arrays and ms_open_vendor: the reader given (arrays, vendor) or the one of the
+// path's format, then the events, the summary and the registry (throws on failure)
+ms_file* open_file(const std::string& p, std::unique_ptr<ms::Reader> given, const char* sdk_dir, ms_progress_fn cb,
+                   void* user) {
+        ms_file* out = nullptr;
         std::unique_ptr<ms_file> f(new ms_file());
         Progress pr;
         pr.cb = cb;
         pr.user = user;
         std::string d;
-        if (ends_with_ci(p, ".mzml")) {
+        if (given) {
+            f->reader = std::move(given);
+        } else if (ends_with_ci(p, ".mzml")) {
             require_regular_file(p, "an mzML file");
             f->reader = ms::open_mzml(p, progress_wrap, &pr);
         } else if (ends_with_ci(p, ".lcd")) {
@@ -530,6 +527,50 @@ MS_API ms_file* ms_open(const char* path, const char* sdk_dir, ms_progress_fn cb
         r.serials.insert(f->serial);
         r.live.emplace(f.get(), f->serial);
         out = f.release();
+        return out;
+}
+
+}  // namespace
+
+extern "C" {
+
+MS_API ms_file* ms_open(const char* path, const char* sdk_dir, ms_progress_fn cb, void* user) {
+    ms_file* out = nullptr;
+    ms::guarded([&] {
+        if (!path) throw std::invalid_argument("ms_open: null path");
+        const std::string p(path);
+        if (p.empty()) throw std::invalid_argument("ms_open: empty path");
+        out = open_file(p, nullptr, sdk_dir, cb, user);
+    });
+    return out;
+}
+
+MS_API ms_file* ms_open_arrays(const char* kind, const char* instrument, long n_scans, const double* rt,
+                               const int* event, const long long* offsets, const double* mz, const double* it,
+                               const double* tic, const double* bpc, int n_events, const int* ev_polarity,
+                               const double* ev_lo, const double* ev_hi, long n_msms) {
+    ms_file* out = nullptr;
+    ms::guarded([&] {
+        const std::string k(kind && *kind ? kind : "arrays");
+        out = open_file(k, ms::open_arrays(k, instrument ? instrument : "", n_scans, rt, event, offsets, mz, it, tic,
+                                           bpc, n_events, ev_polarity, ev_lo, ev_hi, n_msms),
+                        nullptr, nullptr, nullptr);
+    });
+    return out;
+}
+
+MS_API ms_file* ms_open_vendor(const char* kind, const char* instrument, long n_msms, const ms_vendor_scan* scans,
+                               long n, const ms_vendor_scan* events, int n_events, int common_axis,
+                               ms_vendor_fn fn, void* user, ms_progress_fn cb, void* cbuser) {
+    ms_file* out = nullptr;
+    ms::guarded([&] {
+        Progress pr;
+        pr.cb = cb;
+        pr.user = cbuser;
+        const std::string k(kind && *kind ? kind : "vendor file");
+        out = open_file(k, ms::open_vendor(kind, instrument, n_msms, scans, n, events, n_events, common_axis != 0, fn,
+                                           user, progress_wrap, &pr),
+                        nullptr, nullptr, nullptr);
     });
     return out;
 }

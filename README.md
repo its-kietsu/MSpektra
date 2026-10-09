@@ -2,8 +2,8 @@
 
 Windows program for LC-MS and HRMS analysis with deconvolution.
 
-- **LCMS Analysis:** Shimadzu LabSolutions .lcd files (MS and PDA), peak integration, Compare view
-- **HRMS Analysis:** Bruker .d folders and mzML, calibration, exact mass, formula finder
+- **LCMS Analysis:** LC-MS and HPLC files of Shimadzu (.lcd), Agilent (ChemStation/OpenLab .D, .dx), Waters (.raw) and Thermo (.raw), mzML, mzXML and ANDI/AIA .cdf (MS, PDA/UV or both); peak integration, Compare view
+- **HRMS Analysis:** Bruker .d, Agilent MassHunter .D, Waters .raw, Thermo .raw (Orbitrap) and mzML; calibration, exact mass, formula finder
 - **Deconvolution:** Bayesian (UniDec), maximum entropy and IsoDec
 
 ## Download
@@ -32,4 +32,4 @@ Copy the DLLs into `_portable\msengine\`. To run from source, copy `python\`, `_
 
 ## License
 
-MSpektra is released under the [MIT License](LICENSE). Third-party components keep their own licenses (see `LICENSES\`): UniDec (BSD-style, including the code compiled from it in `cpp\msengine\src\udengine` and `unidec.cpp`), Python, OpenSZRaw, olefile, the Bruker, Thermo and Waters libraries.
+MSpektra is released under the [MIT License](LICENSE). Third-party components keep their own licenses (see `LICENSES\`): UniDec (BSD-style, including the code compiled from it in `cpp\msengine\src\udengine` and `unidec.cpp`), Python, OpenSZRaw, olefile, rainbow (LGPL-3.0, Agilent and Waters files), the Bruker, Thermo and Waters libraries.

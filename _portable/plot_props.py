@@ -38,11 +38,11 @@ MAX_TICKS = 50  # a tick step giving more ticks than this in the view is replace
 
 def props():
     """The defaults: the plot as drawn without graph properties (sizes in points)."""
-    return {"font": "",
+    return {"font": "Arial",
             "size_ticks": 9.0, "size_titles": 10.0, "size_names": 8.0, "size_rt": 7.0, "size_guides": 7.5,
             "size_bar": 8.5, "bold_titles": False, "bold_names": False, "bold_rt": False,
             "xtitle": "", "ytitle": "", "x0": None, "x1": None, "y0": None, "y1": None, "xstep": None, "ystep": None,
-            "minor": True, "tickdir": "out", "frame": "box", "frame_lw": 0.8, "grid": "none",
+            "minor": True, "tickdir": "out", "frame": "open", "frame_lw": 0.8, "grid": "none",
             "legend_loc": "best", "legend_frame": False, "fill_alpha": 16,
             "title": "", "size_title": 11.0, "bold_title": True, "letter": "", "size_letter": 12.0,
             "traces": {}}  # per trace (key of the owner): {"lw": pt or None (the common width), "ls": "-"}
@@ -53,10 +53,29 @@ def is_default(p):
     return all(p.get(k) == v for k, v in d.items())
 
 
+_HAVE = {}
+
+
+def _have(name):
+    """Is the font installed? (matplotlib logged a warning for every missing font of a list, on every draw)"""
+    if name not in _HAVE:
+        try:
+            from matplotlib import font_manager as fm
+            fm.findfont(fm.FontProperties(family=name), fallback_to_default=False)
+            _HAVE[name] = True
+        except Exception:
+            _HAVE[name] = False
+    return _HAVE[name]
+
+
 def family(p):
-    """matplotlib font family list of the properties, None for the program's font."""
+    """matplotlib font family list of the properties (the installed ones of the font and its stand-ins),
+    None for the program's font."""
     f = p.get("font") or ""
-    return [f] + FALLBACK.get(f, []) if f else None
+    if not f:
+        return None
+    fam = [f] + FALLBACK.get(f, [])
+    return [x for x in fam if _have(x)] or fam[-1:]
 
 
 _FOUND = {}

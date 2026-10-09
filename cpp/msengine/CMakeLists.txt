@@ -25,6 +25,7 @@ set(SOURCES
   src/peaks.cpp
   src/maxent.cpp
   src/shimadzu.cpp
+  src/arrays.cpp
   src/lctools.cpp
   src/calib.cpp
   src/formula.cpp
@@ -36,6 +37,7 @@ set(SOURCES
   src/compare.cpp
   src/adducts.cpp
   src/shifts.cpp
+  src/vendor.cpp
   third_party/miniz.c
   third_party/sqlite3.c)
 set(MS_DEFS MSENGINE_BUILD SQLITE_OMIT_LOAD_EXTENSION SQLITE_THREADSAFE=1 SQLITE_DEFAULT_MEMSTATUS=0)

@@ -1545,9 +1545,9 @@ def _install_last_folder():
 # 7. launcher (light frosted glass)
 # --------------------------------------------------------------------------
 APP_NAME = "MSpektra"
-APP_VERSION = "4.0"  # +0.01 small change, +0.1 large change, +1.0 big change
+APP_VERSION = "4.1"  # +0.01 small change, +0.1 large change, +1.0 big change
 WORKSPACES = [
-    ("LCMS Analysis", "Shimadzu .lcd files", "lcms"),
+    ("LCMS Analysis", "LC-MS and HPLC files", "lcms"),
     ("HRMS Analysis", "Bruker .d and mzML files", "hrms"),
     ("Deconvolute", "Text, JCAMP-DX, mzML, Thermo and Waters spectra", "deconv"),
 ]

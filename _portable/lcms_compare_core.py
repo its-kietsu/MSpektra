@@ -22,7 +22,7 @@ SCALES = [("abs", "Same scale"), ("max", "Each to its tallest peak (100 %)"),
           ("ref", "Each to its peak at the reference time (100 %)")]
 LAYOUTS = [("stacked", "Stacked"), ("offset", "Offset"), ("overlay", "Overlay")]
 YAXES = [("auto", "Automatic"), ("bar", "Scale bar"), ("axis", "Axis with values"), ("none", "None")]
-COLOURS = [("palette", "Palette"), ("gradient", "Gradient"), ("black", "Black"), ("dark", "Dark blue")]
+COLOURS = [("palette", "Colour-blind safe"), ("gradient", "Gradient"), ("black", "Black"), ("dark", "Dark blue")]
 LABELS = [("right", "At the right end"), ("outside", "Right of the frame"), ("left", "At the left end"),
           ("legend", "Legend"), ("none", "None")]
 LABEL_TEXT = [("sample", "Sample name"), ("file", "File name"), ("both", "Sample name and file name")]
@@ -65,12 +65,12 @@ def skew_of(s):
 
 
 def yaxis_mode(s, n=2):
-    """The y axis drawn: "bar" (a scale bar instead of the axis: stacked traces apart from each other,
-    where the axis reads true for the lowest only), "axis" (with its values: overlay, offset, a single
+    """The y axis drawn: "bar" (a scale bar instead of the axis: stacked or offset traces apart from each
+    other, where the axis reads true for the lowest only), "axis" (with its values: overlay, a single
     trace) or "none"."""
     k = s.get("yaxis", "auto")
     if k == "auto":
-        return "bar" if (s.get("layout", "stacked") == "stacked" and n > 1) else "axis"
+        return "bar" if (offset_layout(s) and n > 1) else "axis"
     return k if k in ("bar", "axis", "none") else "axis"
 
 

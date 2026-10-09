@@ -137,6 +137,11 @@ def lib():
         if hasattr(L, "ms_event_flags"):  # since 2.8: saturated scans (Shimadzu)
             L.ms_event_flags.argtypes = [c_void_p, c_int, POINTER(POINTER(ctypes.c_ubyte))]
             L.ms_event_flags.restype = c_long
+        if hasattr(L, "ms_open_arrays"):  # scans read in Python (lcms_sources)
+            PI, PLL = POINTER(c_int), POINTER(ctypes.c_longlong)
+            L.ms_open_arrays.argtypes = [c_char_p, c_char_p, c_long, PD, PI, PLL, PD, PD, PD, PD, c_int, PI, PD, PD,
+                                         c_long]
+            L.ms_open_arrays.restype = c_void_p
         _LIB["lib"] = L
         print("[engine] %s loaded from %s" % (L.ms_version().decode(), p))
     except Exception as ex:
@@ -181,7 +186,7 @@ class Cancelled(Exception):
 class EngineFile(object):
     """A data file read by the C++ core; same interface as hrms_data.BrukerD."""
 
-    def __init__(self, path, progress=None):
+    def __init__(self, path, progress=None, handle=None):
         L = lib()
         if L is None:
             raise RuntimeError(_LIB["error"] or "msengine not available")
@@ -189,10 +194,12 @@ class EngineFile(object):
         self.path = path
         self.name = os.path.splitext(os.path.basename(path.rstrip("\\/")))[0]
         self._cb = PROGRESS(lambda u, i, n: 1 if (progress is None or progress(i, n) is not False) else 0)
-        self.handle = L.ms_open(path.encode("utf-8"), HERE.encode("utf-8"), self._cb, None)
+        # handle: a file opened already (open_arrays)
+        self.handle = handle or L.ms_open(path.encode("utf-8"), HERE.encode("utf-8"), self._cb, None)
         if not self.handle:
             raise RuntimeError(_err(L))
         self.kind = L.ms_file_kind(self.handle).decode("utf-8", "replace")
+        self.binned = self.kind == "Shimadzu .lcd" or handle is not None  # sums on bins (bin width setting)
         self._summary = L.ms_file_summary(self.handle).decode("utf-8", "replace")
         self.recal_note = L.ms_file_recalibration(self.handle).decode("utf-8", "replace")
         self.has_profile = bool(L.ms_file_has_profile(self.handle))
@@ -243,7 +250,7 @@ class EngineFile(object):
         # instrument, sample, operator, method and date (the reports use them), as the Python readers
         try:
             import hrms_data
-            self.props = hrms_data.file_properties(path, self.kind)
+            self.props = hrms_data.file_properties(path, self.kind) if handle is None else {}
         except Exception as ex:
             print("[engine] file properties of %s not read: %s" % (os.path.basename(path), ex))
             self.props = {}
@@ -267,6 +274,9 @@ class EngineFile(object):
         return self._scans[event]
 
     def event_label(self, event):
+        labels = getattr(self, "labels", None)  # set by the reader of the file (lcms_sources)
+        if labels:
+            return labels[event]
         name = {"+": "Positive", "-": "Negative"}.get(self.events[event]["polarity"], "Scans")
         if self.kind == "Shimadzu .lcd" and self.n_events > 1:
             name += " (event %d)" % (event + 1)
@@ -274,7 +284,7 @@ class EngineFile(object):
 
     def _bins(self, binw):
         """Bin width of the Shimadzu sums (the LCMS window's setting)."""
-        if self.kind != "Shimadzu .lcd":
+        if not getattr(self, "binned", False):
             return
         w = float(binw) if binw else 0.05
         if abs(w - getattr(self, "_binw", 0.05)) < 1e-12:
@@ -458,6 +468,41 @@ def open_file(path, progress=None):
     if not available():
         return None
     return EngineFile(path, progress)
+
+
+def open_arrays(path, kind, instrument, rt, event, offsets, mz, it, tic, bpc, ev_pol, ev_lo=None, ev_hi=None,
+                n_msms=0):
+    """EngineFile of scans read in Python (see ms_open_arrays in msengine.h), or
+    None when the library has no ms_open_arrays."""
+    L = lib()
+    if L is None or not hasattr(L, "ms_open_arrays"):
+        return None
+    PD = POINTER(c_double)
+    keep = []
+
+    def d(a):
+        a = np.ascontiguousarray(a, dtype=np.float64)
+        keep.append(a)
+        return a.ctypes.data_as(PD)
+
+    def i32(a):
+        a = np.ascontiguousarray(a, dtype=np.int32)
+        keep.append(a)
+        return a.ctypes.data_as(POINTER(c_int))
+    off = np.ascontiguousarray(offsets, dtype=np.int64)
+    n_ev = len(ev_pol)
+    n = len(rt)
+    if len(off) != n + 1 or not (len(event) == len(tic) == len(bpc) == n) or \
+            (n and (min(len(mz), len(it)) < off[-1] or off[0] != 0)):
+        raise ValueError("open_arrays: arrays of the wrong length")
+    h = L.ms_open_arrays(kind.encode("utf-8"), (instrument or "").encode("utf-8"), len(rt), d(rt), i32(event),
+                         off.ctypes.data_as(POINTER(ctypes.c_longlong)), d(mz), d(it), d(tic), d(bpc), n_ev,
+                         i32(ev_pol), d(np.nan_to_num(np.asarray(ev_lo if ev_lo is not None else [0] * n_ev, float))),
+                         d(np.nan_to_num(np.asarray(ev_hi if ev_hi is not None else [0] * n_ev, float))),
+                         int(n_msms))
+    if not h:
+        raise RuntimeError(_err(L))
+    return EngineFile(path, None, handle=h)
 
 
 # ============================================================================

@@ -2,7 +2,8 @@
 HRMS Analysis (MSpektra): high resolution LC-MS / direct infusion data from
 Bruker QTOF instruments (maXis, impact, compact, micrOTOF; .d folders with
 analysis.baf, or analysis.tsf from otofControl 6 and later), timsTOF .d
-folders (analysis.tdf, ion mobility summed) and mzML files.
+folders (analysis.tdf, ion mobility summed), Agilent MassHunter .D folders,
+Waters .raw folders, Thermo .raw files and mzML files.
 
 One view holds everything for the mass spectra of a run:
   chromatograms (TIC, BPC, mass chromatograms with their own windows),
@@ -14,7 +15,8 @@ One view holds everything for the mass spectra of a run:
   exact mass: ion m/z and isotope pattern of a formula, formula finder.
 
 Reading: hrms_data.py (Bruker Baf2Sql library for analysis.baf, Bruker TDF SDK
-for analysis.tsf and analysis.tdf, or mzML).
+for analysis.tsf and analysis.tdf, or mzML) and hrms_vendor.py (Agilent, Waters,
+Thermo).
 """
 import os
 import json
@@ -26,6 +28,7 @@ import unidec_theme as T
 from unidec_theme import C
 import unilcms as U
 import hrms_data
+import hrms_vendor
 import hrms_calib as K
 import ms_formula as F
 from deconv_tab import TableCard
@@ -103,7 +106,7 @@ class HRMSTab(U.MSTab):
     PICK_MIN = 0.004
     TOL_DEFAULT = "0.02"
     FULL_WINDOW = False  # HRMS data are deconvoluted in the settings window only
-    OPEN_HINT = "Open a Bruker .d folder or an mzML file"
+    OPEN_HINT = "Open a .d or .raw folder, a .raw file or an mzML file"
     TOOL_HINTS = dict(U.MSTab.TOOL_HINTS)
     TOOL_HINTS["formula"] = "Formula: click a peak to find formulas"
     TOOL_HINTS["calibrate"] = "Calibrate: calibration window for the spectrum shown"
@@ -1731,7 +1734,9 @@ class CalibDialog(wx.Dialog):
 # ==========================================================================
 HELP_TEXT = """HRMS Analysis reads Bruker QTOF data (.d folders with analysis.baf or
 analysis.tsf), timsTOF data (analysis.tdf, ion mobility summed, MS/MS left
-out) and mzML files.
+out), Agilent MassHunter .D folders, Waters .raw folders, Thermo .raw files
+and mzML files. Sciex .wiff files: convert them to mzML with ProteoWizard
+msconvert.
 
 Chromatograms and spectra
   * Drag on a chromatogram to average a range; Shift + drag for the
@@ -1773,6 +1778,8 @@ analysis.tdf; _portable\\timsdata). The m/z values as recorded are those
 of the last calibration saved with the file.
 This software uses TDF Software Development Kit software. Copyright (c)
 2019 by Bruker Daltonik GmbH. All rights reserved.
+Agilent data are read with the rainbow library (LGPL), Waters data with
+Waters' MassLynx library and Thermo data with Thermo's RawFileReader.
 
 HPC follows the published High Precision Calibration (Gobom et al., Anal.
 Chem. 2002, 74, 3915); results can differ slightly from DataAnalysis.
@@ -1783,7 +1790,7 @@ Bayesian deconvolution: M. T. Marty et al., Anal. Chem. 2015, 87, 4370."""
 class HRMSFrame(U.PostrunFrame):
     TITLE = TITLE
     HELP = HELP_TEXT
-    START_HINT = "Open a Bruker .d folder or an mzML file (Ctrl+O)"
+    START_HINT = "Open a .d or .raw folder, a .raw file or an mzML file (Ctrl+O)"
     FOLDER_KEY = "hrms_folder"
 
     def __init__(self, path=None):
@@ -1801,22 +1808,28 @@ class HRMSFrame(U.PostrunFrame):
         return [("file", "File"), ("ms", "MS"), ("cal", "Calibration")]
 
     def accepts(self, path):
-        return hrms_data.find_d_folder(path) is not None or path.lower().endswith(".mzml")
+        return hrms_data.find_d_folder(path) is not None or path.lower().endswith(".mzml") or \
+            hrms_vendor.detect_kind(path) in hrms_vendor.VENDOR_KINDS
 
     def browse_accepts(self, path):
         low = path.lower().rstrip("\\/")
         if low.endswith(".mzml"):
             return os.path.isfile(path)
-        return low.endswith(".d") and os.path.isdir(path) and hrms_data.is_bruker_d(path)
+        if low.endswith(".raw"):
+            return hrms_vendor.detect_kind(path) in ("thermo_raw", "waters_raw")
+        return low.endswith(".d") and os.path.isdir(path) and (
+            hrms_data.is_bruker_d(path) or os.path.isfile(os.path.join(path, "AcqData", "MSScan.bin")))
 
     def write_spectrum(self, path, spec):
         hrms_data.write_spectrum_txt(path, spec)
 
     def on_open(self, e=None):
         menu = wx.Menu()
-        a = menu.Append(wx.ID_ANY, "Bruker .d folder…")
-        b = menu.Append(wx.ID_ANY, "mzML file…")
+        a = menu.Append(wx.ID_ANY, "Bruker or Agilent .d folder…")
+        c = menu.Append(wx.ID_ANY, "Waters .raw folder…")
+        b = menu.Append(wx.ID_ANY, "mzML or Thermo .raw file…")
         self.Bind(wx.EVT_MENU, lambda ev: self.open_d(), a)
+        self.Bind(wx.EVT_MENU, lambda ev: self.open_waters(), c)
         self.Bind(wx.EVT_MENU, lambda ev: self.open_mzml(), b)
         btn = e.GetEventObject() if e is not None else None
         if isinstance(btn, wx.Window) and btn is not self and not isinstance(btn, wx.Frame):
@@ -1826,7 +1839,7 @@ class HRMSFrame(U.PostrunFrame):
         menu.Destroy()
 
     def open_d(self):
-        dlg = wx.DirDialog(self.window(), "Open a Bruker .d folder", defaultPath=self.folder(),
+        dlg = wx.DirDialog(self.window(), "Open a Bruker or Agilent .d folder", defaultPath=self.folder(),
                            style=wx.DD_DEFAULT_STYLE | wx.DD_DIR_MUST_EXIST)
         try:
             if dlg.ShowModal() != wx.ID_OK:
@@ -1834,16 +1847,31 @@ class HRMSFrame(U.PostrunFrame):
             path = dlg.GetPath()
         finally:
             dlg.Destroy()
-        d = hrms_data.find_d_folder(path)
+        d = hrms_data.find_d_folder(path) or hrms_vendor.agilent_folder(path)
         if d is None:
-            wx.MessageBox("%s is not a Bruker .d folder (no analysis.baf, analysis.tsf or analysis.tdf "
-                          "in it)." % path, TITLE, wx.ICON_WARNING)
+            wx.MessageBox("%s is not a Bruker or Agilent .d folder." % path, TITLE, wx.ICON_WARNING)
+            return
+        self.load(d)
+
+    def open_waters(self):
+        dlg = wx.DirDialog(self.window(), "Open a Waters .raw folder", defaultPath=self.folder(),
+                           style=wx.DD_DEFAULT_STYLE | wx.DD_DIR_MUST_EXIST)
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            path = dlg.GetPath()
+        finally:
+            dlg.Destroy()
+        d = hrms_vendor.waters_folder(path)
+        if d is None:
+            wx.MessageBox("%s is not a Waters .raw folder." % path, TITLE, wx.ICON_WARNING)
             return
         self.load(d)
 
     def open_mzml(self):
-        dlg = wx.FileDialog(self.window(), "Open mzML files (several: Ctrl or Shift + click)", defaultDir=self.folder(),
-                            wildcard="mzML (*.mzML)|*.mzML;*.mzml|All files (*.*)|*.*",
+        dlg = wx.FileDialog(self.window(), "Open data files (several: Ctrl or Shift + click)", defaultDir=self.folder(),
+                            wildcard="mzML or Thermo .raw (*.mzML;*.raw)|*.mzML;*.mzml;*.raw;*.RAW|"
+                                     "Sciex .wiff (*.wiff)|*.wiff;*.wiff2|All files (*.*)|*.*",
                             style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST | wx.FD_MULTIPLE)
         try:
             if dlg.ShowModal() == wx.ID_OK:
@@ -1919,7 +1947,7 @@ class HRMSFrame(U.PostrunFrame):
 
 
 def open_window(path=None):
-    """The HRMS Analysis window; path: a data file (.d folder or mzML) or a list
+    """The HRMS Analysis window; path: a data file (.d or .raw folder, .raw or mzML file) or a list
     of them (each opens as a file of the window)."""
     import time
     t0 = time.perf_counter()

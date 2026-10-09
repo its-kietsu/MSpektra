@@ -25,6 +25,8 @@ U.TOOL_ICONS.setdefault("mzspec", '<path d="M3 20h18M6 20v-6M10 20V5M14 20v-9M18
 U.TOOL_ICONS.setdefault("area", U.TOOL_ICONS.get("integrate", U.TOOL_ICONS["drag_peak"]))
 SPEC_AVG = [("peak", "Over the peak"), ("scan", "One scan at the peak top")]
 GRADIENT = ("#0B2A6B", "#8DB8F2")  # dark to light: a series (time points, fractions)
+# Okabe and Ito: told apart with every common colour vision deficiency (yellow left out: too light on white)
+SAFE = ["#0072B2", "#D55E00", "#009E73", "#CC79A7", "#E69F00", "#56B4E9", "#000000"]
 
 
 class ComparePage(wx.Panel):
@@ -376,7 +378,7 @@ class CompareTab(U.TabBase):
         sp.row("Order", self.sort)
         self.f_label = sp.text("", 150, tooltip="Name in the plot (empty: automatic)")
         sp.row("Label", self.f_label)
-        self.f_colour = wx.ColourPickerCtrl(sp, colour=wx.Colour(U.PAL[0]))
+        self.f_colour = wx.ColourPickerCtrl(sp, colour=wx.Colour(SAFE[0]))
         self.f_colour_reset = U.flat(sp, "Auto", handler=lambda e: self.set_entry_colour(None))
         sp.row("Colour", self.f_colour, self.f_colour_reset)
         self.f_shift = sp.text("0", 64, tooltip="Added to the alignment")
@@ -775,8 +777,8 @@ class CompareTab(U.TabBase):
         if si is None:
             si = {}
             try:
-                import lcms_data
-                si = lcms_data.read_sample_info(d.attrs.get("path") or "") or {}
+                import lcms_sources
+                si = lcms_sources.read_sample_info(d.attrs.get("path") or "") or {}
             except Exception:
                 si = {}
             d.attrs["sample_info"] = si
@@ -827,7 +829,7 @@ class CompareTab(U.TabBase):
         try:
             self.f_label.SetValue(en.get("label") or "" if en else "")
             self.f_shift.SetValue("%g" % en.get("shift", 0.0) if en else "0")
-            col = (en.get("colour") or self._colour_of(self.sel)) if en else U.PAL[0]
+            col = (en.get("colour") or self._colour_of(self.sel)) if en else SAFE[0]
             self.f_colour.SetColour(wx.Colour(col))
         finally:
             self._busy = False
@@ -962,7 +964,7 @@ class CompareTab(U.TabBase):
             return "#1B2330"
         if k == "dark":
             return U.TRACE
-        return U.PAL[pos % len(U.PAL)]
+        return SAFE[pos % len(SAFE)]
 
     def compute(self):
         """The traces to draw: processed, stacked; and the notes (files left out, differences)."""
@@ -1062,8 +1064,12 @@ class CompareTab(U.TabBase):
         self._auto_titles = ("Time (min)", ylab)
         ymode = K.yaxis_mode(s, len(out)) if out else "axis"
         U.style_axes(ax, "Time (min)", ylab if ymode == "axis" else "")
+        ax.xaxis.set_major_locator(U._x_locator(steps=(1, 2, 5, 10)))  # 0, 2, 4 min, not 2.5, 5.0, 7.5
         card.margins = [0.84, 0.52, 0.2, 0.14]
         PP.apply_axes(ax, P, U.INK, y_values=(ymode == "axis"))
+        if ymode != "axis" and P.get("frame") == "open":  # a scale bar or nothing: the time axis only
+            ax.spines["left"].set_visible(False)
+            ax.tick_params(axis="y", which="both", left=False)
         if ymode != "axis" and P.get("ytitle"):
             ax.yaxis.label.set_text("")  # no axis: no title on it
         if not out:
@@ -1149,7 +1155,8 @@ class CompareTab(U.TabBase):
             hs = []
             for o in out:
                 tp = P["traces"].get(self._trace_key(o), {})
-                hs.append(Line2D([], [], color=o["colour"], lw=1.6, ls=tp.get("ls") or "-"))
+                hs.append(Line2D([], [], color=o["colour"], lw=max(float(tp.get("lw") or lw), 1.0),
+                                 ls=tp.get("ls") or "-"))
             lkw = PP.font_kw(P, "size_names", "bold_names")
             prop = {"size": lkw["fontsize"], "weight": lkw.get("fontweight", "normal")}
             if lkw.get("fontfamily"):
@@ -1383,20 +1390,51 @@ class CompareTab(U.TabBase):
                     xy = (float(tt[j] + o["dx"]), float(yy[j] + o["dy"]))
                     cand.append((float(ax.transData.transform(xy)[1]), xy, "%.2f" % (tt[j] - shift), o))
             cand.sort(key=lambda c: c[0])
+            # the traces in display points (x sorted), so that a time is not written over another trace
+            # (stacked: the time of a tall peak ran into the trace above it)
+            lines = []
+            for o in out:
+                xy = ax.transData.transform(np.column_stack((o["proc"]["t"] + o["dx"], o["proc"]["y"] + o["dy"])))
+                lines.append((xy[:, 0], xy[:, 1]))
+
+            def clear(bx):
+                for xs, ys in lines:
+                    if not len(xs) or bx[2] < xs[0] or bx[0] > xs[-1]:
+                        continue
+                    i0, i1 = np.searchsorted(xs, bx[0]), np.searchsorted(xs, bx[2], side="right")
+                    # the line within the box: its points there and where it crosses the box edges
+                    seg = np.concatenate((ys[i0:i1], np.interp([bx[0], bx[2]], xs, ys)))
+                    seg = seg[np.isfinite(seg)]
+                    if len(seg) and float(np.min(seg)) <= bx[3] and float(np.max(seg)) >= bx[1]:
+                        return False
+                return True
+
             for yd, xy, txt, o in cand:
                 a = keep(ax.annotate(txt, xy, xytext=(0, 2), textcoords="offset points", ha="center", va="bottom",
                                      color=_ink(o["colour"]), zorder=6, path_effects=halo, **rkw))
                 e = a.get_window_extent(r)
                 w, h = e.width / pt, e.height / pt
-                # above the peak; left or right of its top (under the place above it); higher; beside
-                for dx, dy in ((0, 0), (-(w / 2 + 2), -(h + 0.5)), (w / 2 + 2, -(h + 0.5)), (0, h + 0.5),
-                               (-(w + 1), 0), (w + 1, 0), (0, 2 * (h + 0.5))):
-                    bx = (e.x0 + dx * pt, e.y0 + dy * pt, e.x1 + dx * pt, e.y1 + dy * pt)
-                    if bx[0] >= bb.x0 and bx[2] <= bb.x1 and bx[3] <= bb.y1 + 0.5 * pt and free(bx):
-                        if dx or dy:
-                            a.xyann = (dx, 2 + dy)
-                        taken.append(bx)
+                # above the peak; left or right of its top (under the place above it); higher; beside.
+                # First a place clear of every trace; else (overlay, close spacing) one clear of the labels
+                spots = ((0, 0), (-(w / 2 + 2), -(h + 0.5)), (w / 2 + 2, -(h + 0.5)), (0, h + 0.5),
+                         (-(w + 1), 0), (w + 1, 0), (0, 2 * (h + 0.5)))
+                # lower down beside the peak (a tall peak whose top reaches the trace above)
+                spots += tuple((sd * (w / 2 + 3), -j * (h + 0.5)) for j in range(2, 7) for sd in (1, -1))
+                found = None
+                for need_clear in (True, False):
+                    for dx, dy in spots:
+                        bx = (e.x0 + dx * pt, e.y0 + dy * pt, e.x1 + dx * pt, e.y1 + dy * pt)
+                        if (bx[0] >= bb.x0 and bx[2] <= bb.x1 and bx[3] <= bb.y1 + 0.5 * pt and free(bx) and
+                                (not need_clear or clear(bx))):
+                            found = (dx, dy, bx)
+                            break
+                    if found:
                         break
+                if found:
+                    dx, dy, bx = found
+                    if dx or dy:
+                        a.xyann = (dx, 2 + dy)
+                    taken.append(bx)
                 else:  # no room: left out rather than on top of another label or outside the frame
                     a.remove()
                     self._label_arts.remove(a)

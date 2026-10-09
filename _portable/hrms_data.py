@@ -22,7 +22,8 @@ plus an m/z calibration that can be replaced (internal calibration), one
 per polarity: set_calibration(func or None, info, events), calibration_for(e).
 
 Also reads mzML files (converted with ProteoWizard msconvert), as a fallback
-when a .d folder cannot be read.
+when a .d folder cannot be read. Agilent MassHunter .D, Waters .raw and
+Thermo .raw files: hrms_vendor.py (open_hrms hands them over).
 """
 import itertools
 import os
@@ -1449,6 +1450,11 @@ class MzMLFile(BrukerD):
 
 
 def open_hrms(path, progress=None):
+    # Agilent MassHunter, Waters and Thermo files (and the Sciex message): hrms_vendor
+    import hrms_vendor
+    kind = hrms_vendor.detect_kind(path)
+    if kind in hrms_vendor.VENDOR_KINDS:
+        return hrms_vendor.open_vendor(path, kind, progress)
     # the C++ core (msengine) reads every format when it is available; the
     # Python readers below are the fallback
     try:
@@ -1482,7 +1488,7 @@ def write_spectrum_jdx(path, data, title, polarity="+", t0=None, t1=None):
     polarity and the time range (the export of HRMS Analysis)."""
     data = np.asarray(data, float).reshape(-1, 2)
     lines = ["##TITLE= %s" % title, "##JCAMP-DX= 4.24", "##DATA TYPE= MASS SPECTRUM",
-             "##ORIGIN= MSpektra, HRMS", "##OWNER= ", "##IONIZATION MODE= ESI%s" % (polarity or "+"),
+             "##ORIGIN= MSpektra, HRMS Analysis", "##OWNER= ", "##IONIZATION MODE= ESI%s" % (polarity or "+"),
              "##XUNITS= M/Z", "##YUNITS= RELATIVE ABUNDANCE"]
     if t0 is not None:
         lines.append("##RETENTION TIME= %.3f - %.3f" % (t0 * 60, (t1 if t1 is not None else t0) * 60))

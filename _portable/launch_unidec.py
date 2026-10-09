@@ -19,8 +19,9 @@ What this launcher adds on top of a normal "pip install unidec":
       unidec_theme.py      start screen (LCMS Analysis, HRMS Analysis,
                            Deconvolute), modern interface, sharp on scaled
                            displays, window memory,
-      unilcms.py           LCMS Analysis: Shimadzu LabSolutions .lcd files, MS
-                           and PDA (lcms_data.py, lcms_pda.py,
+      unilcms.py           LCMS Analysis: Shimadzu .lcd, Agilent .D, Waters
+                           .raw, Thermo .raw, mzML, mzXML and ANDI files, MS
+                           and PDA (lcms_data.py, lcms_pda.py, lcms_sources.py,
                            lcms_integrate.py),
       hrms.py              HRMS Analysis: Bruker .d folders (Baf2Sql library)
                            and mzML; internal calibration (hrms_calib.py),
@@ -35,8 +36,9 @@ What this launcher adds on top of a normal "pip install unidec":
                            the plot menu),
       unidec_fast.py       loads the Thermo/.NET reader only when needed,
   * a data file given as argument (drag and drop onto MSpektra.exe, or
-    "Open with") opens directly: .lcd in LCMS Analysis, a Bruker .d folder or
-    .mzML in HRMS Analysis, anything else in the Deconvolute window,
+    "Open with") opens directly in the window data_formats.detect names
+    (LC-MS and HPLC files in LCMS Analysis, Bruker .d, mzML and high
+    resolution files in HRMS Analysis), anything else in the Deconvolute window,
   * works from write-protected locations (e.g. C:\\Program Files, or a folder
     copied to C:\\ with administrator permission): UniDec normally writes its
     recent-file list and default settings into its own folder, which fails
@@ -357,22 +359,31 @@ def main():
             projects[kind].append(os.path.abspath(a))
         if not projects["lcms"] and not projects["hrms"] and not args:
             return 1
-    # LCMS Analysis: "--lcms" or a Shimadzu .lcd file
-    lcd = [a for a in args if a.lower().endswith(".lcd") and os.path.isfile(a)]
-    # HRMS Analysis: "--hrms", a Bruker .d folder (or a file inside it) or .mzML
-    hr = []
-    try:
-        if args:  # hrms_data imports NumPy: only when there is a file argument
-            import hrms_data
-            hr = [a for a in args if hrms_data.find_d_folder(a) or a.lower().endswith(".mzml")]
-    except Exception:
-        print("HRMS reader not available:\n" + traceback.format_exc())
+    # each data file opens in the window data_formats.detect names: LCMS Analysis ("--lcms") or
+    # HRMS Analysis ("--hrms", also a folder holding one Bruker .d folder)
+    import data_formats
+    lcd, hr = [], []
+    for a in args:
+        if a.startswith("--"):
+            continue
+        window = data_formats.detect(a)[0]
+        if window == "lcms":
+            lcd.append(data_formats.data_path(a))
+        elif window == "hrms":
+            hr.append(data_formats.data_path(a))
+        elif os.path.isdir(a):
+            try:  # hrms_data imports NumPy: only for a folder that is no data set itself
+                import hrms_data
+                if hrms_data.find_d_folder(a):
+                    hr.append(hrms_data.find_d_folder(a))
+            except Exception:
+                print("HRMS reader not available:\n" + traceback.format_exc())
     # every file dropped onto MSpektra.exe opens (one window per kind, a file each); projects first,
     # so a raw file of a project being opened is not asked about again
     lcms_paths = projects["lcms"] + [os.path.abspath(a) for a in lcd]
     hrms_paths = list(projects["hrms"])
     for a in hr:
-        t = hrms_data.find_d_folder(a) or os.path.abspath(a)
+        t = os.path.abspath(a)
         if t not in hrms_paths:
             hrms_paths.append(t)
     want_lcms = "--lcms" in args or bool(lcms_paths)

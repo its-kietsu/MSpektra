@@ -405,7 +405,7 @@ REGISTRY = [
     Shortcut("Ctrl+Shift+S", "Save the analysis", "window", lambda ctx: __import__('ms_project').save(ctx.frame),
              [(CTRL | SHIFT, _k("s"))], accel=True),
     # window: Ctrl combinations (accelerator table), also while typing in a field
-    Shortcut("Ctrl+O", "Open a LabSolutions .lcd file", "window", _open, [(CTRL, _k("o"))], accel=True,
+    Shortcut("Ctrl+O", "Open a data file", "window", _open, [(CTRL, _k("o"))], accel=True,
              windows=("lcms",), menu=("Open raw data",)),
     Shortcut("Ctrl+O", "Open a Bruker .d folder", "window", _open, [(CTRL, _k("o"))], accel=True,
              windows=("hrms",), menu=("Open a Bruker .d folder",)),

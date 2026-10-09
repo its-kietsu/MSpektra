@@ -64,5 +64,14 @@ std::unique_ptr<Reader> open_mzml(const std::string& path, ms_progress_fn cb, vo
 std::unique_ptr<Reader> open_shimadzu(const std::string& path, ms_progress_fn cb, void* user);
 std::unique_ptr<Reader> open_bruker(const std::string& d_folder, const std::string& sdk_dir, ms_progress_fn cb, void* user);
 bool is_bruker_d(const std::string& path, std::string* d_folder);   // accepts the folder, a file inside it, or a folder with one .d
+// scans handed over as arrays (arrays.cpp, ms_open_arrays): float32 spectra summed on bins as Shimadzu
+std::unique_ptr<Reader> open_arrays(const std::string& kind, const std::string& instrument, long n, const double* rt,
+                                    const int* event, const long long* offsets, const double* mz, const double* it,
+                                    const double* tic, const double* bpc, int n_events, const int* ev_pol,
+                                    const double* ev_lo, const double* ev_hi, long n_msms);
+// a file read by the caller (vendor.cpp, ms_open_vendor): scans listed, spectra served by fn
+std::unique_ptr<Reader> open_vendor(const char* kind, const char* instrument, long n_msms, const ms_vendor_scan* scans,
+                                    long n, const ms_vendor_scan* events, int n_events, bool common_axis,
+                                    ms_vendor_fn fn, void* user, ms_progress_fn cb, void* cbuser);
 
 }  // namespace ms
