@@ -2212,7 +2212,9 @@ class ToolButton(wx.Control):
         dc = wx.ClientDC(self)
         dc.SetFont(self.GetFont())
         tw = dc.GetTextExtent(label)[0] if label else 0
-        sz = wx.Size(self.FromDIP(16) + (self.FromDIP(6) + tw if label else 0) + self.FromDIP(16), self.FromDIP(32))
+        self.full_w = self.FromDIP(16) + (self.FromDIP(6) + tw if label else 0) + self.FromDIP(16)
+        self.text = label
+        sz = wx.Size(self.full_w, self.FromDIP(32))
         self.SetMinSize(sz)
         self.SetInitialSize(sz)
         self.SetToolTip(tooltip)
@@ -2243,6 +2245,14 @@ class ToolButton(wx.Control):
         if v != self.active:
             self.active = v
             self.Refresh()
+
+    def show_label(self, show):
+        """Icon and label, or the icon only (a narrow window)."""
+        self.label = self.text if show else ""
+        w = self.full_w if show else self.FromDIP(32)
+        self.SetMinSize(wx.Size(w, self.FromDIP(32)))
+        self.SetSize(wx.Size(w, self.FromDIP(32)))
+        self.Refresh()
 
     def _bmp(self, col):
         if col not in self._bmps:
@@ -2307,6 +2317,29 @@ class ToolStrip(wx.Panel):
         self.SetSizer(s)
         self.Bind(wx.EVT_PAINT, self._paint)
         self.Bind(wx.EVT_SIZE, lambda e: (self.Layout(), self.Refresh(), e.Skip()))
+
+    def Layout(self):
+        self.fit_labels()
+        return wx.Panel.Layout(self)
+
+    def fit_labels(self):
+        """The tools in one row: in a narrow window the last tools lose
+        their labels first (icon and tooltip stay)."""
+        w = self.GetClientSize()[0]
+        if w <= 0 or not self.buttons:
+            return
+        btns = [b for b in self.buttons.values() if b.IsShown() and b.text]
+        need = sum(it.CalcMin().width for it in self.GetSizer().GetChildren() if it.IsShown())
+        need += sum(b.full_w - b.GetMinSize()[0] for b in btns)
+        short = set()
+        for b in reversed(btns):
+            if need <= w:
+                break
+            need -= b.full_w - self.FromDIP(32)
+            short.add(b)
+        for b in btns:
+            if bool(b.label) == (b in short):
+                b.show_label(b not in short)
 
     def _clicked(self, key):
         b = self.buttons[key]
@@ -2389,9 +2422,20 @@ class SidePanel(wx.ScrolledWindow):
         sb = wx.SystemSettings.GetMetric(wx.SYS_VSCROLL_X, self)
         outer.AddSpacer(sb if sb > 0 else self.FromDIP(17))  # room for the scroll bar
         self.SetSizer(outer)
-        self.SetMinSize(wx.Size(self.FromDIP(width) + max(sb, 0), -1))
+        self.width = width
+        self.fit_screen()
         self._first = True
         self.pad = self.FromDIP(14)
+
+    def fit_screen(self):
+        """Width for the window size: narrower on a small screen (the right
+        margin of the widest rows is used then). True when it changed."""
+        sb = max(wx.SystemSettings.GetMetric(wx.SYS_VSCROLL_X, self), 0)
+        w = screen_dip(self, self.width, self.width - 28) + sb
+        if self.GetMinSize().width == w:
+            return False
+        self.SetMinSize(wx.Size(w, -1))
+        return True
 
     def section(self, title, colour, collapsed=None):
         """Starts a section; its header shows or hides the rows below it."""
@@ -2627,6 +2671,58 @@ def _g(v):
     if a >= 1000:
         return "%.0f" % v
     return "%.4g" % v
+
+
+# ==========================================================================
+# sizes that follow the screen (every view uses these rules)
+# ==========================================================================
+COMPACT_DIP = (1600, 900)  # a window narrower or lower than this (DIP, e.g. a laptop) uses the compact sizes
+PLOT_MIN_DIP = 280  # least height of a plot tile in a view ...
+PLOT_MIN_SHARE = 0.42  # ... but at most this share of the view height (two plots fill most of a small view)
+
+
+def window_dip(win):
+    """Client size (DIP) of the window that holds win; before that window
+    has its size, the work area of its screen."""
+    top = wx.GetTopLevelParent(win) if win else None
+    try:
+        s = float(win.GetDPIScaleFactor()) or 1.0
+    except Exception:
+        s = 1.0
+    w = h = 0
+    if top is not None:
+        w, h = top.GetClientSize()
+    if w < 600 * s or h < 400 * s:  # not sized yet
+        try:
+            i = wx.Display.GetFromWindow(top) if top is not None else 0
+            a = wx.Display(max(0, i)).GetClientArea()
+            w, h = a.width, a.height
+        except Exception:
+            return COMPACT_DIP
+    return w / s, h / s
+
+
+def is_compact(win):
+    """The window is small (a laptop screen): compact side panels and bars."""
+    w, h = window_dip(win)
+    return w < COMPACT_DIP[0] or h < COMPACT_DIP[1]
+
+
+def screen_dip(win, normal, compact):
+    """A fixed size in pixels: normal DIP, or compact DIP in a small window."""
+    return win.FromDIP(compact if is_compact(win) else normal)
+
+
+def plot_floor(win, view_h):
+    """Least height (pixels) of a plot tile in a view view_h pixels high:
+    readable on a laptop without making large screens any different."""
+    return int(min(win.FromDIP(PLOT_MIN_DIP), PLOT_MIN_SHARE * view_h))
+
+
+def _is_plot_tile(p):
+    if isinstance(p, PlotCard):
+        return True
+    return isinstance(p, SplitBox) and any(isinstance(q, PlotCard) for q in p.panes)
 
 
 class SplitBox(wx.Panel):
@@ -2946,6 +3042,7 @@ class StackBox(wx.Panel):
             # would be for its width (the view scrolls); tables get a fixed share
             W = max(self.GetClientSize()[0], self.FromDIP(300))
             sc = self.scale()
+            low = plot_floor(self, H)  # on a small screen a plot is never lower than this
             for i, p in enumerate(self.panes):
                 if out[i] is None:
                     try:
@@ -2960,7 +3057,7 @@ class StackBox(wx.Panel):
                     # a tile can ask for its own size (HRMS: the deconvolution
                     # result rows at full size while the others are at half)
                     sc_i = getattr(p, "tile_scale", None) or sc
-                    out[i] = int(max(self.min, sc_i * min(want, 0.62 * H)))
+                    out[i] = int(max(self.min, low, sc_i * min(want, 0.62 * H)))
             return out
         free = [i for i in range(n) if out[i] is None]
         rest = max(0, avail - sum(h for h in out if h is not None))
@@ -2977,6 +3074,11 @@ class StackBox(wx.Panel):
                 out[i] = self.min
                 rest = max(0, rest - self.min)
             free = [i for i in free if i not in small]
+        if self.shape is None:  # a view without tile modes (Compare): its plots readable, the rest scrolls
+            low = plot_floor(self, H)
+            for i, p in enumerate(self.panes):
+                if self.frac.get(p) is None and _is_plot_tile(p):
+                    out[i] = max(out[i], low)
         return out
 
     def total(self, H=None):
@@ -5880,11 +5982,8 @@ def show_text(parent, title, text):
     box.Add(tc, 1, wx.EXPAND | wx.ALL, 12)
     box.Add(ok, 0, wx.ALIGN_RIGHT | wx.RIGHT | wx.BOTTOM, 12)
     dlg.SetSizer(box)
-    try:
-        area = wx.Display(max(0, wx.Display.GetFromWindow(parent) if parent else 0)).GetClientArea()
-        w, h = min(dlg.FromDIP(720), int(area.width * 0.9)), int(area.height * 0.8)
-    except Exception:
-        w, h = 720, 700
+    area = T.display_area(dlg)
+    w, h = min(dlg.FromDIP(720), int(area.width * 0.9)), int(area.height * 0.8)
     dlg.SetSize((w, h))
     dlg.CentreOnParent()
     ok.SetDefault()
@@ -6098,9 +6197,13 @@ class FilesPanel(wx.Panel):
 
     # geometry
     def _apply_width(self):
-        w = self.FromDIP(24 if self.collapsed else 220)
+        """Width (narrower on a small screen); True when it changed."""
+        w = self.FromDIP(24) if self.collapsed else screen_dip(self, 220, 184)
+        if self.GetMinSize().width == w and self.GetSize()[0] == w:
+            return False
         self.SetMinSize(wx.Size(w, -1))
         self.SetSize(wx.Size(w, self.GetSize()[1]))
+        return True
 
     def rows(self):
         return [d for d in self.frame.docs if d.path or d.loading]
@@ -6932,11 +7035,7 @@ class ReportDialog(wx.Dialog):
             pass
 
     def _area(self):
-        try:
-            n = wx.Display.GetFromWindow(self.GetParent() if self.GetParent() else self)
-            return wx.Display(n if n >= 0 else 0).GetClientArea()
-        except Exception:
-            return None
+        return T.display_area(self)
 
     def _fit_screen(self):
         """Natural size, but not taller than the screen: then the form scrolls."""
@@ -6945,10 +7044,8 @@ class ReportDialog(wx.Dialog):
         bh = self._btns.CalcMin().height if getattr(self, "_btns", None) is not None else self.FromDIP(60)
         h = best.height
         area = self._area()
-        if area is not None:
-            frame_h = max(0, wx.SystemSettings.GetMetric(wx.SYS_CAPTION_Y, self)) + \
-                2 * max(0, wx.SystemSettings.GetMetric(wx.SYS_FRAMESIZE_Y, self))  # title bar and border
-            h = min(h, max(self.FromDIP(320), area.height - bh - frame_h - self.FromDIP(8)))
+        frame_h = self.GetSize().height - self.GetClientSize().height  # title bar and borders
+        h = min(h, max(self.FromDIP(320), area.height - bh - frame_h - self.FromDIP(12)))
         w = best.width + (max(0, wx.SystemSettings.GetMetric(wx.SYS_VSCROLL_X, self)) if h < best.height else 0)
         self.scroll.SetMinSize(wx.Size(w, h))
         self.scroll.SetVirtualSize(best)
@@ -6958,13 +7055,8 @@ class ReportDialog(wx.Dialog):
         self._on_screen()
 
     def _on_screen(self):
-        """The bottom of the window (its buttons) on the screen."""
-        area = self._area()
-        if area is None:
-            return
-        r = self.GetRect()
-        if r.y + r.height > area.y + area.height or r.y < area.y:
-            self.Move(r.x, max(area.y, area.y + area.height - r.height))
+        """The whole window (its buttons) on the screen."""
+        T.fit_to_screen(self, grow=False, area=self._area())
 
     def values(self):
         return {"kind": self.kind(), "compound": self.compound.GetValue().strip(),
@@ -6983,6 +7075,7 @@ class PostrunFrame(wx.Frame):
     LCMS Postrun and HRMS Postrun derive from it."""
     TITLE = "Postrun"
     HELP = ""
+    SPARE_CHIPS = ("pda", "ms")  # chips of the top bar left out first in a narrow window
     START_HINT = "Open a data file (Ctrl+O) or drop it here"
 
     def __init__(self, path=None):
@@ -7047,8 +7140,15 @@ class PostrunFrame(wx.Frame):
         fs.Add(root, 1, wx.EXPAND)
         self.SetSizer(fs)
         self.CreateStatusBar(2)
-        self.SetStatusWidths([-1, self.FromDIP(330)])
+        self.SetStatusWidths([-1, screen_dip(self, 330, 240)])
         self.SetStatusText(self.START_HINT, 0)
+        # icon buttons of the top bar: their labels go when the bar would need a second row
+        self._top_labels = {b: b.GetLabel() for b in tb.GetChildren()
+                            if isinstance(b, T._cls("FlatButton")) and b._kind == "ghost" and b._icon and b.GetLabel()}
+        fit_rows = tb._fit_rows
+        tb._fit_rows = lambda: (self._fit_top_bar(), fit_rows())
+        self._screen_fit_pending = False
+        self.Bind(wx.EVT_SIZE, self._on_frame_size)
         self.SetDropTarget(_Drop(self))
         self.activate(first)
         self.set_side(self._side_shown, remember=False)
@@ -7068,6 +7168,7 @@ class PostrunFrame(wx.Frame):
         # Windows otherwise briefly paints new child controls at (0, 0).
         self.Freeze()
         try:
+            self._fit_screen()
             self.Layout()
             result = wx.Frame.Show(self, True)
             self._layout_opening_views()
@@ -7089,6 +7190,84 @@ class PostrunFrame(wx.Frame):
                 for card in getattr(page, "all_cards", lambda: [])():
                     card._bgcache = None
                     card.canvas.draw_idle()
+
+    # ------------------------------------------------------ screen size
+    def _on_frame_size(self, e):
+        e.Skip()
+        if not self._screen_fit_pending:
+            self._screen_fit_pending = True
+            wx.CallAfter(self._fit_screen)
+
+    def _fit_screen(self):
+        """Fixed widths (side panels, file list, status bar) for the size of
+        the window: compact on a small screen (screen_dip)."""
+        if not self:
+            return
+        self._screen_fit_pending = False
+        changed = False
+        pages = [p for d in self.docs for _, p in d.pages] + [self.__dict__.get("_compare_tab")]
+        for p in pages:
+            side = getattr(p, "side", None)
+            if isinstance(side, SidePanel) and side.fit_screen():
+                changed = True
+                p.Layout()
+        changed = self.files._apply_width() or changed
+        self.SetStatusWidths([-1, screen_dip(self, 330, 240)])
+        if changed:
+            self.Layout()
+
+    def _fit_top_bar(self):
+        """The top bar in one row: in a narrow window the icon buttons lose
+        their labels, the last ones first (their tooltips stay), then the
+        information chips of SPARE_CHIPS are left out (the status bar
+        has the same)."""
+        tb = self.toolbar
+        if not tb or not self._top_labels:
+            return
+        room = tb.GetClientSize().width
+        btns = [b for b in self._top_labels if b.IsShown()]
+        spare = [self.chips[k] for k in self.SPARE_CHIPS if k in getattr(self, "chips", {})]
+        need = sum(it.CalcMin().width for it in tb.sizer.GetChildren() if it.IsShown())
+        need += sum(self._label_width(b, self._top_labels[b]) for b in btns if not b.GetLabel())
+        for c in spare:  # left out here before: the room it would take
+            if c._value and not c.IsShown():
+                need += tb.sizer.GetItem(c).CalcMin().width
+        short, drop = set(), set()
+        for b in reversed(btns):
+            if need <= room:
+                break
+            need -= self._label_width(b, self._top_labels[b])
+            short.add(b)
+        for c in spare:
+            if need <= room:
+                break
+            if c._value:
+                need -= tb.sizer.GetItem(c).CalcMin().width
+                drop.add(c)
+        changed = False
+        for b, label in self._top_labels.items():
+            want = "" if b in short else label
+            if b.GetLabel() != want:
+                b.SetLabel(want)
+                changed = True
+        for c in spare:
+            show = bool(c._value) and c not in drop
+            if c.IsShown() != show:
+                c.Show(show)
+                changed = True
+        if changed:
+            tb.sizer.Layout()
+
+    @staticmethod
+    def _label_width(b, label):
+        dc = wx.ClientDC(b)
+        dc.SetFont(b.GetFont())
+        return dc.GetTextExtent(label)[0] + b.FromDIP(7)
+
+    def _set_top_label(self, b, label):
+        self._top_labels[b] = label
+        if b.GetLabel():  # (shown only as an icon: the bar decides when it is laid out)
+            b.SetLabel(label)
 
     def __getattr__(self, name):
         # data, views and results belong to the file shown
@@ -7285,10 +7464,7 @@ class PostrunFrame(wx.Frame):
             pass
 
     def _size_to_display(self):
-        try:
-            area = wx.Display(max(0, wx.Display.GetFromWindow(self))).GetClientArea()
-        except Exception:
-            area = wx.Rect(0, 0, 1600, 1000)
+        area = T.display_area(self)
         w = min(self.FromDIP(1480), int(area.width * 0.94))
         h = min(self.FromDIP(940), int(area.height * 0.94))
         self.SetSize(wx.Size(w, h))
@@ -7527,7 +7703,7 @@ class PostrunFrame(wx.Frame):
         for p in pages:
             p.side.Show(bool(show))
             p.Layout()
-        fr.panel_btn.SetLabel("Hide panel" if show else "Show panel")
+        fr._set_top_label(fr.panel_btn, "Hide panel" if show else "Show panel")
         fr.toolbar.Layout()
         if remember:
             T._save({"side_hidden": not show})
@@ -7793,7 +7969,7 @@ class LCMSFrame(PostrunFrame):
                 # the settings of the comparison are in its side panel: shown unless hidden in this view
                 side = not T._load().get("compare_side_hidden", False)
                 tab.side.Show(side)
-                fr.panel_btn.SetLabel("Hide panel" if side else "Show panel")
+                fr._set_top_label(fr.panel_btn, "Hide panel" if side else "Show panel")
                 tab.Show()
                 tab.Layout()
                 tab.select_doc(fr.active)
@@ -7801,7 +7977,7 @@ class LCMSFrame(PostrunFrame):
                 tab.Hide()
                 fr._leave_compare_pages()
                 fr.docbook.Show()
-                fr.panel_btn.SetLabel("Hide panel" if fr._side_shown else "Show panel")
+                fr._set_top_label(fr.panel_btn, "Hide panel" if fr._side_shown else "Show panel")
             fr.toolbar.Layout()
             fr.docbook.GetParent().Layout()
         except RuntimeError:
@@ -7869,7 +8045,7 @@ class LCMSFrame(PostrunFrame):
             show = (not tab.side.IsShown()) if show is None else bool(show)
             tab.side.Show(show)
             tab.Layout()
-            fr.panel_btn.SetLabel("Hide panel" if show else "Show panel")
+            fr._set_top_label(fr.panel_btn, "Hide panel" if show else "Show panel")
             fr.toolbar.Layout()
             if remember:
                 T._save({"compare_side_hidden": not show})

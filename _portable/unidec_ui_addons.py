@@ -880,7 +880,7 @@ def _ask_label_text(parent, value):
     sizer = wx.BoxSizer(wx.VERTICAL)
     sizer.Add(wx.StaticText(dlg, label="Label text (empty deletes the label):"),
               0, wx.ALL, 8)
-    txt = wx.TextCtrl(dlg, value=value, style=wx.TE_MULTILINE, size=(340, 72))
+    txt = wx.TextCtrl(dlg, value=value, style=wx.TE_MULTILINE, size=dlg.FromDIP(wx.Size(340, 72)))
     sizer.Add(txt, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 8)
     buttons = dlg.CreateStdDialogButtonSizer(wx.OK | wx.CANCEL)
     sizer.Add(buttons, 0, wx.EXPAND | wx.ALL, 8)

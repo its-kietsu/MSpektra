@@ -325,8 +325,7 @@ class GraphPropsDialog(wx.Dialog):
                                 U.flat(self, "OK", "primary", handler=self.on_ok), left=(reset,)), 0, wx.EXPAND)
         self.SetSizerAndFit(vs)
         try:  # never taller than the screen (a small laptop screen at 125 %): OK and Cancel stay in reach
-            k = wx.Display.GetFromWindow(wx.GetTopLevelParent(parent))
-            area = wx.Display(k if k >= 0 else 0).GetClientArea()
+            area = T.display_area(self)
             if self.GetSize().height > area.height:
                 self.SetMinSize(wx.Size(self.GetSize().width, area.height))  # (the fit set it as the minimum)
                 self.SetSize(wx.Size(self.GetSize().width, area.height))

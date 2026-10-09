@@ -599,12 +599,8 @@ class DeconvDialog(wx.Dialog):
         self.scroll.FitInside()
         best = self.scroll.GetSizer().GetMinSize()
         sb = wx.SystemSettings.GetMetric(wx.SYS_VSCROLL_X, self)
-        try:
-            area = wx.Display(max(0, wx.Display.GetFromWindow(self.GetParent()))).GetClientArea()
-            hmax, wmax = int(area.height * 0.9), int(area.width * 0.95)
-        except Exception:
-            area = None
-            hmax, wmax = self.FromDIP(900), self.FromDIP(1400)
+        area = T.display_area(self, own_first=self.IsShown())
+        hmax, wmax = int(area.height * 0.9), int(area.width * 0.95)
         w = min(best.width + max(sb, self.FromDIP(16)) + self.FromDIP(4), wmax)
         h = min(best.height + self.FromDIP(70), hmax)
         placed = getattr(self, "_fit_size", None)
@@ -612,22 +608,17 @@ class DeconvDialog(wx.Dialog):
             self.SetClientSize(wx.Size(w, h))
             self.SetMinSize(wx.Size(min(w, self.FromDIP(600)), min(h, self.FromDIP(420))))
             self.CentreOnParent()
+            T.fit_to_screen(self, grow=False, area=area)
             self._fit_size = tuple(self.GetSize())
             return
         if self.IsMaximized() or tuple(self.GetSize()) != placed:
             return  # the user sized the window: leave it
-        pos = self.GetPosition()
         self.SetMinSize(wx.Size(min(w, self.FromDIP(600)), min(h, self.FromDIP(420))))
         self.SetClientSize(wx.Size(w, h))
-        self._fit_size = tuple(self.GetSize())
         # same top left corner as before; moved only as far as needed to stay
         # on the screen when it grew
-        x, y = pos
-        if area is not None:
-            sw, sh = self.GetSize()
-            x = max(area.x, min(x, area.x + area.width - sw))
-            y = max(area.y, min(y, area.y + area.height - sh))
-        self.SetPosition(wx.Point(x, y))
+        T.fit_to_screen(self, grow=False, area=area)
+        self._fit_size = tuple(self.GetSize())
 
     def status(self, text):
         self.panel.status(text)
@@ -1193,7 +1184,6 @@ class ProgressWindow(wx.Frame):
         self.Bind(wx.EVT_TIMER, self._tick, self.timer)
         self.timer.Start(250)
         self.frac = None
-        self._parent = parent
         self._place()
         self.Show()
         wx.CallAfter(self._place)  # again with the final size
@@ -1201,20 +1191,10 @@ class ProgressWindow(wx.Frame):
     def _place(self):
         """Centred on the window it belongs to, inside the screen."""
         try:
-            parent = self._parent
-            r = parent.GetScreenRect()
-            area = wx.Display(max(0, wx.Display.GetFromWindow(parent))).GetClientArea()
-            w, h = self.GetSize()
-            x = r.x + (r.width - w) // 2
-            y = r.y + (r.height - h) // 2
-            x = max(area.x, min(x, area.x + area.width - w))
-            y = max(area.y, min(y, area.y + area.height - h))
-            self.SetPosition(wx.Point(x, y))
+            self.CentreOnParent()
+            T.fit_to_screen(self, grow=False)
         except Exception:
-            try:
-                self.CentreOnParent()
-            except Exception:
-                pass
+            pass
 
     def _tick(self, e):
         self.clock.SetLabel("%.0f s" % (time.time() - self.t0))

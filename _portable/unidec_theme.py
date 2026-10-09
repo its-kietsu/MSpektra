@@ -376,6 +376,109 @@ def scale_fixed_sizes(root):
     walk(root)
 
 
+def _from_unidec(win):
+    """A window of UniDec's own code (its sizes are in 96-dpi pixels); the
+    windows of MS Analysis give theirs with FromDIP."""
+    mod = type(win).__module__ or ""
+    return mod == "unidec" or mod.startswith("unidec.")
+
+
+# --------------------------------------------------------------------------
+# 1b. windows inside the screen
+# --------------------------------------------------------------------------
+def display_area(win=None, own_first=False):
+    """Work area (screen pixels, without the task bar) of the display a top
+    level window belongs to: the display of its parent window, else the one
+    it is on, else the one under the mouse, else the main display.
+    own_first: the display it is on first (a window the user may have moved)."""
+    import wx
+
+    def index(w):
+        try:
+            return wx.Display.GetFromWindow(w)
+        except Exception:
+            return wx.NOT_FOUND
+
+    n = wx.NOT_FOUND
+    if win is not None:
+        if own_first:
+            n = index(win)
+        par = win.GetParent()
+        top = wx.GetTopLevelParent(par) if par is not None else None
+        if n == wx.NOT_FOUND and top is not None:
+            try:
+                if top.IsShown() and not top.IsIconized():
+                    n = index(top)
+            except RuntimeError:
+                pass
+        if n == wx.NOT_FOUND and par is None:
+            n = index(win)
+    if n == wx.NOT_FOUND:
+        try:
+            n = wx.Display.GetFromPoint(wx.GetMousePosition())
+        except Exception:
+            n = wx.NOT_FOUND
+    if n == wx.NOT_FOUND and win is not None:
+        n = index(win)
+    try:
+        return wx.Display(n if n != wx.NOT_FOUND and 0 <= n < wx.Display.GetCount() else 0).GetClientArea()
+    except Exception:
+        return wx.Rect(0, 0, 1280, 720)
+
+
+def fit_rect(rect, area, best=None, gap=0):
+    """Pure geometry of fit_to_screen: (x, y, w, h) of a window with the
+    rect `rect` (x, y, w, h) inside the work area `area`: at least `best`
+    (its contents) when that fits, at most the area less `gap` on each side,
+    moved only as far as needed to lie inside the area. A window made
+    smaller or larger keeps its centre."""
+    x, y, w, h = [int(v) for v in rect]
+    ax, ay, aw, ah = [int(v) for v in area]
+    nw, nh = w, h
+    if best is not None:
+        nw, nh = max(nw, int(best[0])), max(nh, int(best[1]))
+    nw = max(1, min(nw, aw - 2 * gap))
+    nh = max(1, min(nh, ah - 2 * gap))
+    x += (w - nw) // 2
+    y += (h - nh) // 2
+    x = max(ax, min(x, ax + aw - nw))
+    y = max(ay, min(y, ay + ah - nh))
+    return x, y, nw, nh
+
+
+def fit_to_screen(win, grow=True, area=None):
+    """Keeps a top level window (frame or dialog) inside the work area of its
+    display: never larger than it, as large as its contents when they fit
+    (grow), moved onto it as far as needed. Maximised, minimised and full
+    screen windows are left alone. Applied to every window when it is shown
+    (_install_generic_show); windows that change their size while open call
+    it again. Returns the work area used (None: nothing done)."""
+    import wx
+    try:
+        if win.IsMaximized() or win.IsIconized() or win.IsFullScreen():
+            return None
+    except Exception:
+        return None
+    if area is None:
+        area = display_area(win, own_first=win.IsShown() or getattr(win, "_udp_fitted", False))
+    gap = win.FromDIP(4)
+    room = wx.Size(max(1, area.width - 2 * gap), max(1, area.height - 2 * gap))
+    # a minimum size larger than the screen would keep the window too large
+    mn = win.GetMinSize()
+    if mn.width > room.width or mn.height > room.height:
+        win.SetMinSize(wx.Size(min(mn.width, room.width) if mn.width > 0 else -1,
+                               min(mn.height, room.height) if mn.height > 0 else -1))
+    best = None
+    if grow and win.GetSizer() is not None:
+        b = win.GetBestSize()
+        best = (b.width, b.height)
+    r = win.GetRect()
+    new = fit_rect((r.x, r.y, r.width, r.height), (area.x, area.y, area.width, area.height), best, gap)
+    if new != (r.x, r.y, r.width, r.height):
+        win.SetSize(*new)
+    return area
+
+
 # --------------------------------------------------------------------------
 # small custom controls
 # --------------------------------------------------------------------------
@@ -1296,8 +1399,15 @@ def _restore_geometry(frame):
         return False
     try:
         x, y, w, h = [int(v) for v in geo["rect"]]
-        if wx.Display.GetFromPoint(wx.Point(x + 60, y + 20)) == wx.NOT_FOUND or w < 300 or h < 200:
+        if w < 300 or h < 200:
             return False
+        # saved on a display that is gone or smaller now (a large monitor, then
+        # only the laptop): onto the display nearest to it, not larger than it
+        n = wx.Display.GetFromPoint(wx.Point(x + w // 2, y + 20))  # the middle of its title bar
+        if n == wx.NOT_FOUND:
+            n = wx.Display.GetFromPoint(wx.GetMousePosition())
+        a = wx.Display(n if n != wx.NOT_FOUND else 0).GetClientArea()
+        x, y, w, h = fit_rect((x, y, w, h), (a.x, a.y, a.width, a.height), gap=frame.FromDIP(4))
         frame.SetSize(x, y, w, h)
         if geo.get("maximized"):
             frame.Maximize(True)
@@ -1435,7 +1545,7 @@ def _install_last_folder():
 # 7. launcher (light frosted glass)
 # --------------------------------------------------------------------------
 APP_NAME = "MS Analysis"
-APP_VERSION = "3.65"  # +0.01 small change, +0.1 large change, +1.0 big change
+APP_VERSION = "3.75"  # +0.01 small change, +0.1 large change, +1.0 big change
 WORKSPACES = [
     ("LCMS Postrun", "Shimadzu .lcd files", "lcms"),
     ("HRMS Postrun", "Bruker .d and mzML files", "hrms"),
@@ -1675,6 +1785,7 @@ def _glass_class():
             top = self.GetTopLevelParent()
             top.Fit()
             top.Centre()
+            fit_to_screen(top, grow=False)
             self.Refresh()
 
         # ---------------------------------------------------------- helpers
@@ -2443,23 +2554,40 @@ def apply_main_theme(frame):
 
 
 def _install_generic_show():
-    """DPI size fix for other UniDec windows and dialogs (not main windows)."""
+    """Every frame and dialog, when it is shown: inside the work area of its
+    display (fit_to_screen), again after it moved to a display of another
+    scale; on scaled displays the fixed sizes of UniDec's own windows are
+    scaled first (main windows are themed and placed by apply_main_theme and
+    _install_launch)."""
     import wx
-    if not _ST["dpi_aware"] or _ST["system_scale"] <= 1.01:
-        return
+    native = tuple(c for c in (getattr(wx, n, None) for n in (
+        "MessageDialog", "FileDialog", "DirDialog", "ColourDialog", "FontDialog", "PrintDialog",
+        "PageSetupDialog", "ProgressDialog", "FindReplaceDialog")) if isinstance(c, type))
+
+    def refit(win):
+        try:
+            if win and win.IsShown():
+                fit_to_screen(win, grow=False)
+        except RuntimeError:
+            pass
+
     def fix(win):
-        if getattr(win, "_udp_scaled", False) or getattr(win, "_udp_themed", False):
-            return
-        scale_fixed_sizes(win)
-        if win.GetSizer() is None:
-            return
-        best = win.GetBestSize()
-        cur = win.GetSize()
-        if best.width > cur.width or best.height > cur.height:
-            disp = wx.Display(max(0, wx.Display.GetFromWindow(win))).GetClientArea()
-            win.SetSize(min(max(cur.width, best.width), disp.width),
-                        min(max(cur.height, best.height), disp.height))
-        win.Layout()
+        if isinstance(win, native):
+            return  # drawn by Windows, placed by it
+        first = not getattr(win, "_udp_fitted", False)
+        themed = getattr(win, "_udp_themed", False)
+        if first and not themed and not getattr(win, "_udp_scaled", False) and _from_unidec(win) and \
+                _ST["dpi_aware"] and _ST["system_scale"] > 1.01:
+            scale_fixed_sizes(win)
+        fit_to_screen(win, grow=first and not themed)
+        if first:
+            win._udp_fitted = True
+            if win.GetSizer() is not None:
+                win.Layout()
+            try:  # moved to a display of another scale: Windows resizes it, keep it inside
+                win.Bind(wx.EVT_DPI_CHANGED, lambda e, w=win: (e.Skip(), wx.CallAfter(refit, w)))
+            except Exception:
+                pass
 
     for cls in (wx.Frame, wx.Dialog):
         orig = cls.Show
@@ -2469,8 +2597,8 @@ def _install_generic_show():
                 if show:
                     try:
                         fix(self)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _log("window fit:", e)
                 return orig(self, show)
             return Show
 
@@ -2480,8 +2608,8 @@ def _install_generic_show():
     def ShowModal(self):
         try:
             fix(self)
-        except Exception:
-            pass
+        except Exception as e:
+            _log("window fit:", e)
         return orig_modal(self)
 
     wx.Dialog.ShowModal = ShowModal

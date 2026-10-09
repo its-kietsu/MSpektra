@@ -1180,13 +1180,10 @@ class CalibDialog(wx.Dialog):
         vs.Add(line, 0, wx.EXPAND)
         vs.Add(bs, 0, wx.EXPAND | wx.ALL, self.FromDIP(12))
         self.SetSizer(vs)
-        try:
-            area = wx.Display(max(0, wx.Display.GetFromWindow(frame))).GetClientArea()
-        except Exception:
-            area = wx.Rect(0, 0, 1600, 1000)
+        area = T.display_area(self)  # that of the main window
         self.SetSize(wx.Size(int(area.width * 0.96), int(area.height * 0.94)))  # large: the plots get the room
         self.SetMinSize(wx.Size(min(self.FromDIP(900), area.width), min(self.FromDIP(600), area.height)))
-        self.CentreOnParent()
+        self.CentreOnParent()  # (inside the screen when it is shown: T.fit_to_screen)
 
         self.calib.Bind(wx.EVT_CHOICE, lambda e_: self._calib_changed(remeasure=True))
         self.model.Bind(wx.EVT_CHOICE, lambda e_: self.refit())

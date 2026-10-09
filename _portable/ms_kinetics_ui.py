@@ -15,6 +15,7 @@ class KineticsFrame(wx.Frame):
     def __init__(self, tab, rows, relative, metadata):
         wx.Frame.__init__(self, tab.frame, title='Kinetic fitting', size=tab.FromDIP(wx.Size(1000, 780)))
         self.SetMinSize(self.FromDIP(wx.Size(880, 620)))
+        self.CentreOnParent()  # (inside the screen when it is shown: unidec_theme.fit_to_screen)
         self.SetBackgroundColour(C['bg'])
         self.SetFont(ui_font(10))
         self.rows = [dict(r) for r in rows]

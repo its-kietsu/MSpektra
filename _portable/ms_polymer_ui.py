@@ -30,6 +30,7 @@ class PolymerFrame(wx.Frame):
     def __init__(self,tab,rows,metadata,page=0):
         wx.Frame.__init__(self,wx.GetTopLevelParent(tab),title='Polymer analysis',size=tab.FromDIP(wx.Size(1040,800)))
         self.SetMinSize(self.FromDIP(wx.Size(800,650)))
+        self.CentreOnParent()  # (inside the screen when it is shown: unidec_theme.fit_to_screen)
         self.SetFont(ui_font(10));self.SetBackgroundColour(C['bg'])
         self.tab=tab;self.metadata=list(metadata);self.outputs=None;self.mode=None
         self.weight=wx.Choice(self,choices=['Peak area','Peak height'])

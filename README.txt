@@ -1,4 +1,4 @@
-MS Analysis 3.65 - portable Windows package   (09.10.2026)
+MS Analysis 3.75 - portable Windows package   (09.10.2026)
 ==========================================
 
 Postrun analysis of LC-MS and HRMS data, with deconvolution:
@@ -34,6 +34,23 @@ The version is shown on the start screen, in the help window (?) of LCMS
 and HRMS Postrun, and in the first line of each log file. It went up by
 0.1 with every update until 3.3. Since 3.31 a small change adds 0.01, a
 large change 0.1 and a big change 1.0.
+
+3.75 (09.10.2026)
+The windows follow the screen they are on (laptops, scaled displays, large
+monitors).
+* Plots: on a laptop the chromatograms, spectra and PDA map get most of the
+  window height (a plot is never lower than 42 % of the view, up to 280
+  points); large monitors look as before. The tile size no longer needs
+  changing when moving between screens.
+* On small screens the top bar and the tool row stay on one line (labels
+  give way to icons, last ones first), and the side panel, file list and
+  status field are narrower.
+* Pop up windows (calibration, deconvolution, mass shifts, formula finder,
+  Graph properties, polymer, kinetics, report and the others) always open
+  inside the screen, sized to their content, with their buttons in reach.
+* Dialogs are no longer twice as wide on displays scaled above 100 %.
+* A window saved on a monitor that is no longer connected opens on a present
+  display.
 
 3.65 (09.10.2026)
 Fewer descriptions: explanatory hint lines removed and tooltips, notes,

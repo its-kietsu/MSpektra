@@ -854,9 +854,8 @@ class ShiftDialog(wx.Dialog):
         vs.Add(U.dialog_buttons(self, U.flat(self, "Cancel", handler=lambda e: self.EndModal(wx.ID_CANCEL)),
                                 U.flat(self, "Show", "primary", handler=lambda e: self._ok())), 0, wx.EXPAND)
         self.SetSizerAndFit(vs)
-        try:  # never taller than the screen (the buttons were cut off)
-            room = wx.Display(wx.Display.GetFromWindow(self) if wx.Display.GetFromWindow(self) >= 0 else 0) \
-                .GetClientArea().GetHeight() - self.FromDIP(40)
+        try:  # never taller than the screen (the buttons were cut off): the list gets shorter
+            room = T.display_area(self).GetHeight() - self.FromDIP(40)
             if self.GetSize()[1] > room:
                 lh = max(self.FromDIP(80), self.list.GetSize()[1] - (self.GetSize()[1] - room))
                 self.list.SetMinSize(wx.Size(-1, lh))
