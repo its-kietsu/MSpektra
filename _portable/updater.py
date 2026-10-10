@@ -433,6 +433,8 @@ def _bar_class():
             self.btn.SetPosition(wx.Point(x, (self.GetClientSize()[1] - bh) // 2))
 
         def set_info(self, info):
+            if self.info and info["version"] != self.info["version"]:
+                self.closed = False  # (a newer version than the one closed)
             self.info = info
             self.btn.SetLabel("Restart now" if info.get("staged") else "Update")
             if not self.closed:
@@ -502,8 +504,12 @@ def _bar_class():
     return InfoBar
 
 
+EVERY = 3600  # seconds between the checks while MSpektra runs (MSPEKTRA_UPDATE_EVERY for tests)
+
+
 def start(delay_ms=5000):
-    """Looks for an update once per process, a few seconds after the first window (in the background)."""
+    """Looks for an update a few seconds after the first window, then every hour while MSpektra runs (in the
+    background); a version newer than the one shown replaces it in the bar."""
     if _STATE["started"]:
         return
     _STATE["started"] = True
@@ -513,14 +519,24 @@ def start(delay_ms=5000):
     import wx
     st = staged()
     if st:
-        wx.CallAfter(_found, {"version": st["version"], "staged": True, "notes": st.get("notes", [])})
-        return
+        _found({"version": st["version"], "staged": True, "notes": st.get("notes", [])})
+    every = float(os.environ.get("MSPEKTRA_UPDATE_EVERY") or EVERY)
+
+    def found(man):
+        shown = _STATE["result"]
+        if shown is not None and version_key(man["version"]) <= version_key(shown["version"]):
+            return  # (already shown, or downloaded)
+        _found({"version": man["version"], "staged": False, "man": man, "notes": man.get("notes", [])})
 
     def work():
-        man = check()
-        if man is not None:
-            wx.CallAfter(_found, {"version": man["version"], "staged": False, "man": man,
-                                  "notes": man.get("notes", [])})
+        while True:
+            try:
+                man = check()
+                if man is not None:
+                    wx.CallAfter(found, man)
+            except Exception as ex:  # (the app is closing, or a bad answer: try again at the next check)
+                _log("update check: %s" % ex)
+            time.sleep(every)
 
     wx.CallLater(delay_ms, lambda: threading.Thread(target=work, name="update check", daemon=True).start())
 
