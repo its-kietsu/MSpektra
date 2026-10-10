@@ -982,7 +982,8 @@ def _install_window_relaunch(exe_path):
     done = set()
 
     def Show(self, show=True):
-        result = orig_show(self, show)
+        # before the window appears: its taskbar button gets the icon of this MSpektra.exe at once (shown first,
+        # the button had the icon Windows kept for the ID, that of an MSpektra folder deleted since: a blank page)
         try:
             h = int(self.GetHandle())
             if show and h and h not in done:
@@ -992,7 +993,7 @@ def _install_window_relaunch(exe_path):
             if not done:
                 _log("taskbar relaunch properties not set:", e)
             done.add(-1)
-        return result
+        return orig_show(self, show)
 
     wx.Frame.Show = Show
 

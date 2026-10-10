@@ -6187,6 +6187,38 @@ class FilesPanel(wx.Panel):
         self.timer.Start(15000)  # new runs of a sequence appear by themselves
         self.Bind(wx.EVT_WINDOW_DESTROY, self._destroyed)
 
+    def _head_h(self):
+        """Height of the header row (ANALYSES, + and <): as far down as the tool bar of the view shown beside the
+        panel plus the same margin again, so that the row and the tool bar share their middle (a fixed height
+        left the header higher than the tool bar). DIP HEAD when no tool bar is shown."""
+        st = getattr(self, "_strip", None)
+        try:
+            ok = st is not None and st.IsShownOnScreen()
+        except RuntimeError:
+            ok = False
+        if not ok:
+            st = None
+            todo = list(self.frame.GetChildren())
+            while todo and st is None:
+                w = todo.pop(0)
+                try:
+                    if isinstance(w, ToolStrip) and w.IsShownOnScreen():
+                        st = w
+                        break
+                    todo.extend(w.GetChildren())
+                except RuntimeError:
+                    continue
+            self._strip = st
+        if st is not None:
+            try:
+                y0 = self.ScreenToClient(st.GetScreenPosition()).y
+                h = st.GetSize()[1]
+                if 0 <= y0 < self.FromDIP(120) and h > 0:
+                    return 2 * y0 + h
+            except RuntimeError:
+                pass
+        return self.FromDIP(self.HEAD)
+
     def tree_refresh(self):
         """A view changed its traces or spectra (TabBase.tree_changed)."""
         self._tree_due = False
@@ -6342,7 +6374,7 @@ class FilesPanel(wx.Panel):
         r, lr = self.FromDIP(self.ROW), self.FromDIP(self.LROW)
         x, w = self.FromDIP(4), self.GetClientSize()[0] - self.FromDIP(8 + self.GRIP)
         ind = {"grp": self.FromDIP(20), "node": self.FromDIP(38), "res": self.FromDIP(38)}  # the levels of the tree
-        y = self.FromDIP(self.HEAD) - self.top
+        y = self._head_h() - self.top
         rows = self.rows()
         for i, d in enumerate(rows):
             out.append(("row", i, d, None, wx.Rect(x, y, w, r)))
@@ -6392,7 +6424,8 @@ class FilesPanel(wx.Panel):
             self.top = int(room)
 
     def _head_buttons(self, fhead=None):
-        s, y = self.FromDIP(20), self.FromDIP(5)
+        s = self.FromDIP(20)
+        y = (self._head_h() - s) // 2  # in the middle of the header row (the middle of the tool bar beside it)
         w = self.GetClientSize()[0] - (0 if self.collapsed else self.FromDIP(self.GRIP))
         if self.collapsed:
             w = self.GetClientSize()[0]
@@ -6591,15 +6624,17 @@ class FilesPanel(wx.Panel):
                 tw, th = gc.GetTextExtent(t)
                 gc.DrawText(t, (w - tw) / 2.0, btn["open"].y + btn["open"].height + self.FromDIP(10))
             return
-        header_band(-self.top, self.FromDIP(self.HEAD) - self.FromDIP(2))
+        hh = self._head_h()
+        header_band(-self.top, hh - self.FromDIP(2))
         gc.SetFont(ui_font(7.8, 700), wx.Colour(C["muted"]))
-        gc.DrawText("ANALYSES", self.FromDIP(9), self.FromDIP(8) - self.top)
+        th = gc.GetTextExtent("ANALYSES")[1]
+        gc.DrawText("ANALYSES", self.FromDIP(9), (hh - self.FromDIP(2) - th) / 2.0 - self.top)
         button(btn["open"], "+", hk == "open")
         button(btn["collapse"], "<", hk == "collapse")
         rows = self.rows()
         if not rows:
             gc.SetFont(ui_font(8, 400), wx.Colour(C["faint"]))
-            gc.DrawText("No files open", self.FromDIP(9), self.FromDIP(self.HEAD + 4) - self.top)
+            gc.DrawText("No files open", self.FromDIP(9), hh + self.FromDIP(4) - self.top)
         self._paint_guides(gc, k, items, h)
         for kind, i, d, pl, rr in items:
             if rr.y + rr.height < 0 or rr.y > h:

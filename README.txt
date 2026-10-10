@@ -43,7 +43,10 @@ Smoother opening of files, Compare view figures and left panel details.
   the background; "Saved analysis" questions and "Could not read" messages come
   one at a time, and several files open in their order.
 * The log notes when a file dialog of Windows takes long to appear.
-* Left panel: a tree with lines from each file to its traces and results.
+* Left panel: a tree with lines from each file to its traces and results; its
+  header lines up with the tool bar of the view.
+* The taskbar shows the MSpektra icon from the start (it showed a blank page
+  after an older MSpektra folder was deleted).
 * Compare view: only the Area tool selects a region (Select no longer does).
 * Compare view: the names of the runs are right of the frame by default; long
   names are wrapped at spaces and stay within the height of the plot.

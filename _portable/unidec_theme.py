@@ -2457,16 +2457,16 @@ def start_screen(ensure_unidec=None, root=None, spawn=None):
     set_app_icon(frame)
     fs.Fit(frame)
     frame.Centre()
+    try:  # before Show: the taskbar button has the icon of this MSpektra.exe from the start
+        import unidec_ui_addons
+        unidec_ui_addons.install_relaunch(root, frames=[frame])
+    except Exception as e:
+        _log("taskbar:", e)
     frame.Show()
     canvas.SetFocus()
     _log("start screen shown in %.1f s" % (time.perf_counter() - t0))
 
     def after_show():
-        try:
-            import unidec_ui_addons
-            unidec_ui_addons.install_relaunch(root, frames=[frame])
-        except Exception as e:
-            _log("taskbar:", e)
         start_preload(deconv=not own_process)
     wx.CallLater(200, after_show)
     app.MainLoop()
