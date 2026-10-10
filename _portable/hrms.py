@@ -1842,7 +1842,7 @@ class HRMSFrame(U.PostrunFrame):
         dlg = wx.DirDialog(self.window(), "Open a Bruker or Agilent .d folder", defaultPath=self.folder(),
                            style=wx.DD_DEFAULT_STYLE | wx.DD_DIR_MUST_EXIST)
         try:
-            if dlg.ShowModal() != wx.ID_OK:
+            if U.show_open_dialog(dlg) != wx.ID_OK:
                 return
             path = dlg.GetPath()
         finally:
@@ -1857,7 +1857,7 @@ class HRMSFrame(U.PostrunFrame):
         dlg = wx.DirDialog(self.window(), "Open a Waters .raw folder", defaultPath=self.folder(),
                            style=wx.DD_DEFAULT_STYLE | wx.DD_DIR_MUST_EXIST)
         try:
-            if dlg.ShowModal() != wx.ID_OK:
+            if U.show_open_dialog(dlg) != wx.ID_OK:
                 return
             path = dlg.GetPath()
         finally:
@@ -1874,7 +1874,7 @@ class HRMSFrame(U.PostrunFrame):
                                      "Sciex .wiff (*.wiff)|*.wiff;*.wiff2|All files (*.*)|*.*",
                             style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST | wx.FD_MULTIPLE)
         try:
-            if dlg.ShowModal() == wx.ID_OK:
+            if U.show_open_dialog(dlg) == wx.ID_OK:
                 for p in dlg.GetPaths():
                     self.load(p)
         finally:

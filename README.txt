@@ -1,5 +1,5 @@
-MSpektra 4.2 - portable Windows package   (10.10.2026)
-======================================================
+MSpektra 4.21 - portable Windows package   (10.10.2026)
+=======================================================
 
 Analysis of LC-MS and HRMS data, with deconvolution:
   * LCMS Analysis   LC-MS and HPLC files (MS and PDA): Shimadzu .lcd,
@@ -36,6 +36,17 @@ The version is shown on the start screen, in the help window (?) of LCMS
 and HRMS Analysis, and in the first line of each log file. It went up by
 0.1 with every update until 3.3. Since 3.31 a small change adds 0.01, a
 large change 0.1 and a big change 1.0.
+
+4.21 (10.10.2026)
+Smoother opening of files, Compare view figures and left panel details.
+* Opening files: the file dialog no longer waits for libraries being loaded in
+  the background; "Saved analysis" questions and "Could not read" messages come
+  one at a time, and several files open in their order.
+* The log notes when a file dialog of Windows takes long to appear.
+* Left panel: a tree with lines from each file to its traces and results.
+* Compare view: only the Area tool selects a region (Select no longer does).
+* Compare view: the names of the runs are right of the frame by default; long
+  names are wrapped at spaces and stay within the height of the plot.
 
 4.2 (10.10.2026)
 New left panel, kinetic orders and Compare view fixes.

@@ -6341,7 +6341,7 @@ class FilesPanel(wx.Panel):
         out = []
         r, lr = self.FromDIP(self.ROW), self.FromDIP(self.LROW)
         x, w = self.FromDIP(4), self.GetClientSize()[0] - self.FromDIP(8 + self.GRIP)
-        ind = {"grp": self.FromDIP(14), "node": self.FromDIP(26), "res": self.FromDIP(26)}
+        ind = {"grp": self.FromDIP(20), "node": self.FromDIP(38), "res": self.FromDIP(38)}  # the levels of the tree
         y = self.FromDIP(self.HEAD) - self.top
         rows = self.rows()
         for i, d in enumerate(rows):
@@ -6600,6 +6600,7 @@ class FilesPanel(wx.Panel):
         if not rows:
             gc.SetFont(ui_font(8, 400), wx.Colour(C["faint"]))
             gc.DrawText("No files open", self.FromDIP(9), self.FromDIP(self.HEAD + 4) - self.top)
+        self._paint_guides(gc, k, items, h)
         for kind, i, d, pl, rr in items:
             if rr.y + rr.height < 0 or rr.y > h:
                 continue
@@ -6690,6 +6691,44 @@ class FilesPanel(wx.Panel):
             if show_date:
                 text(t, rr.x + rr.width - self.FromDIP(6) - dw, rr, ui_font(7.5, 400), C["faint"], dw + 2)
         edge()
+
+    def _paint_guides(self, gc, k, items, h):
+        """Lines of the tree: from each file (under its arrow) to its groups, from each group (under its square)
+        to its traces, spectra and results."""
+        gc.SetPen(gc.CreatePen(wx.GraphicsPenInfo(wx.Colour("#C3CCD8")).Width(1)))
+
+        def draw(x, top, ends):
+            if not ends:
+                return
+            y1 = ends[-1][1]
+            if y1 < 0 or top > h:
+                return
+            gc.StrokeLine(x, top, x, y1)
+            for xe, ym in ends:
+                gc.StrokeLine(x, ym, xe, ym)
+
+        file_x = grp_x = None
+        file_top = grp_top = 0
+        fends, gends = [], []
+        for kind, i, d, pl, rr in items + [("end", None, None, None, None)]:
+            if kind in ("row", "end", "grp"):
+                draw(grp_x, grp_top, gends)
+                gends = []
+                grp_x = None
+            if kind in ("row", "end"):
+                draw(file_x, file_top, fends)
+                fends = []
+                if kind == "row":
+                    cr = self._chev_rect(rr)
+                    file_x = int(cr.x + cr.width / 2.0) + 0.5
+                    file_top = rr.y + rr.height
+            elif kind == "grp":
+                ym = rr.y + rr.height / 2.0
+                fends.append((rr.x - k, ym))
+                grp_x = int(rr.x + 4 * k) + 0.5  # the middle of the group square
+                grp_top = ym + 4 * k + k
+            elif grp_x is not None:
+                gends.append((rr.x - k, rr.y + rr.height / 2.0))
 
     def _paint_result(self, gc, k, rr, d, dec, ent, button, band, text):
         """One deconvolution result on one line: eye (shown or hidden), method and masses (the time and mass
@@ -6905,7 +6944,7 @@ class FilesPanel(wx.Panel):
             elif v == "folder":
                 dlg = wx.DirDialog(self, "Show the data files of a folder", defaultPath=self.folder or "")
                 try:
-                    if dlg.ShowModal() == wx.ID_OK:
+                    if show_open_dialog(dlg) == wx.ID_OK:
                         T._save({self.frame.FOLDER_KEY: dlg.GetPath()})
                         self._list_folder(dlg.GetPath())
                 finally:
@@ -7107,6 +7146,24 @@ def _show_in_folder(path):
             subprocess.Popen(["xdg-open", os.path.dirname(path)])
     except Exception as ex:
         _log("show in folder: %s" % ex)
+
+
+def show_open_dialog(dlg):
+    """ShowModal of a file or folder dialog of Windows; the log says when it took long to become ready (the
+    first one of a session can wait for Windows to list OneDrive or network places, while the window looks
+    frozen). The background loading of libraries (T.start_preload) stops while the dialog is open: the
+    dialog runs on the main thread, which needs Python's lock for every event of the program's windows
+    while it opens, and an import holds that lock for long stretches (loading a library's DLLs), most of
+    all on a busy computer."""
+    t0 = time.perf_counter()
+
+    def ready():
+        dt = time.perf_counter() - t0
+        if dt > 1.5:
+            _log("the file dialog was ready after %.1f s (Windows was listing the folders)" % dt)
+    wx.CallLater(1, ready)
+    with T.hold_preload(wait=False):
+        return dlg.ShowModal()
 
 
 def _copy_text(text):
@@ -7989,6 +8046,9 @@ class PostrunFrame(wx.Frame):
         if not self._load_queue:
             self._load_scheduled = False
             return
+        if getattr(self, "_asking", False):  # a "Saved analysis" question (ms_project) or "Could not read" is open
+            wx.CallLater(100, self._drain_load_queue)
+            return
         path = self._load_queue.pop(0)
         try:
             self._start_load(path)
@@ -8043,6 +8103,11 @@ class PostrunFrame(wx.Frame):
 
     def _loaded(self, doc, path, data, errors):
         fr = self.window()
+        if fr and getattr(fr, "_asking", False):
+            # a message about another file is open: its message loop runs this CallAfter, so a second "Could
+            # not read" box opened on top of it (and the window changed behind it); this file comes after it
+            wx.CallLater(100, fr._loaded, doc, path, data, errors)
+            return
         try:
             wx.EndBusyCursor()
         except Exception:
@@ -8058,7 +8123,11 @@ class PostrunFrame(wx.Frame):
             return
         doc.loading = False
         if not any(v is not None for v in data.values()):
-            wx.MessageBox("Could not read %s\n\n%s" % (path, "\n".join(errors)), fr.TITLE, wx.ICON_ERROR)
+            fr._asking = True  # (the next files wait: _loaded, _drain_load_queue)
+            try:
+                wx.MessageBox("Could not read %s\n\n%s" % (path, "\n".join(errors)), fr.TITLE, wx.ICON_ERROR)
+            finally:
+                fr._asking = False
             doc.load_path = None
             fr.SetStatusText("Could not read " + name, 0)
             if any(d.path for d in fr.docs):
@@ -8325,7 +8394,7 @@ class LCMSFrame(PostrunFrame):
                             wildcard=data_formats.LCMS_WILDCARD,
                             style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST | wx.FD_MULTIPLE)
         try:
-            if dlg.ShowModal() == wx.ID_OK:
+            if show_open_dialog(dlg) == wx.ID_OK:
                 for p in dlg.GetPaths():
                     self.load(p)
         finally:
@@ -8335,7 +8404,7 @@ class LCMSFrame(PostrunFrame):
         dlg = wx.DirDialog(self.window(), "Open an Agilent .D or Waters .raw folder", defaultPath=self.folder(),
                            style=wx.DD_DEFAULT_STYLE | wx.DD_DIR_MUST_EXIST)
         try:
-            if dlg.ShowModal() != wx.ID_OK:
+            if show_open_dialog(dlg) != wx.ID_OK:
                 return
             path = dlg.GetPath()
         finally:

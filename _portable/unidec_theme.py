@@ -1545,7 +1545,7 @@ def _install_last_folder():
 # 7. launcher (light frosted glass)
 # --------------------------------------------------------------------------
 APP_NAME = "MSpektra"
-APP_VERSION = "4.2"  # +0.01 small change, +0.1 large change, +1.0 big change
+APP_VERSION = "4.21"  # +0.01 small change, +0.1 large change, +1.0 big change
 WORKSPACES = [
     ("LCMS Analysis", "LC-MS and HPLC files", "lcms"),
     ("HRMS Analysis", "Bruker .d and mzML files", "hrms"),
@@ -2201,13 +2201,19 @@ class hold_preload(object):
     (Taking the lock first, to set the flag, made a click on a tile wait
     for the whole list: the loading thread releases and takes the lock
     again at once between two modules, and a thread already waiting for a
-    lock rarely gets it in between.)"""
+    lock rarely gets it in between.)
+    wait=False: no wait for the module being loaded (a file dialog of
+    Windows: it opens at once, the loading stops after that module)."""
+
+    def __init__(self, wait=True):
+        self.wait = wait
 
     def __enter__(self):
         _PRE["hold"] += 1  # only the main thread changes it
-        lock = _pre_lock()
-        lock.acquire()
-        lock.release()
+        if self.wait:
+            lock = _pre_lock()
+            lock.acquire()
+            lock.release()
         return self
 
     def __exit__(self, *a):

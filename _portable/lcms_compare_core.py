@@ -34,15 +34,17 @@ def default_settings():
     return {"signal": "pda", "wl": None, "bw": 4.0, "own_wl": False, "polarity": "+", "mz": None, "mz_win": 0.5,
             "mz_ppm": False, "smooth": 0, "baseline": "none", "rolling_min": 1.0, "t0": None, "t1": None,
             "align": None, "align_win": 0.3, "layout": "stacked", "scale": "abs", "ref_t": None, "spacing": 100,
-            "skew": 0, "reverse": False, "colours": "palette", "lw": 0.8, "fill": False, "labels": "right",
+            "skew": 0, "reverse": False, "colours": "palette", "lw": 0.8, "fill": False, "labels": "outside",
             "label_text": "sample", "rt_labels": "none", "rt_min": 10.0, "guides": [], "yaxis": "auto",
-            "off_spacing": 15, "off_skew": 4, "integ_thr": 1.0}
+            "off_spacing": 15, "off_skew": 4, "integ_thr": 1.0, "names_v": 2}
 
 
 def migrate(saved):
     """Settings saved by older versions in the keys of this one: the scale bar check box (3.3) is the
     y axis choice (unticked: the axis with its values)."""
     out = dict(saved)
+    if out.get("labels") == "right" and not out.get("names_v"):  # the names right of the frame are the default now (once)
+        out["labels"] = "outside"
     if "yaxis" not in out and "scalebar" in out:
         out["yaxis"] = "auto" if out["scalebar"] else "axis"
     out.pop("scalebar", None)

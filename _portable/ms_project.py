@@ -191,6 +191,7 @@ class Controller:
         self.notes={}  # project -> why it is not written (status bar, once)
         self.dirty=False;self._mark=None;self._tools={}
         self._reading_project=False;self._deferred_loads=[]
+        self._ask_later=[]  # files dropped or given while a "Saved analysis" question is open: asked after it, in order
         self.timer=wx.Timer(frame);frame.Bind(wx.EVT_TIMER,self.tick,self.timer);self.timer.Start(5000)
         frame.Bind(wx.EVT_CLOSE,self.close)
         self.old_load=frame.load;self.old_loaded=frame._loaded;self.old_close=frame.close_doc
@@ -388,6 +389,12 @@ class Controller:
 
     def load(self,path):
         path=os.path.abspath(path)
+        if getattr(self.frame,'_asking',False):
+            # The question is modal, but its message loop still runs the loads queued with CallAfter (several
+            # files dropped or given at the start): each asked its own question on top of the open one, and the
+            # files opened in reverse order. They wait and are asked one after the other.
+            if path not in self._ask_later:self._ask_later.append(path)
+            return
         if self.restoring:
             if path not in self._deferred_loads:self._deferred_loads.append(path)
             return
@@ -396,9 +403,22 @@ class Controller:
             if d.path and os.path.normcase(d.path)==os.path.normcase(path):return self.old_load(path)
         project,h=self.saved_project(path)
         if project and _key(project) not in self.blocked:
-            if ask_resume(self.frame,path,project,h):return self.open_project(project)
+            # frame._asking also keeps the files chosen before from being set up inside the question's
+            # message loop (PostrunFrame._drain_load_queue waits): that froze the question and switched the
+            # window behind it from file to file
+            self.frame._asking=True
+            try:resume=ask_resume(self.frame,path,project,h)
+            finally:
+                self.frame._asking=False
+                if self._ask_later:wx.CallAfter(self._ask_next)
+            if resume:return self.open_project(project)
             self.keep[_key(project)]='replaced'  # opened without it: the first save keeps it beside the new one
         return self.old_load(path)
+
+    def _ask_next(self):
+        while self._ask_later and not getattr(self.frame,'_asking',False):
+            if self.closed or not self.frame:self._ask_later=[];return
+            self.load(self._ask_later.pop(0))
 
     def open_project(self,path):
         if self.restoring:

@@ -326,7 +326,7 @@ class CompareTab(U.TabBase):
         U.TabBase.set_tool(self, key)
         if key == "select":  # the hint of this view (the one of the file views speaks of chromatograms)
             self.status("Select: click a peak for its spectra, Ctrl + drag to zoom" if self.mz_on else
-                        "Select: drag to integrate every trace, Ctrl + drag to zoom")
+                        "Select: click a trace to choose its file, Ctrl + drag to zoom")
 
     def _show_spec_tools(self):
         """The spectrum tools (and the line before them) in the tool bar while m/z is on; a spectrum tool chosen
@@ -347,7 +347,7 @@ class CompareTab(U.TabBase):
             sel = tools.buttons.get("select")
             if sel is not None:
                 sel.SetToolTip("Select: click a peak for its spectra (Esc)" if on else
-                               "Select: drag to integrate every trace (Esc)")
+                               "Select: click a trace to choose its file (Esc)")
             if not on and self.tool in self.SPEC_TOOLS:
                 tools.set_mode("select")
                 self.set_tool("select")
@@ -676,8 +676,6 @@ class CompareTab(U.TabBase):
         if self.s["layout"] != old["layout"]:
             if self.s["layout"] == "offset" and self.s["labels"] == "right":
                 self.s["labels"] = "outside"  # the names right of the frame, as in a 2D waterfall figure
-            elif old["layout"] == "offset" and self.s["labels"] == "outside":
-                self.s["labels"] = "right"
             self._fill_controls()  # the spacing and skew of the new layout
         self._enable()
         self._save()
@@ -1502,14 +1500,21 @@ class CompareTab(U.TabBase):
                                  ha="left", va="center", color=_ink(o["colour"]), zorder=6, annotation_clip=False,
                                  **nkw))
             e = a.get_window_extent(r)
-            # a long name takes at most 30 % of the width of the figure (a narrow image): on more lines,
-            # then smaller (down to 5.5 pt), so that the plot keeps its room
-            maxw = 0.3 * ax.figure.bbox.width
+            # a long name takes at most 40 % of the width of the figure (a narrow image): on more lines (broken
+            # at spaces only, not inside "3-Mercaptopropionate"), then smaller (down to 5.5 pt), so that the plot
+            # keeps its room
+            maxw = 0.4 * ax.figure.bbox.width
             if e.width > maxw and " " in o["label"].strip():
                 import textwrap
-                n = max(8, int(len(o["label"]) * maxw / e.width) + 2)
-                a.set_text(_tex("\n".join(textwrap.wrap(o["label"], n))))
-                e = a.get_window_extent(r)
+                n = max(8, int(len(o["label"]) * maxw / e.width))
+                a.set_text(_tex(max(o["label"].split(), key=len)))  # the longest word: on one line in any case
+                maxw = max(maxw, a.get_window_extent(r).width)
+                while True:
+                    a.set_text(_tex("\n".join(textwrap.wrap(o["label"], n, break_on_hyphens=False, break_long_words=False))))
+                    e = a.get_window_extent(r)
+                    if e.width <= maxw or n <= 8:
+                        break
+                    n = max(8, int(n * 0.9))
             while e.width > maxw and a.get_fontsize() > 5.5:
                 a.set_fontsize(max(5.5, a.get_fontsize() - 0.5))
                 e = a.get_window_extent(r)
@@ -1521,7 +1526,8 @@ class CompareTab(U.TabBase):
         gap = 0.8 * pt
         for k in range(1, len(items)):
             items[k][0] = max(items[k][0], items[k - 1][0] + items[k - 1][1] + gap)
-        lim_top, lim_bot = bb.y1 + 0.5 * items[-1][1], bb.y0 - 0.5 * items[0][1]
+        # within the height of the frame (the lowest name ran into the numbers of the time axis)
+        lim_top, lim_bot = bb.y1 + 0.5 * items[-1][1], bb.y0
         if items[-1][0] + items[-1][1] > lim_top:  # within the height of the frame (half a line over at most)
             items[-1][0] = lim_top - items[-1][1]
             for k in range(len(items) - 2, -1, -1):
@@ -1621,8 +1627,9 @@ class CompareTab(U.TabBase):
         self.refresh_area()
 
     def on_compare_range(self, a, b, background=False):
-        """The default drag measures every run; MS averaging is an explicit toggle."""
-        self.set_area_range(a, b)
+        """A drag with Select: nothing is integrated (the Area tool does that; both did it before)."""
+        self.status("Choose Area to integrate a region")
+        self.card.canvas.draw_idle()
 
     def set_area_reference(self, o):
         self._area_ref_key = self._trace_key(o)
@@ -2211,7 +2218,7 @@ class CompareTab(U.TabBase):
         if b:
             b.set_active(self.mz_on)
         # while it is on, a drag across a trace averages that time range of its run (Shift: background), as on the
-        # chromatograms of the Mass spectrometry view; Ctrl + drag zooms; off: a drag integrates all traces
+        # chromatograms of the Mass spectrometry view; Ctrl + drag zooms; off: the Area tool integrates (Select does not)
         self.card.mode = "range"
         self.card.on_range = self.on_mz_range if self.mz_on else self.on_compare_range
         if not self.mz_on:
