@@ -7466,16 +7466,6 @@ class PostrunFrame(wx.Frame):
         self.panel_btn = flat(tb, "Hide panel", "ghost", icon="panel", height=34,
                               tooltip="Show or hide the side panel (F9)", handler=lambda e: self.set_side(None))
         tb.add(self.panel_btn, 4)
-        self.update_btn = flat(tb, "Update", "primary", height=34, handler=self.on_update_btn)
-        self.update_btn.Hide()
-        self._update_info = None
-        tb.add(self.update_btn, 4)
-        try:  # a newer MSpektra: the Update button (also when this window is opened without the start screen)
-            import updater
-            wx.CallAfter(updater.on_update, self.set_update)
-            wx.CallLater(500, updater.start)
-        except Exception as ex:
-            _log("update: %s" % ex)
         tb.add(flat(tb, "", "ghost", icon="help", tooltip="About " + self.TITLE, height=34, padx=8,
                     handler=self.on_help), 6)
         hs = wx.BoxSizer(wx.HORIZONTAL)
@@ -7484,6 +7474,12 @@ class PostrunFrame(wx.Frame):
         body.SetSizer(hs)
         vs = wx.BoxSizer(wx.VERTICAL)
         vs.Add(tb, 0, wx.EXPAND)
+        try:  # a newer MSpektra: the information bar under the top bar (also without the start screen)
+            import updater
+            vs.Add(updater.bar(root), 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, self.FromDIP(8))
+            wx.CallLater(500, updater.start)
+        except Exception as ex:
+            _log("update: %s" % ex)
         vs.Add(body, 1, wx.EXPAND)
         root.SetSizer(vs)
         fs = wx.BoxSizer(wx.VERTICAL)
@@ -7912,20 +7908,6 @@ class PostrunFrame(wx.Frame):
         show_text(self.window(), "About %s (MSpektra %s)" % (self.title_text(), ver), text+"\n\n"+CREDITS,
                   extra=extra)
 
-    def set_update(self, info):
-        """A newer version (updater.py): the Update button of the top bar."""
-        self._update_info = info
-        try:
-            self.update_btn.SetLabel("Restart to update" if info.get("staged") else "Update to %s" % info["version"])
-            self.update_btn.Show()
-            self.toolbar.Layout()
-        except RuntimeError:
-            pass
-
-    def on_update_btn(self, e=None):
-        if self._update_info:
-            import updater
-            updater.show_dialog(self, self._update_info)
 
     # ---------------------------------------------------------------- report
     def make_report(self, kind=None):

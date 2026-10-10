@@ -1,11 +1,11 @@
 """Updates of MSpektra from its GitHub releases.
 
-Each release carries, next to the full zip, a signed list of the parts of the program (update.json and
-update.json.sig: the version, a hash of every part, the notes) and one small zip per part
-(update-<part>-<hash>.zip). At start MSpektra reads the list of the latest release; when it is newer, the
-"Update" button appears. A click downloads only the parts that differ from those installed (install.json
-in the program folder), checks the signature of the list and the SHA-256 of every zip, and unpacks them into
-_update\\staging. "Restart now" starts update_apply.py (from a copy in the temp folder, with the Python of
+Each release carries the full zip and a signed list of the parts of the program (update.json and
+update.json.sig: the version, a hash of every part, the notes). The files of a part are stored one after the
+other in the full zip, so a part is one byte range of it (offset, size, SHA-256 in the list). At start
+MSpektra reads the list of the latest release; when it is newer, the update bar appears. Update downloads
+only the byte ranges of the parts that differ from those installed (install.json in the program folder),
+checks the signature of the list and the SHA-256 of every range, and unpacks them into _update\\staging. "Restart now" starts update_apply.py (from a copy in the temp folder, with the Python of
 the folder), which swaps the parts after MSpektra has closed, starts it again and puts the previous version
 back when the new one does not start. The previous version stays in _update\\old: About > "Back to ..."
 returns to it.
@@ -23,7 +23,6 @@ import sys
 import tempfile
 import threading
 import time
-import zipfile
 from decimal import Decimal, InvalidOperation
 
 REPO = "its-kietsu/MSpektra"
@@ -35,7 +34,7 @@ UPD = os.path.join(ROOT, "_update")
 STAGING = os.path.join(UPD, "staging")
 OLD = os.path.join(UPD, "old")
 PENDING = os.path.join(UPD, "pending.json")
-_STATE = {"started": False, "result": None, "listeners": [], "popped": False}
+_STATE = {"started": False, "result": None, "listeners": []}
 
 
 def _log(*a):
@@ -117,6 +116,96 @@ def _open(name, version=None, timeout=20):
     return urllib.request.urlopen(req, timeout=timeout)
 
 
+def _open_range(name, version, offset, size, timeout=60):
+    """size bytes from offset of a file of the release (a part inside the full zip)."""
+    feed = os.environ.get("MSPEKTRA_UPDATE_FEED")
+    if feed:
+        f = open(os.path.join(feed, name), "rb")
+        f.seek(offset)
+        return _Limited(f, size)
+    import urllib.request
+    req = urllib.request.Request(_url(name, version), headers={
+        "User-Agent": "MSpektra/%s" % current_version(), "Range": "bytes=%d-%d" % (offset, offset + size - 1)})
+    resp = urllib.request.urlopen(req, timeout=timeout)
+    if resp.status != 206:  # (the whole file: no)
+        resp.close()
+        raise ValueError("the server did not send a part of %s" % name)
+    return _Limited(resp, size)
+
+
+class _Limited:
+    def __init__(self, f, size):
+        self.f, self.left = f, size
+
+    def read(self, n):
+        block = self.f.read(min(n, self.left)) if self.left > 0 else b""
+        self.left -= len(block)
+        return block
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.f.close()
+
+
+def _unpack(path, staging):
+    """The zip entries of a byte range of the full zip (local headers, one after the other) into staging,
+    without the top folder ("MSpektra <version>/")."""
+    import struct
+    import zlib
+    with open(path, "rb") as f:
+        while True:
+            head = f.read(30)
+            if len(head) < 30:
+                if head:
+                    raise ValueError("a part ends in the middle of a file")
+                return
+            sig, _, flag, method, _, _, crc, csize, usize, nlen, xlen = struct.unpack("<4s5H3L2H", head)
+            if sig != b"PK\x03\x04" or flag & 0x08:
+                raise ValueError("a part is not a run of zip entries")
+            raw = f.read(nlen)
+            extra = f.read(xlen)
+            name = raw.decode("utf-8" if flag & 0x800 else "cp437")
+            if csize == 0xFFFFFFFF or usize == 0xFFFFFFFF:  # zip64: the sizes in the extra field
+                i = 0
+                while i + 4 <= len(extra):
+                    tag, ln = struct.unpack("<2H", extra[i:i + 4])
+                    if tag == 1:
+                        vals = list(struct.unpack("<%dQ" % (ln // 8), extra[i + 4:i + 4 + ln]))
+                        if usize == 0xFFFFFFFF:
+                            usize = vals.pop(0)
+                        if csize == 0xFFFFFFFF:
+                            csize = vals.pop(0)
+                    i += 4 + ln
+            rel = name.split("/", 1)[1] if "/" in name else name
+            dest = _inside(staging, rel)
+            if name.endswith("/"):
+                os.makedirs(dest, exist_ok=True)
+                continue
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            dec = zlib.decompressobj(-15) if method == 8 else None
+            if method not in (0, 8):
+                raise ValueError("%s: unknown compression" % rel)
+            left, c = csize, 0
+            with open(dest, "wb") as out:
+                while left > 0:
+                    block = f.read(min(left, 1 << 20))
+                    if not block:
+                        raise ValueError("a part ends in the middle of %s" % rel)
+                    left -= len(block)
+                    if dec:
+                        block = dec.decompress(block)
+                    c = zlib.crc32(block, c)
+                    out.write(block)
+                if dec:
+                    block = dec.flush()
+                    c = zlib.crc32(block, c)
+                    out.write(block)
+            if c & 0xFFFFFFFF != crc:
+                raise ValueError("%s is damaged (CRC differs)" % rel)
+
+
 def check():
     """The newer release, if there is one: its list of parts (verified) with what this folder needs of it;
     None when there is none, or nothing could be read (offline: nothing is said)."""
@@ -149,7 +238,10 @@ def check():
     man["_changed"] = [k for k, v in man.get("items", {}).items() if have.get(k, {}).get("hash") != v.get("hash")]
     man["_removed"] = [k for k in have if k not in man.get("items", {})]
     man["_bytes"] = sum(int(man["items"][k].get("size", 0)) for k in man["_changed"])
-    man["_full"] = man.get("runtime") != inst.get("runtime")
+    # the Python of the folder ("runtime" until 4.25, "python" since 4.26: "runtime" of the newer lists sends
+    # 4.25, which cannot read parts in the full zip, to the download page)
+    man["_full"] = (man.get("python", man.get("runtime")) != inst.get("python", inst.get("runtime"))
+                    or not man.get("zip"))
     man["_raw"] = data.decode("utf-8")
     return man
 
@@ -180,9 +272,10 @@ def download(man, progress=None, cancelled=lambda: False):
     total, done = max(1, man["_bytes"]), 0
     for key in man["_changed"]:
         it = man["items"][key]
-        target = os.path.join(dl, it["asset"])
+        target = os.path.join(dl, "part.bin")
         h = hashlib.sha256()
-        with _open(it["asset"], man["version"], timeout=60) as src, open(target, "wb") as out:
+        with _open_range(man["zip"], man["version"], int(it["offset"]), int(it["size"])) as src, \
+                open(target, "wb") as out:
             while True:
                 if cancelled():
                     return False
@@ -195,16 +288,8 @@ def download(man, progress=None, cancelled=lambda: False):
                 if progress:
                     progress(done, total)
         if h.hexdigest() != it["sha256"]:
-            raise ValueError("%s is damaged (checksum differs)" % it["asset"])
-        with zipfile.ZipFile(target) as z:
-            for info in z.infolist():
-                dest = _inside(STAGING, info.filename)
-                if info.is_dir():
-                    os.makedirs(dest, exist_ok=True)
-                    continue
-                os.makedirs(os.path.dirname(dest), exist_ok=True)
-                with z.open(info) as zs, open(dest, "wb") as zd:
-                    shutil.copyfileobj(zs, zd)
+            raise ValueError("%s is damaged (checksum differs)" % key)
+        _unpack(target, STAGING)
         os.remove(target)
     with open(os.path.join(STAGING, "install.json"), "w", encoding="utf-8") as f:
         f.write(man["_raw"])
@@ -290,77 +375,131 @@ def _found(info):
     _STATE["result"] = info
     for li in list(_STATE["listeners"]):
         _call(li, info)
-    if not _STATE["popped"]:  # once per start: a notice in the corner of the window, without a click
-        _STATE["popped"] = True
-        try:
-            _notice(info)
-        except Exception as ex:
-            _log("update notice: %s" % ex)
 
 
-def _notice(info):
-    """A small notice at the top right of the MSpektra window: the new version, Update and Later. It stays
-    until one of them is clicked (or its window closes)."""
+def bar(parent):
+    """The information bar of an update (start screen, under the top bar of LCMS and HRMS Analysis): hidden
+    until a newer version is found; Update opens the download window, Restart now installs a downloaded one,
+    x hides the bar until MSpektra starts again. Returns the bar (a wx.Panel in the parent's sizer)."""
+    b = _bar_class()(parent)
+    on_update(b.set_info)
+    return b
+
+
+def _bar_class():
     import wx
     import unidec_theme as T
     from unidec_theme import C, ui_font
-    tops = [w for w in wx.GetTopLevelWindows() if w.IsShown() and not isinstance(w, wx.Dialog)]
-    if not tops:
-        return
-    act = wx.GetActiveWindow()
-    parent = act.GetTopLevelParent() if act is not None and act.GetTopLevelParent() in tops else tops[0]
-    f = wx.Frame(parent, style=wx.FRAME_TOOL_WINDOW | wx.FRAME_FLOAT_ON_PARENT | wx.FRAME_NO_TASKBAR
-                 | wx.BORDER_SIMPLE)
-    p = wx.Panel(f)
-    p.SetBackgroundColour(wx.Colour(C["panel"]))
-    vs = wx.BoxSizer(wx.VERTICAL)
-    head = wx.StaticText(p, label="MSpektra %s %s" % (info["version"], "is ready to install" if info.get("staged")
-                                                       else "is available"))
-    head.SetFont(ui_font(10.5, 600))
-    vs.Add(head, 0, wx.LEFT | wx.RIGHT | wx.TOP, p.FromDIP(14))
-    notes = [n for n in info.get("notes", []) if n][:2]
-    if notes:
-        t = wx.StaticText(p, label="\n".join(notes))
-        t.SetFont(ui_font(9))
-        t.SetForegroundColour(wx.Colour(C["muted"]))
-        t.Wrap(p.FromDIP(300))
-        vs.Add(t, 0, wx.LEFT | wx.RIGHT | wx.TOP, p.FromDIP(14))
-    flat = T._cls("FlatButton")
-    later = flat(p, label="Later", kind="secondary", height=30)
-    go = flat(p, label="Restart now" if info.get("staged") else "Update", kind="primary", height=30, min_width=90)
-    bs = wx.BoxSizer(wx.HORIZONTAL)
-    bs.AddStretchSpacer(1)
-    bs.Add(later, 0, wx.RIGHT, p.FromDIP(8))
-    bs.Add(go, 0)
-    vs.Add(bs, 0, wx.EXPAND | wx.ALL, p.FromDIP(14))
-    p.SetSizer(vs)
-    vs.Fit(f)
-    f.SetClientSize(p.GetBestSize())
 
-    def place():
-        try:
-            r = parent.GetScreenRect()
-            w, h = f.GetSize()
-            f.SetPosition(wx.Point(r.x + r.width - w - parent.FromDIP(24), r.y + parent.FromDIP(110)))
-        except RuntimeError:
-            pass
+    class InfoBar(wx.Panel):
+        """Light blue bar with a rounded border (Windows 11 information bar): (i), Update available, the
+        version, its button and x."""
 
-    def update(e):
-        f.Destroy()
-        if info.get("staged"):
-            wx.CallAfter(apply_and_restart)
-        else:
-            wx.CallAfter(show_dialog, parent, _STATE["result"] or info)
+        def __init__(self, parent):
+            wx.Panel.__init__(self, parent, style=wx.BORDER_NONE)
+            self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+            self.info, self.closed = None, False
+            self.btn = T._cls("FlatButton")(self, label="Update", kind="primary", height=26, padx=12)
+            self.btn.Bind(wx.EVT_BUTTON, self.on_button)
+            self.SetMinSize(wx.Size(-1, self.FromDIP(38)))
+            self.Bind(wx.EVT_PAINT, self._paint)
+            self.Bind(wx.EVT_SIZE, lambda e: (self._place(), self.Refresh(), e.Skip()))
+            self.Bind(wx.EVT_LEFT_UP, self._click)
+            self.Bind(wx.EVT_MOTION, self._motion)
+            self.Hide()
 
-    later.Bind(wx.EVT_BUTTON, lambda e: f.Destroy())
-    go.Bind(wx.EVT_BUTTON, update)
-    try:
-        parent.Bind(wx.EVT_MOVE, lambda e: (place(), e.Skip()))
-        parent.Bind(wx.EVT_SIZE, lambda e: (place(), e.Skip()))
-    except Exception:
-        pass
-    place()
-    f.Show()
+        def _texts(self):
+            if not self.info:
+                return "", ""
+            if self.info.get("staged"):
+                return "Update ready", "MSpektra %s is ready to install." % self.info["version"]
+            return "Update available", "MSpektra %s is ready to download." % self.info["version"]
+
+        def _x_rect(self):
+            w, h = self.GetClientSize()
+            s = self.FromDIP(22)
+            return wx.Rect(w - s - self.FromDIP(8), (h - s) // 2, s, s)
+
+        def _place(self):
+            """The button right after the text."""
+            dc = wx.ClientDC(self)
+            head, text = self._texts()
+            dc.SetFont(ui_font(9.5, 600))
+            w1 = dc.GetTextExtent(head)[0]
+            dc.SetFont(ui_font(9.5, 400))
+            w2 = dc.GetTextExtent(text)[0]
+            x = self.FromDIP(12 + 16 + 10) + w1 + self.FromDIP(10) + w2 + self.FromDIP(12)
+            bw, bh = self.btn.GetSize()
+            self.btn.SetPosition(wx.Point(x, (self.GetClientSize()[1] - bh) // 2))
+
+        def set_info(self, info):
+            self.info = info
+            self.btn.SetLabel("Restart now" if info.get("staged") else "Update")
+            if not self.closed:
+                self.Show()
+                self._relayout()
+            self._place()
+            self.Refresh()
+
+        def _relayout(self):
+            top = self.GetTopLevelParent()
+            grow = getattr(top, "info_bar_grows", False)  # (the start screen gets taller instead of its tiles smaller)
+            if grow and self.IsShown() and not getattr(self, "_grown", False):
+                self._grown = True
+                w, h = top.GetSize()
+                top.SetSize(wx.Size(w, h + self.FromDIP(38 + 8)))
+            self.GetParent().Layout()
+            top.Layout()
+
+        def on_button(self, e=None):
+            if not self.info:
+                return
+            if self.info.get("staged"):
+                wx.CallAfter(apply_and_restart)
+            else:
+                wx.CallAfter(show_dialog, self.GetTopLevelParent(), _STATE["result"] or self.info)
+
+        def _motion(self, e):
+            self.SetCursor(wx.Cursor(wx.CURSOR_HAND if self._x_rect().Contains(e.GetPosition()) else wx.CURSOR_ARROW))
+
+        def _click(self, e):
+            if self._x_rect().Contains(e.GetPosition()):
+                self.closed = True
+                self.Hide()
+                self.GetParent().Layout()
+
+        def _paint(self, e):
+            dc = wx.AutoBufferedPaintDC(self)
+            dc.SetBackground(wx.Brush(self.GetParent().GetBackgroundColour()))
+            dc.Clear()
+            gc = T.crisp(dc)
+            w, h = self.GetClientSize()
+            k = self.FromDIP(10) / 10.0
+            gc.SetBrush(wx.Brush(wx.Colour("#EAF1FB")))
+            gc.SetPen(gc.CreatePen(wx.GraphicsPenInfo(wx.Colour("#C7D9F4")).Width(1)))
+            gc.DrawRoundedRectangle(0.5, 0.5, w - 1, h - 1, 4 * k)
+            cx, cy, r = self.FromDIP(12) + 8 * k, h / 2.0, 8 * k  # (i)
+            gc.SetPen(wx.TRANSPARENT_PEN)
+            gc.SetBrush(wx.Brush(wx.Colour(C["accent"])))
+            gc.DrawEllipse(cx - r, cy - r, 2 * r, 2 * r)
+            gc.SetPen(gc.CreatePen(wx.GraphicsPenInfo(wx.Colour("#FFFFFF")).Width(1.6 * k).Cap(wx.CAP_ROUND)))
+            gc.StrokeLine(cx, cy - 1 * k, cx, cy + 3 * k)
+            gc.StrokeLine(cx, cy - 3.6 * k, cx, cy - 3.4 * k)
+            head, text = self._texts()
+            x = self.FromDIP(12 + 16 + 10)
+            gc.SetFont(ui_font(9.5, 600), wx.Colour(C["text"]))
+            tw, th = gc.GetTextExtent(head)
+            gc.DrawText(head, x, (h - th) / 2.0)
+            gc.SetFont(ui_font(9.5, 400), wx.Colour("#444B55"))
+            gc.DrawText(text, x + tw + self.FromDIP(10), (h - th) / 2.0)
+            xr = self._x_rect()  # x
+            gc.SetPen(gc.CreatePen(wx.GraphicsPenInfo(wx.Colour("#5B6475")).Width(1.4 * k).Cap(wx.CAP_ROUND)))
+            q = 4.5 * k
+            mx, my = xr.x + xr.width / 2.0, xr.y + xr.height / 2.0
+            gc.StrokeLine(mx - q, my - q, mx + q, my + q)
+            gc.StrokeLine(mx - q, my + q, mx + q, my - q)
+
+    return InfoBar
 
 
 def start(delay_ms=5000):

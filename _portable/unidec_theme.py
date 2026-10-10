@@ -1486,7 +1486,7 @@ def _install_last_folder():
 # 7. launcher (light frosted glass)
 # --------------------------------------------------------------------------
 APP_NAME = "MSpektra"
-APP_VERSION = "4.25"  # +0.01 small change, +0.1 large change, +1.0 big change
+APP_VERSION = "4.26"  # +0.01 small change, +0.1 large change, +1.0 big change
 WORKSPACES = [
     ("LCMS Analysis", "LC-MS and HPLC files", "lcms"),
     ("HRMS Analysis", "Bruker, Agilent, Waters, Thermo and mzML files", "hrms"),
@@ -1636,7 +1636,7 @@ def _glass_class():
 
         # ---------------------------------------------------------- input
         def _hit(self, pos):
-            for (x, y, w, h, i) in self._rects + ([self._update_rect] if getattr(self, "_update_rect", None) else []):
+            for (x, y, w, h, i) in self._rects:
                 if x <= pos.x <= x + w and y <= pos.y <= y + h:
                     return i
             return -1
@@ -1713,17 +1713,7 @@ def _glass_class():
             self._focus = f
             self.Refresh()
 
-        UPDATE = 9999  # the index of the Update button in _rects
-
-        def set_update(self, info):
-            self.update_info = info
-            self.Refresh()
-
         def _activate(self, i):
-            if i == self.UPDATE:
-                import updater
-                wx.CallAfter(updater.show_dialog, self.GetTopLevelParent(), self.update_info)
-                return
             if i == len(self.tools):
                 self._more_menu()
                 return
@@ -1937,19 +1927,6 @@ def _glass_class():
             self._rr(gc, px, py, vw + 16 * k, vh + 6 * k, 4 * k)
             gc.SetFont(ui_font(11, 600), wx.Colour(C["accent_text"]))
             gc.DrawText(ver, px + 8 * k, py + 3 * k)
-            upd = getattr(self, "update_info", None)
-            self._update_rect = None
-            if upd:  # a newer version: its button (updater.py)
-                label = ("Restart to update" if upd.get("staged") else "Update to %s" % upd["version"])
-                gc.SetFont(ui_font(10, 400), wx.Colour(255, 255, 255))
-                lw, lh = gc.GetTextExtent(label)
-                ux, uy, uw, uh = px + vw + 16 * k + 14 * k, py - 4 * k, lw + 28 * k, vh + 14 * k
-                hov = self._hover == self.UPDATE
-                gc.SetPen(wx.TRANSPARENT_PEN)
-                gc.SetBrush(wx.Brush(wx.Colour(C["accent_hover"] if hov else C["accent"])))
-                self._rr(gc, ux, uy, uw, uh, 4 * k)
-                gc.DrawText(label, ux + 14 * k, uy + (uh - lh) / 2.0)
-                self._update_rect = (ux, uy, uw, uh, self.UPDATE)
 
             # three workspace tiles
             self._rects = []
@@ -2416,6 +2393,12 @@ def start_screen(ensure_unidec=None, root=None, spawn=None):
         more.append((title, desc, int(tid)))
     canvas = _glass_class()(frame, tools, None, UNIDEC_VERSION, more=more)
     fs = wx.BoxSizer(wx.VERTICAL)
+    try:  # a newer MSpektra: the information bar at the top (updater.py)
+        import updater
+        frame.info_bar_grows = True
+        fs.Add(updater.bar(frame), 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, frame.FromDIP(8))
+    except Exception as e:
+        _log("update bar:", e)
     fs.Add(canvas, 1, wx.EXPAND)
     frame.SetSizer(fs)
     set_app_icon(frame)
@@ -2432,9 +2415,8 @@ def start_screen(ensure_unidec=None, root=None, spawn=None):
 
     def after_show():
         start_preload(deconv=not own_process)
-        try:  # a newer MSpektra: the Update button (updater.py); also confirms an update just installed
+        try:  # looks for a newer MSpektra (the bar); also confirms an update just installed
             import updater
-            updater.on_update(lambda info: canvas.set_update(info))
             updater.start()
         except Exception as e:
             _log("update:", e)
