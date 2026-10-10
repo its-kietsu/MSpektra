@@ -1,4 +1,4 @@
-MSpektra 4.23 - portable Windows package   (10.10.2026)
+MSpektra 4.24 - portable Windows package   (10.10.2026)
 =======================================================
 
 Analysis of LC-MS and HRMS data, with deconvolution:
@@ -36,6 +36,17 @@ The version is shown on the start screen, in the help window (?) of LCMS
 and HRMS Analysis, and in the first line of each log file. It went up by
 0.1 with every update until 3.3. Since 3.31 a small change adds 0.01, a
 large change 0.1 and a big change 1.0.
+
+4.24 (10.10.2026)
+Windows 11 look.
+* Buttons in the style of Windows 11: rectangles with small rounded corners,
+  flat colours, regular Segoe UI; the view switch, chips and tool buttons
+  have the same corners (no pills).
+* Segoe UI for all the text of the program (the headings were Plus Jakarta
+  Sans, which is no longer bundled); plots, images and reports keep Arial.
+* Left panel: file names in regular weight; files of the folder already open
+  in dark text.
+* Start screen: the HRMS tile names Bruker, Agilent, Waters, Thermo and mzML.
 
 4.23 (10.10.2026)
 * The taskbar shows the MSpektra icon: each MSpektra folder has its own

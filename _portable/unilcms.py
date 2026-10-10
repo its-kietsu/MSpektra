@@ -357,7 +357,7 @@ def draw_badge(gc, win, text, colour, x, y, line_h):
     by = y + (line_h - h) / 2.0
     gc.SetPen(gc.CreatePen(wx.GraphicsPenInfo(col).Width(1.0)))
     gc.SetBrush(wx.Brush(wx.Colour(col.Red(), col.Green(), col.Blue(), 30)))
-    gc.DrawRoundedRectangle(x, by, tw + 2 * padx, h, h / 2.0)
+    gc.DrawRoundedRectangle(x, by, tw + 2 * padx, h, win.FromDIP(3))  # Windows 11 corners, not a pill
     gc.DrawText(text, x + padx, by + (h - th) / 2.0)
     return tw + 2 * padx
 
@@ -2182,16 +2182,17 @@ class Segmented(wx.Control):
         w, h = self.GetClientSize()
         gc.SetBrush(wx.Brush(wx.Colour("#E9EEF6")))
         gc.SetPen(gc.CreatePen(wx.GraphicsPenInfo(wx.Colour(C["line"])).Width(1.0)))
-        gc.DrawRoundedRectangle(0.5, 0.5, w - 1, h - 1, (h - 1) / 2.0)
+        # Windows 11 corners (the outer frame 5 px, the chosen view 4 px), not pills
+        gc.DrawRoundedRectangle(0.5, 0.5, w - 1, h - 1, self.FromDIP(5))
         x = self.FromDIP(4)
         p = self.FromDIP(3)
         for i, (lab, sw) in enumerate(zip(self.labels, self.widths)):
             if i == self.active:
                 gc.SetPen(wx.TRANSPARENT_PEN)
                 gc.SetBrush(wx.Brush(wx.Colour(14, 28, 48, 22)))
-                gc.DrawRoundedRectangle(x, p + 1.5, sw, h - 2 * p, (h - 2 * p) / 2.0)
+                gc.DrawRoundedRectangle(x, p + 1.5, sw, h - 2 * p, self.FromDIP(4))
                 gc.SetBrush(wx.Brush(wx.Colour("#FFFFFF")))
-                gc.DrawRoundedRectangle(x, p, sw, h - 2 * p, (h - 2 * p) / 2.0)
+                gc.DrawRoundedRectangle(x, p, sw, h - 2 * p, self.FromDIP(4))
                 col = C["accent_text"]
             else:
                 col = C["muted"] if self.enabled[i] else "#A9B1BC"
@@ -2270,7 +2271,7 @@ class ToolButton(wx.Control):
         dc.Clear()
         gc = T.crisp(dc)
         w, h = self.GetClientSize()
-        r = self.FromDIP(8)
+        r = self.FromDIP(4)  # Windows 11 corners
         if self.active:
             gc.SetBrush(wx.Brush(wx.Colour(C["accent_bg"])))
             gc.SetPen(gc.CreatePen(wx.GraphicsPenInfo(wx.Colour(59, 130, 217, 150)).Width(1.0)))
@@ -6653,7 +6654,7 @@ class FilesPanel(wx.Panel):
                 button(cr, "v" if self._expanded(d) else ">", hot and self.hover_part == "chev")
                 x = square(cr.x + cr.width + self.FromDIP(2), rr.y + rr.height / 2.0, C["accent"], 9.0)
                 end = rr.x + rr.width - self.FromDIP(22 if (active or hot) else 4)
-                tw = text(d.file_name, x, rr, ui_font(8.6, 700 if active else 600), C["text"], end - x)
+                tw = text(d.file_name, x, rr, ui_font(8.6, 400), C["text"], end - x)  # regular, as Explorer
                 if d.loading:
                     sub, col = "reading …", C["accent_text"]
                 elif any(getattr(pn, "busy", False) for _, pg in d.pages for pn in getattr(pg, "panels", [])):
@@ -6690,7 +6691,7 @@ class FilesPanel(wx.Panel):
                 else:
                     x = rr.x + self.FromDIP(20)
                 end = rr.x + rr.width - self.FromDIP(22 if (hot and pl.get("remove")) else 4)
-                text(pl["label"], x, rr, ui_font(8.3, 600 if sel else 400), C["text"] if shown else "#8E97A3",
+                text(pl["label"], x, rr, ui_font(8.3, 400), C["text"] if shown else "#8E97A3",
                      end - x)
                 if hot and pl.get("remove"):
                     button(self._x_rect(rr), "x", self.hover_part == "x")
@@ -6725,7 +6726,7 @@ class FilesPanel(wx.Panel):
             dw = gc.GetTextExtent(t)[0]
             show_date = rr.width > self.FromDIP(150)
             room = rr.width - self.FromDIP(12) - (dw + self.FromDIP(6) if show_date else 0)
-            text(it["name"], x, rr, ui_font(8.3, 700 if opened else 400), C["text"], room)
+            text(it["name"], x, rr, ui_font(8.3, 400), C["text"] if opened else C["muted"], room)
             if show_date:
                 text(t, rr.x + rr.width - self.FromDIP(6) - dw, rr, ui_font(7.5, 400), C["faint"], dw + 2)
         edge()
@@ -6804,7 +6805,7 @@ class FilesPanel(wx.Panel):
         except Exception:
             pass
         room = end - x - (self.FromDIP(14) if poor else 0)
-        tw = text(line1 if shown else "hidden · " + line1, x, rr, ui_font(8.3, 700 if active else 400),
+        tw = text(line1 if shown else "hidden · " + line1, x, rr, ui_font(8.3, 400),
                   C["text"] if shown else "#8E97A3", room)
         if poor:  # warning triangle after the text
             s = self.FromDIP(10)

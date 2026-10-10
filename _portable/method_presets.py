@@ -1214,7 +1214,7 @@ def _chip_class():
             w, h = self.GetClientSize()
             gc.SetBrush(wx.Brush(wx.Colour(C["accent_bg"])))
             gc.SetPen(wx.Pen(wx.Colour(C["line2"]), 1))
-            gc.DrawRoundedRectangle(0.5, 0.5, w - 1, h - 1, (h - 1) / 2.0)
+            gc.DrawRoundedRectangle(0.5, 0.5, w - 1, h - 1, self.FromDIP(4))  # Windows 11 corners, not a pill
             gc.SetFont(self.GetFont(), wx.Colour(C["muted"]))
             t1 = self._label + "  "
             w1, th = gc.GetTextExtent(t1)

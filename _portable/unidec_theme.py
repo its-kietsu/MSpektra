@@ -33,73 +33,10 @@ C = {
 }
 GROUP = {"blue": "#2F6FCB", "yellow": "#C99A1E", "red": "#D2456F", "green": "#0BA064"}
 
-# Plus Jakarta Sans (SIL OFL 1.1, bundled in _portable\fonts) for headings,
-# toolbar, launcher; native form fields keep the Windows system font
-# Regular and Bold share one GDI family; Medium/SemiBold map onto them (their
-# separate families rendered word spaces too narrow in testing)
-_FACES = {400: "Plus Jakarta Sans", 500: "Plus Jakarta Sans", 600: "Plus Jakarta Sans",
-          700: "Plus Jakarta Sans", 800: "Plus Jakarta Sans ExtraBold"}
-
-
-def register_fonts(folder):
-    """Make the bundled fonts available to this process only (nothing is
-    installed on the computer)."""
-    if os.name != "nt" or not folder or not os.path.isdir(folder):
-        return 0
-    import ctypes
-    try:
-        import wx
-    except Exception:
-        wx = None
-    n = 0
-    for name in sorted(os.listdir(folder)):
-        if name.lower().endswith(".ttf"):
-            path = os.path.join(folder, name)
-            gdi_ok = False
-            try:
-                gdi_ok = ctypes.windll.gdi32.AddFontResourceExW(path, 0x10, 0) > 0
-            except Exception:
-                pass
-            # GDI+ can reject a private font even when GDI accepts it. wx logs
-            # that failure as a modal error; an optional heading font must
-            # fall back to Segoe UI without interrupting the user.
-            private_ok = False
-            if wx is not None:
-                quiet = wx.LogNull()
-                try:
-                    private_ok = bool(wx.Font.AddPrivateFont(path))
-                except Exception:
-                    pass
-                finally:
-                    del quiet  # restore logging immediately, including real app errors
-            if gdi_ok and private_ok:
-                n += 1
-    _ST.pop("jakarta_ok", None)
-    _ST["fonts_registered"] = n
-    return n
-
-
-def _jakarta_ok():
-    if "jakarta_ok" not in _ST:
-        try:
-            import wx
-            _ST["jakarta_ok"] = bool(_ST.get("fonts_registered")) and \
-                wx.FontEnumerator.IsValidFacename("Plus Jakarta Sans")
-        except Exception:
-            _ST["jakarta_ok"] = False
-    return _ST["jakarta_ok"]
-
-
 def ui_font(points, weight=400):
-    """Headings (13 pt and larger): Plus Jakarta Sans if available. Smaller
-    text: Segoe UI, the Windows interface font, which is hinted for ClearType
-    and stays sharp at small sizes (Plus Jakarta Sans looked soft there)."""
+    """The font of the interface: Segoe UI, the Windows interface font, at every size (plots, copied images and
+    reports use Arial). Plus Jakarta Sans, bundled for headings up to 4.23, is no longer used."""
     import wx
-    if points >= 13 and _jakarta_ok():
-        f = wx.Font(wx.FontInfo(points).FaceName(_FACES.get(weight, _FACES[400])))
-        if weight in (600, 700):
-            f.SetWeight(wx.FONTWEIGHT_BOLD)
-        return f
     f = wx.Font(wx.FontInfo(points).FaceName("Segoe UI"))
     f.SetWeight({500: wx.FONTWEIGHT_MEDIUM, 600: wx.FONTWEIGHT_SEMIBOLD, 700: wx.FONTWEIGHT_BOLD,
                  800: wx.FONTWEIGHT_EXTRABOLD}.get(weight, wx.FONTWEIGHT_NORMAL))
@@ -518,7 +455,7 @@ def _controls():
             if tooltip:
                 self.SetToolTip(tooltip)
             pts = 9 if height < 28 else 9.5
-            self.SetFont(ui_font(pts, 700 if kind == "primary" else 600 if icon else 500))
+            self.SetFont(ui_font(pts, 400))  # as the buttons of Windows 11: regular Segoe UI
             self._fit()
 
         def _fit(self):
@@ -606,52 +543,48 @@ def _controls():
             gc = crisp(dc)
             w, h = self.GetClientSize()
             k, en = self._kind, self.IsEnabled()
-            big = h >= self.FromDIP(30)
-            # pill shape; primary buttons leave room for a soft shadow below
-            inset = self.FromDIP(2) if (k == "primary" and big) else 0
-            x0, y0, bw, bh = 1.0, 0.5 + (inset * 0.3), w - 2.0, h - 1.0 - inset
-            r = bh / 2.0 if big or k == "ghost" else self.FromDIP(7)
-            fg = C["text"] if en else "#9AA3AD"
+            # the buttons of Windows 11 (Fluent): rectangles with 4 px corners, flat colours, a 1 px border whose
+            # bottom edge is a little darker; accent buttons filled with the program's blue
+            x0, y0, bw, bh = 0.5, 0.5, w - 1.0, h - 1.0
+            r = self.FromDIP(4)
+            fg = C["text"] if en else "#A0A0A0"
+
+            def edge(top, bottom):
+                gc.SetBrush(wx.TRANSPARENT_BRUSH)
+                gc.SetPen(gc.CreatePen(wx.GraphicsPenInfo(wx.Colour(top)).Width(1)))
+                gc.DrawRoundedRectangle(x0, y0, bw, bh, r)
+                gc.SetPen(gc.CreatePen(wx.GraphicsPenInfo(wx.Colour(bottom)).Width(1)))
+                gc.StrokeLine(x0 + r, y0 + bh, x0 + bw - r, y0 + bh)
+
             if k == "primary":
-                if not en:
-                    c1, c2 = "#9DB6E0", "#8AA3CF"
-                elif self._down:
-                    c1, c2 = "#1E4F9E", "#123565"
-                elif self._hover:
-                    c1, c2 = C["accent_hover"], "#1B4A92"
-                else:
-                    c1, c2 = C["accent"], C["accent_end"]
-                if big and en:
-                    gc.SetPen(wx.TRANSPARENT_PEN)
-                    for i, a in ((3, 22), (1.5, 34)):
-                        gc.SetBrush(wx.Brush(wx.Colour(23, 65, 143, a)))
-                        gc.DrawRoundedRectangle(x0 + i * 0.5, y0 + i, bw - i, bh, r)
-                gc.SetBrush(gc.CreateLinearGradientBrush(x0, y0, x0 + bw * 0.35, y0 + bh, wx.Colour(c1),
-                                                         wx.Colour(c2)))
+                fill = ("#BFC8D6" if not en else "#4A7BD0" if self._down else C["accent_hover"] if self._hover
+                        else C["accent"])
                 gc.SetPen(wx.TRANSPARENT_PEN)
-                gc.DrawRoundedRectangle(x0, y0, bw, bh, r)
-                # top sheen
-                gc.SetBrush(gc.CreateLinearGradientBrush(x0, y0, x0, y0 + bh * 0.55, wx.Colour(255, 255, 255, 46),
-                                                         wx.Colour(255, 255, 255, 0)))
-                gc.DrawRoundedRectangle(x0 + 1, y0 + 1, bw - 2, bh * 0.55, max(1, r - 1))
-                fg = "#FFFFFF"
-            elif k == "secondary":
-                fill = C["down"] if self._down else C["hover"] if self._hover else C["panel"]
                 gc.SetBrush(wx.Brush(wx.Colour(fill)))
-                gc.SetPen(wx.Pen(wx.Colour(C["line2"]), 1))
                 gc.DrawRoundedRectangle(x0, y0, bw, bh, r)
-            else:  # ghost
-                fill = C["down"] if self._down else C["hover"] if self._hover else None
-                if fill:
-                    gc.SetBrush(wx.Brush(wx.Colour(fill)))
+                if en and not self._down:
+                    edge(fill, "#1C4A99")
+                fg = "#FFFFFF" if (en and not self._down) else "#E6ECF6"
+            elif k == "secondary":
+                fill = "#F5F5F5" if (self._down or not en) else "#F6F6F6" if self._hover else "#FBFBFB"
+                gc.SetPen(wx.TRANSPARENT_PEN)
+                gc.SetBrush(wx.Brush(wx.Colour(fill)))
+                gc.DrawRoundedRectangle(x0, y0, bw, bh, r)
+                edge("#E5E5E5", "#E5E5E5" if (self._down or not en) else "#CCCCCC")
+                if self._down and en:
+                    fg = "#5D5D5D"
+            else:  # ghost (Windows: subtle button): no fill until the mouse is over it
+                # a see-through dark tint (6 % over, 4 % pressed), as Windows: visible on white and on grey
+                fill = wx.Colour(0, 0, 0, 10) if self._down else wx.Colour(0, 0, 0, 15) if self._hover else None
+                if fill and en:
                     gc.SetPen(wx.TRANSPARENT_PEN)
+                    gc.SetBrush(wx.Brush(fill))
                     gc.DrawRoundedRectangle(x0, y0, bw, bh, r)
-                if self._down or self._hover:
-                    fg = C["accent_text"] if en else fg
+                if self._down and en:
+                    fg = "#5D5D5D"
             gc.SetFont(self.GetFont(), wx.Colour(fg))
             tw, th = gc.GetTextExtent(self._label) if self._label else (0, 0)
-            icol = "#FFFFFF" if k == "primary" else (C["accent_text"] if (self._hover or self._down) else
-                                                     "#3B4450") if en else "#9AA3AD"
+            icol = fg if k == "primary" else ("#3B4450" if not self._down else "#5D5D5D") if en else "#A0A0A0"
             bmp = self._icon_bmp(icol)
             iw = self.FromDIP(16) if bmp else 0
             gap = self.FromDIP(7) if (bmp and self._label) else 0
@@ -706,7 +639,7 @@ def _controls():
             w, h = self.GetClientSize()
             gc.SetBrush(wx.Brush(wx.Colour(C["tint"])))
             gc.SetPen(wx.Pen(wx.Colour(C["line"]), 1))
-            gc.DrawRoundedRectangle(0.5, 0.5, w - 1, h - 1, (h - 1) / 2.0)
+            gc.DrawRoundedRectangle(0.5, 0.5, w - 1, h - 1, self.FromDIP(4))  # Windows 11 corners, not a pill
             f = self.GetFont()
             gc.SetFont(f, wx.Colour(C["muted"]))
             t1 = self._label + "  "
@@ -1553,10 +1486,10 @@ def _install_last_folder():
 # 7. launcher (light frosted glass)
 # --------------------------------------------------------------------------
 APP_NAME = "MSpektra"
-APP_VERSION = "4.23"  # +0.01 small change, +0.1 large change, +1.0 big change
+APP_VERSION = "4.24"  # +0.01 small change, +0.1 large change, +1.0 big change
 WORKSPACES = [
     ("LCMS Analysis", "LC-MS and HPLC files", "lcms"),
-    ("HRMS Analysis", "Bruker .d and mzML files", "hrms"),
+    ("HRMS Analysis", "Bruker, Agilent, Waters, Thermo and mzML files", "hrms"),
     ("Deconvolute", "Text, JCAMP-DX, mzML, Thermo and Waters spectra", "deconv"),
 ]
 # visible texts of the deconvolution window, renamed (UniDec's code is unchanged)
@@ -1673,7 +1606,7 @@ def _glass_class():
 
     class GlassLauncher(wx.Panel):
         """Custom painted launcher: pale blue-grey backdrop with a faint
-        charge state series, white frosted glass tiles, Plus Jakarta Sans."""
+        charge state series, white frosted glass tiles, Segoe UI."""
 
         def __init__(self, parent, tools, logo_path, version, more=None):
             wx.Panel.__init__(self, parent, style=wx.BORDER_NONE | wx.WANTS_CHARS)
@@ -2656,10 +2589,6 @@ def configure(settings_path=None):
         return
     _ST["configured"] = True
     _ST["settings_path"] = settings_path
-    try:
-        register_fonts(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts"))
-    except Exception as e:
-        _log("fonts:", e)
     for name, func in (("display size", _patch_display_size), ("other windows", _install_generic_show)):
         try:
             func()
