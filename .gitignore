@@ -16,3 +16,6 @@ __pycache__/
 /cpp/*/build*/
 /cpp/**/*.dll
 /launcher/*.o
+# updates: downloads and the previous version (updater.py); the list of parts written by each release
+/_update/
+/install.json

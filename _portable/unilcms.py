@@ -6004,9 +6004,9 @@ class PDATab(TabBase):
 # ==========================================================================
 # main window
 # ==========================================================================
-def show_text(parent, title, text):
+def show_text(parent, title, text, extra=None):
     """A long text (the help) in a window that scrolls: a message box cannot (it grows taller than the
-    screen). Esc or OK closes it."""
+    screen). Esc or OK closes it. extra: (label, function) of one more button, left of OK."""
     dlg = wx.Dialog(parent, title=title, style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
     tc = wx.TextCtrl(dlg, value=text, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_RICH2 | wx.BORDER_NONE)
     try:
@@ -6016,7 +6016,13 @@ def show_text(parent, title, text):
     ok = wx.Button(dlg, wx.ID_OK, "OK")
     box = wx.BoxSizer(wx.VERTICAL)
     box.Add(tc, 1, wx.EXPAND | wx.ALL, 12)
-    box.Add(ok, 0, wx.ALIGN_RIGHT | wx.RIGHT | wx.BOTTOM, 12)
+    row = wx.BoxSizer(wx.HORIZONTAL)
+    if extra:
+        eb = wx.Button(dlg, wx.ID_ANY, extra[0])
+        eb.Bind(wx.EVT_BUTTON, lambda e: (dlg.EndModal(wx.ID_OK), wx.CallAfter(extra[1])))
+        row.Add(eb, 0, wx.RIGHT, 8)
+    row.Add(ok, 0)
+    box.Add(row, 0, wx.ALIGN_RIGHT | wx.RIGHT | wx.BOTTOM, 12)
     dlg.SetSizer(box)
     area = T.display_area(dlg)
     w, h = min(dlg.FromDIP(720), int(area.width * 0.9)), int(area.height * 0.8)
@@ -7460,6 +7466,16 @@ class PostrunFrame(wx.Frame):
         self.panel_btn = flat(tb, "Hide panel", "ghost", icon="panel", height=34,
                               tooltip="Show or hide the side panel (F9)", handler=lambda e: self.set_side(None))
         tb.add(self.panel_btn, 4)
+        self.update_btn = flat(tb, "Update", "primary", height=34, handler=self.on_update_btn)
+        self.update_btn.Hide()
+        self._update_info = None
+        tb.add(self.update_btn, 4)
+        try:  # a newer MSpektra: the Update button (also when this window is opened without the start screen)
+            import updater
+            wx.CallAfter(updater.on_update, self.set_update)
+            wx.CallLater(500, updater.start)
+        except Exception as ex:
+            _log("update: %s" % ex)
         tb.add(flat(tb, "", "ghost", icon="help", tooltip="About " + self.TITLE, height=34, padx=8,
                     handler=self.on_help), 6)
         hs = wx.BoxSizer(wx.HORIZONTAL)
@@ -7885,7 +7901,31 @@ class PostrunFrame(wx.Frame):
         ver = getattr(T, "APP_VERSION", "")
         text = "MSpektra %s\n\n%s" % (ver, self.help_text())
         from ms_brand import CREDITS
-        show_text(self.window(), "About %s (MSpektra %s)" % (self.title_text(), ver), text+"\n\n"+CREDITS)
+        extra = None
+        try:
+            import updater
+            prev = updater.previous()
+            if prev:  # the version before the last update is kept: back to it
+                extra = ("Back to MSpektra %s" % prev, updater.back_to_previous)
+        except Exception:
+            pass
+        show_text(self.window(), "About %s (MSpektra %s)" % (self.title_text(), ver), text+"\n\n"+CREDITS,
+                  extra=extra)
+
+    def set_update(self, info):
+        """A newer version (updater.py): the Update button of the top bar."""
+        self._update_info = info
+        try:
+            self.update_btn.SetLabel("Restart to update" if info.get("staged") else "Update to %s" % info["version"])
+            self.update_btn.Show()
+            self.toolbar.Layout()
+        except RuntimeError:
+            pass
+
+    def on_update_btn(self, e=None):
+        if self._update_info:
+            import updater
+            updater.show_dialog(self, self._update_info)
 
     # ---------------------------------------------------------------- report
     def make_report(self, kind=None):

@@ -1,4 +1,4 @@
-MSpektra 4.24 - portable Windows package   (10.10.2026)
+MSpektra 4.25 - portable Windows package   (10.10.2026)
 =======================================================
 
 Analysis of LC-MS and HRMS data, with deconvolution:
@@ -36,6 +36,17 @@ The version is shown on the start screen, in the help window (?) of LCMS
 and HRMS Analysis, and in the first line of each log file. It went up by
 0.1 with every update until 3.3. Since 3.31 a small change adds 0.01, a
 large change 0.1 and a big change 1.0.
+
+4.25 (10.10.2026)
+Updates with one click.
+* When a newer MSpektra is released, a notice appears at the top right and an
+  Update button next to the version; Update downloads only the parts that
+  changed (often less than 1 MB), Restart now installs them and starts the
+  new version.
+* The previous version is kept: About > Back to <version> returns to it, and
+  an update that does not start is put back by itself.
+* Updates are signed: only files made with the MSpektra release key are
+  installed. Nothing but the files of the update is requested.
 
 4.24 (10.10.2026)
 Windows 11 look.
