@@ -1486,7 +1486,7 @@ def _install_last_folder():
 # 7. launcher (light frosted glass)
 # --------------------------------------------------------------------------
 APP_NAME = "MSpektra"
-APP_VERSION = "4.26"  # +0.01 small change, +0.1 large change, +1.0 big change
+APP_VERSION = "4.27"  # +0.01 small change, +0.1 large change, +1.0 big change
 WORKSPACES = [
     ("LCMS Analysis", "LC-MS and HPLC files", "lcms"),
     ("HRMS Analysis", "Bruker, Agilent, Waters, Thermo and mzML files", "hrms"),
