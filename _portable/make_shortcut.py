@@ -17,7 +17,15 @@ EXE = os.path.join(ROOT, "MSpektra.exe")
 PYTHONW = os.path.join(ROOT, "python", "pythonw.exe")
 LAUNCHER = os.path.join(ROOT, "_portable", "launch_unidec.py")
 ICON = os.path.join(ROOT, "_portable", "msanalysis.ico")
-APP_ID = "UniDec.Portable.Launcher"  # must match unidec_ui_addons.APP_ID
+
+def _app_id(root):
+    """The taskbar identity of this folder, as unidec_ui_addons.app_id makes it (one per MSpektra folder)."""
+    import hashlib
+    key = os.path.normcase(os.path.abspath(root)).encode("utf-8", "replace")
+    return "MSpektra." + hashlib.sha1(key).hexdigest()[:12]
+
+
+APP_ID = _app_id(ROOT)  # must match unidec_ui_addons.APP_ID
 
 
 def make_link(path):

@@ -6214,9 +6214,11 @@ class FilesPanel(wx.Panel):
                 y0 = self.ScreenToClient(st.GetScreenPosition()).y
                 h = st.GetSize()[1]
                 if 0 <= y0 < self.FromDIP(120) and h > 0:
+                    self._band = (y0, h)  # the grey band: where the tool bar is, the same gap above it
                     return 2 * y0 + h
             except RuntimeError:
                 pass
+        self._band = (0, self.FromDIP(self.HEAD) - self.FromDIP(2))
         return self.FromDIP(self.HEAD)
 
     def tree_refresh(self):
@@ -6625,10 +6627,11 @@ class FilesPanel(wx.Panel):
                 gc.DrawText(t, (w - tw) / 2.0, btn["open"].y + btn["open"].height + self.FromDIP(10))
             return
         hh = self._head_h()
-        header_band(-self.top, hh - self.FromDIP(2))
+        by, bh = self._band
+        header_band(by - self.top, bh)
         gc.SetFont(ui_font(7.8, 700), wx.Colour(C["muted"]))
         th = gc.GetTextExtent("ANALYSES")[1]
-        gc.DrawText("ANALYSES", self.FromDIP(9), (hh - self.FromDIP(2) - th) / 2.0 - self.top)
+        gc.DrawText("ANALYSES", self.FromDIP(9), by + (bh - th) / 2.0 - self.top)
         button(btn["open"], "+", hk == "open")
         button(btn["collapse"], "<", hk == "collapse")
         rows = self.rows()

@@ -943,7 +943,17 @@ def _delete_label(plot, spec):
 # --------------------------------------------------------------------------
 # 4. taskbar identity (pinned UniDec icon groups with UniDec windows)
 # --------------------------------------------------------------------------
-APP_ID = "UniDec.Portable.Launcher"
+def app_id(root=None):
+    """Taskbar identity of this MSpektra folder: one per folder. Windows keeps the icon it first saw for an ID;
+    with one ID for every folder ("UniDec.Portable.Launcher" up to 4.22) a newer version unpacked elsewhere showed
+    a blank page in the taskbar once the older folder was deleted. make_shortcut.py makes the same ID."""
+    import hashlib
+    root = root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    key = os.path.normcase(os.path.abspath(root)).encode("utf-8", "replace")
+    return "MSpektra." + hashlib.sha1(key).hexdigest()[:12]
+
+
+APP_ID = app_id()
 
 
 def set_process_app_id():

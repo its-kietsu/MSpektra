@@ -1,4 +1,4 @@
-MSpektra 4.22 - portable Windows package   (10.10.2026)
+MSpektra 4.23 - portable Windows package   (10.10.2026)
 =======================================================
 
 Analysis of LC-MS and HRMS data, with deconvolution:
@@ -36,6 +36,15 @@ The version is shown on the start screen, in the help window (?) of LCMS
 and HRMS Analysis, and in the first line of each log file. It went up by
 0.1 with every update until 3.3. Since 3.31 a small change adds 0.01, a
 large change 0.1 and a big change 1.0.
+
+4.23 (10.10.2026)
+* The taskbar shows the MSpektra icon: each MSpektra folder has its own
+  taskbar identity (Windows kept the icon of a deleted older folder for the
+  shared one and showed a blank page). A desktop or Start menu shortcut made
+  by an earlier version: make it again with Create_desktop_shortcut.bat.
+* The view switch (Mass spectrometry, PDA, Compare) and the buttons of the top
+  bar have the same margin above and below (they touched the top edge).
+* Left panel: its grey header band is level with the tool bar of the view.
 
 4.22 (10.10.2026)
 * Left panel: its header lines up with the tool bar of the view beside it.

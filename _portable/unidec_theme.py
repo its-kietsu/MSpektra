@@ -734,7 +734,15 @@ def _controls():
             self.responsive = responsive
             self._fit_pending = False
             self.sizer = wx.WrapSizer(wx.HORIZONTAL) if responsive else wx.BoxSizer(wx.HORIZONTAL)
-            self.SetSizer(self.sizer)
+            if responsive:
+                # the rows of buttons with the same margin above and below: the WrapSizer put them at the top
+                # edge (the view switch touched it) and left all the room below
+                self._pad = self.FromDIP(8)
+                outer = wx.BoxSizer(wx.VERTICAL)
+                outer.Add(self.sizer, 0, wx.EXPAND | wx.TOP, self._pad)
+                self.SetSizer(outer)
+            else:
+                self.SetSizer(self.sizer)
             self.Bind(wx.EVT_PAINT, self._on_paint)
             self.SetMinSize(wx.Size(-1, self.FromDIP(50)))
             if responsive:
@@ -764,7 +772,7 @@ def _controls():
                 return
             wx.Panel.Layout(self)
             bottom = max((it.GetRect().bottom for it in self.sizer.GetChildren() if it.IsShown()), default=0)
-            height = max(self.FromDIP(50), bottom + self.FromDIP(6))
+            height = max(self.FromDIP(50), bottom + self._pad)
             if self.GetMinSize().height != height:
                 self.SetMinSize(wx.Size(-1, height))
                 self.GetParent().Layout()
@@ -1545,7 +1553,7 @@ def _install_last_folder():
 # 7. launcher (light frosted glass)
 # --------------------------------------------------------------------------
 APP_NAME = "MSpektra"
-APP_VERSION = "4.22"  # +0.01 small change, +0.1 large change, +1.0 big change
+APP_VERSION = "4.23"  # +0.01 small change, +0.1 large change, +1.0 big change
 WORKSPACES = [
     ("LCMS Analysis", "LC-MS and HPLC files", "lcms"),
     ("HRMS Analysis", "Bruker .d and mzML files", "hrms"),
