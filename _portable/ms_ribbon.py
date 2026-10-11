@@ -1,4 +1,4 @@
-"""The ribbon of LCMS and HRMS Analysis (ribbon.py): which commands it shows and what they call.
+"""The menu bar and the toolbar of LCMS and HRMS Analysis (ribbon.py): which commands they show and call.
 
 The top bar (Open, Save, Undo, Redo, the views, the chips, Deconvolute, Report, the side panel, help) and the
 tool strip of every view are still made, hidden; the ribbon calls them and shows their state, so that the
@@ -76,29 +76,6 @@ def tool_item(fr, key, label, icon=None, size="large"):
     return R.Item(key, label, icon or key, run, size=size, tip=tip, shown=shown, active=active)
 
 
-def view_item(fr, key, label, icon, method, kinds, args=(), tip=None, size="large", cond=None):
-    """A command of the view shown: view.method(*args) (or method(view) for a function), shown for the kinds of
-    views given."""
-    def run(b):
-        v = current_view(fr)
-        if isinstance(method, str):
-            f = getattr(v, method, None)
-            if f is not None:
-                f(*args)
-        else:
-            method(v)
-
-    def shown():
-        if kind(fr) not in kinds:
-            return False
-        v = current_view(fr)
-        if isinstance(method, str) and not hasattr(v, method):
-            return False
-        return cond is None or bool(_safe(cond, v))
-
-    return R.Item(key, label, icon, run, size=size, tip=tip or label, shown=shown)
-
-
 def menu_at(button, entries):
     """A menu of (label, function) under a ribbon button."""
     m = wx.Menu()
@@ -112,14 +89,6 @@ def menu_at(button, entries):
         m.Destroy()
     if sel in acts:
         wx.CallAfter(acts[sel])
-
-
-class _Ev:
-    def __init__(self, obj):
-        self.obj = obj
-
-    def GetEventObject(self):
-        return self.obj
 
 
 def _method_item(fr):
@@ -146,14 +115,7 @@ def home_tab(fr):
         return R.Item(key, label, key, lambda _b: (undo.do_undo if i == 0 else undo.do_redo)(fr), size="small",
                       tip=lambda: b.GetToolTipText() if b else label, enabled=lambda: bool(b and b.IsEnabled()))
 
-    return R.Tab("Home", [
-        R.Group("File", [
-            R.Item("open", "Open", "folder", lambda b: fr.on_open_menu(_Ev(b)), menu=True,
-                   tip="Open raw data or a saved analysis (Ctrl+O)"),
-            R.Item("save", "Save", "save", lambda b: __import__("ms_project").save(fr, None),
-                   tip="Save the analysis (Ctrl+Shift+S)"),
-            R.Item("save_as", "Save as", "save_as", lambda b: __import__("ms_project").save_as(fr, None),
-                   tip="Save the analysis in another file")]),
+    return R.Tab("Home", [  # (Open, Save and Save as: in the File menu)
         R.Group("Edit", [undo_item(0, "undo", "Undo"), undo_item(1, "redo", "Redo")]),
         R.Group("Navigate", [tool_item(fr, "select", "Select"), tool_item(fr, "zoom", "Zoom"),
                              tool_item(fr, "pan", "Pan"), tool_item(fr, "full", "Fit")]),
@@ -171,132 +133,6 @@ def home_tab(fr):
                    lambda b: menu_at(b, __import__("ms_polymer_ui").menu_items(current_view(fr))), menu=True,
                    tip="Mass distribution, repeat units, chain lengths", shown=lambda: _btn(fr, "polymer") is not None),
             _report_item(fr)])])
-
-
-def peaks_tab(fr):
-    return R.Tab("Peaks", [
-        R.Group("Integrate", [
-            tool_item(fr, "auto", "Auto"),
-            view_item(fr, "ask_integrate", "Integrate…", "auto", "ask_integrate", CHROM_VIEWS,
-                      tip="Integrate the peaks in the visible window, with options"),
-            view_item(fr, "add_peak", "Add range", "drag_peak", "on_add_peak", CHROM_VIEWS,
-                      tip="Add the selected range as a peak")]),
-        R.Group("Edit peaks", [tool_item(fr, "drag_peak", "Drag"), tool_item(fr, "click_peak", "Click"),
-                               tool_item(fr, "split", "Split"), tool_item(fr, "delete", "Delete"),
-                               tool_item(fr, "clear", "Clear")]),
-        R.Group("Background", [tool_item(fr, "background", "Background"),
-                               view_item(fr, "clear_bg", "Clear", "clear", "clear_bg", MS,
-                                         tip="Clear the background range")]),
-        R.Group("Peak table", [view_item(fr, "export_peaks", "Export…", "export", "on_export_table", CHROM_VIEWS,
-                                         tip="Export the peak table")]),
-        R.Group("Peak area", [
-            tool_item(fr, "area", "Area"),
-            view_item(fr, "use_region", "Use region", "table", "on_area_fields", CMP),
-            view_item(fr, "clear_area", "Clear region", "clear", "clear_area", CMP),
-            view_item(fr, "area_graph", "Area vs X…", "xic", "plot_area_graph", CMP),
-            view_item(fr, "kinetics", "Kinetics…", "pda", "open_kinetics", CMP, tip="Kinetic fitting"),
-            view_item(fr, "areas_xlsx", "Excel…", "export", "on_export_areas_xlsx", CMP,
-                      tip="Peak areas to Excel")])])
-
-
-def spectrum_tab(fr):
-    return R.Tab("Spectrum", [
-        R.Group("Average", [view_item(fr, "ask_average", "Average…", "ms", "ask_average", CHROM_VIEWS,
-                                      tip="Average a time range")]),
-        R.Group("Mass chromatograms", [
-            tool_item(fr, "xic", "Mass chrom."),
-            view_item(fr, "ask_xic", "Add…", "xic", "ask_xic", MS, args=(None,), tip="Add a mass chromatogram"),
-            view_item(fr, "clear_xic", "Remove all", "clear", "clear_xic", MS, args=(None,),
-                      tip="Remove every mass chromatogram")]),
-        R.Group("m/z", [tool_item(fr, "mzspec", "m/z")]),
-        R.Group("Annotate", [tool_item(fr, "measure", "Measure"), tool_item(fr, "label", "Label"),
-                             tool_item(fr, "formula", "Formula")]),
-        R.Group("Calibration", [
-            tool_item(fr, "calibrate", "Calibrate"),
-            view_item(fr, "cal_details", "Details…", "table", lambda v: v.cal.open_details(), HR,
-                      tip="Calibration details"),
-            view_item(fr, "cal_load", "Load…", "folder", lambda v: v.cal.load_cal(), HR, tip="Load a calibration"),
-            view_item(fr, "cal_remove", "Remove", "clear", lambda v: v.cal.remove(), HR,
-                      tip="Remove the calibration")]),
-        R.Group("PDA", [view_item(fr, "goto", "Go to…", "select", "ask_goto", PDA,
-                                  tip="Go to a time and wavelength"),
-                        view_item(fr, "map_settings", "Settings…", "settings", "ask_settings", PDA,
-                                  tip="Map and chromatogram settings")]),
-        R.Group("Export", [
-            view_item(fr, "export_spec", "Export…", "export", "on_export_spectrum", MS, tip="Export the spectrum"),
-            view_item(fr, "export_uv", "Export…", "export", "on_export_uv", PDA, tip="Export the UV spectrum"),
-            view_item(fr, "copy_spec", "Copy data", "copy", "copy_spec", MS, args=(None,),
-                      tip="Copy the spectrum data")])])
-
-
-def deconv_tab(fr):
-    def has_dec(v):
-        return getattr(v, "dec", None) is not None
-
-    return R.Tab("Deconvolution", [
-        R.Group("Deconvolute", [_deconv_item(fr), _method_item(fr)]),
-        R.Group("Results", [
-            view_item(fr, "shifts", "Mass shifts…", "measure", lambda v: v.dec.shifts.open_dialog(), MS,
-                      cond=has_dec),
-            view_item(fr, "full_window", "Full window", "full", "open_full", ("ms",),
-                      cond=lambda v: getattr(v, "FULL_WINDOW", False), tip="Open this spectrum in the Deconvolute window"),
-            view_item(fr, "close_dec", "Close results", "clear", lambda v: v.dec.close(), MS, cond=has_dec)]),
-        R.Group("Polymer", [
-            view_item(fr, "poly%d" % i, lab, ic, (lambda v, i=i: __import__("ms_polymer_ui").open_tools(v, i)), HR)
-            for i, (lab, ic) in enumerate([("Distribution…", "ms"), ("Repeat unit…", "measure"),
-                                           ("Chain lengths…", "label")])])])
-
-
-def report_tab(fr):
-    return R.Tab("Report", [
-        R.Group("Report", [_report_item(fr)]),
-        R.Group("Export", [
-            view_item(fr, "exp_peaks", "Peak table…", "table", "on_export_table", CHROM_VIEWS,
-                      tip="Export the peak table"),
-            view_item(fr, "exp_spec", "Spectrum…", "export", "on_export_spectrum", MS, tip="Export the spectrum"),
-            view_item(fr, "exp_uv", "UV spectrum…", "export", "on_export_uv", PDA, tip="Export the UV spectrum"),
-            view_item(fr, "exp_traces", "Traces (CSV)…", "compare", "on_export_traces", CMP),
-            view_item(fr, "exp_table", "Table (CSV)…", "table", "on_export_table", CMP),
-            view_item(fr, "exp_xlsx", "Areas (Excel)…", "export", "on_export_areas_xlsx", CMP)]),
-        R.Group("Images", [R.Item("img_size", "Image size…", "image",
-                                  lambda b: __import__("unilcms").ask_export_settings(fr),
-                                  tip="Size of copied and saved images")])])
-
-
-def view_tab(fr):
-    def side_on():
-        if kind(fr) == "compare":
-            return bool(_safe(lambda: current_view(fr).side.IsShown()))
-        return bool(fr.__dict__.get("_side_shown"))
-
-    def files_toggle(b):
-        fp = fr.files
-        fp.collapsed = not fp.collapsed
-        T._save({"files_collapsed": fp.collapsed})
-        fp._apply_width()
-        fp.GetParent().Layout()
-        fp.Refresh()
-
-    return R.Tab("View", [
-        R.Group("Panels", [
-            R.Item("side", "Side panel", "panel", lambda b: fr.set_side(None), tip="Show or hide the side panel (F9)",
-                   active=side_on),
-            R.Item("files", "File list", "list", files_toggle, tip="Narrow or widen the list of files",
-                   active=lambda: not fr.files.collapsed)]),
-        R.Group("Plots", [tool_item(fr, "full", "Fit"),
-                          view_item(fr, "graph_props", "Graph…", "settings", "on_graph_props", CMP,
-                                    tip="Graph properties")]),
-        R.Group("Files", [
-            R.Item("prev_doc", "Previous", "prev", lambda b: fr.next_doc(-1), size="small",
-                   tip="Previous file (Ctrl+PgUp)", enabled=lambda: len(fr.docs) > 1),
-            R.Item("next_doc", "Next", "next", lambda b: fr.next_doc(1), size="small", tip="Next file (Ctrl+PgDn)",
-                   enabled=lambda: len(fr.docs) > 1),
-            R.Item("close_doc", "Close", "clear", lambda b: fr.close_doc(fr.active), size="small",
-                   tip="Close the file shown (Ctrl+W)", enabled=lambda: bool(getattr(fr.active, "path", None)))]),
-        R.Group("Help", [
-            R.Item("keys", "Shortcuts", "list", lambda b: __import__("shortcuts").show_window(fr),
-                   tip="Every keyboard shortcut (F1)"),
-            R.Item("about", "About", "help", lambda b: fr.on_help(), tip="About " + fr.TITLE)])])
 
 
 def view_group(fr):
@@ -320,13 +156,216 @@ def view_group(fr):
 
 
 def tabs(fr):
-    return [home_tab(fr), peaks_tab(fr), spectrum_tab(fr), deconv_tab(fr), report_tab(fr), view_tab(fr)]
+    return [home_tab(fr)]
+
+
+# ------------------------------------------------------------------ the menu bar (as in Bruker DataAnalysis)
+def _cmd(label, fn, ok=True, keys=None):
+    """A menu entry: greyed when not ok (the view shown has no such command)."""
+    return (label + ("\t" + keys if keys else ""), fn if ok else None)
+
+
+def _view_cmd(fr, label, method, args=(), keys=None, kinds=None):
+    """A command of the view shown; left out of the menu in other kinds of views."""
+    if kinds is not None and kind(fr) not in kinds:
+        return None
+    v = current_view(fr)
+    f = getattr(v, method, None) if v is not None else None
+    ok = f is not None and (kinds is None or kind(fr) in kinds)
+    return _cmd(label, (lambda: f(*args)) if ok else None, ok, keys)
+
+
+def _tool(fr, key, label, keys=None):
+    """A tool of the view shown, ticked while it is chosen."""
+    b = _btn(fr, key)
+    if b is None or not b.IsShown():
+        return None  # (not a tool of this view)
+    lab = label + ("\t" + keys if keys else "")
+    if b.mode:
+        return (lab, lambda: strip(fr)._clicked(key), bool(b.active))
+    return (lab, lambda: strip(fr)._clicked(key))
+
+
+def menu_file(fr):
+    import ms_project
+    items = [(lab, (lambda f=f: wx.CallAfter(f))) for lab, f in fr.raw_open_items()]
+    if items:
+        items[0] = (items[0][0] + "\tCtrl+O", items[0][1])
+    has = bool(getattr(fr.active, "path", None))
+    return items + [
+        _cmd("Open a saved analysis…", lambda: ms_project.open_file(fr)),
+        (None, None),
+        _cmd("Save", lambda: ms_project.save(fr), has, "Ctrl+Shift+S"),
+        _cmd("Save as…", lambda: ms_project.save_as(fr), has),
+        (None, None),
+        _cmd("Report…", lambda: fr.make_report(), has, "Ctrl+R"),
+        (None, None),
+        _cmd("Close the file", lambda: fr.close_doc(fr.active), has, "Ctrl+W"),
+        _cmd("Close every file", lambda: fr.close_all(), has),
+        (None, None),
+        _cmd("Exit", lambda: fr.Close())]
+
+
+def menu_edit(fr):
+    import undo
+    m = undo.manager(fr)
+    u = m.undo_label() if m is not None else None
+    r = m.redo_label() if m is not None else None
+    import unilcms
+    return [
+        _cmd("Undo" + (" " + u if u else ""), lambda: undo.do_undo(fr), u is not None, "Ctrl+Z"),
+        _cmd("Redo" + (" " + r if r else ""), lambda: undo.do_redo(fr), r is not None, "Ctrl+Y"),
+        (None, None),
+        _cmd("Image size for copy and save…", lambda: unilcms.ask_export_settings(fr))]
+
+
+def menu_view(fr):
+    seg = fr.seg
+    out = []
+    if len(seg.labels) > 1:
+        for i, lab in enumerate(seg.labels):
+            def go(i=i):
+                if seg.enabled[i] and i != seg.active:
+                    seg.active = i
+                    seg.Refresh()
+                    seg.on_change(i)
+            out.append((lab + "\tCtrl+%d" % (i + 1), go if seg.enabled[i] else None, seg.active == i))
+        out.append((None, None))
+    side = fr.__dict__.get("_side_shown")
+    if kind(fr) == "compare":
+        side = bool(_safe(lambda: current_view(fr).side.IsShown()))
+    fp = fr.files
+
+    def files_toggle():
+        fp.collapsed = not fp.collapsed
+        T._save({"files_collapsed": fp.collapsed})
+        fp._apply_width()
+        fp.GetParent().Layout()
+        fp.Refresh()
+
+    return out + [
+        ("Side panel\tF9", lambda: fr.set_side(None), bool(side)),
+        ("File list", files_toggle, not fp.collapsed),
+        (None, None),
+        _tool(fr, "full", "Full view", "Home"),
+        _view_cmd(fr, "Graph properties…", "on_graph_props", kinds=CMP),
+        (None, None),
+        _cmd("Next file", lambda: fr.next_doc(1), len(fr.docs) > 1, "Ctrl+Tab"),
+        _cmd("Previous file", lambda: fr.next_doc(-1), len(fr.docs) > 1, "Ctrl+Shift+Tab")]
+
+
+def menu_chromatogram(fr):
+    k = kind(fr)
+    if k == "compare":
+        return [
+            _tool(fr, "align", "Align", "A"), _tool(fr, "guide", "Guide line", "G"),
+            (None, None),
+            _view_cmd(fr, "Export the traces (CSV)…", "on_export_traces"),
+            _view_cmd(fr, "Export the table (CSV)…", "on_export_table")]
+    return [
+        _view_cmd(fr, "Average a time range…", "ask_average"),
+        (None, None),
+        _tool(fr, "background", "Background range", "B"),
+        _view_cmd(fr, "Clear the background range", "clear_bg", kinds=MS),
+        (None, None),
+        _tool(fr, "xic", "Mass chromatogram tool", "X"),
+        _view_cmd(fr, "Add a mass chromatogram…", "ask_xic", (None,), kinds=MS),
+        _view_cmd(fr, "Remove every mass chromatogram", "clear_xic", (None,), kinds=MS),
+        (None, None),
+        _view_cmd(fr, "Go to a time and wavelength…", "ask_goto", kinds=PDA),
+        _view_cmd(fr, "Map and chromatogram settings…", "ask_settings", kinds=PDA)]
+
+
+def menu_peaks(fr):
+    if kind(fr) == "compare":  # the peak area of a region in every run
+        return [
+            _tool(fr, "area", "Area of a region"),
+            _view_cmd(fr, "Use the region", "on_area_fields"),
+            _view_cmd(fr, "Clear the region", "clear_area"),
+            (None, None),
+            _view_cmd(fr, "Area vs X…", "plot_area_graph"),
+            _view_cmd(fr, "Kinetic fitting…", "open_kinetics"),
+            _view_cmd(fr, "Peak areas to Excel…", "on_export_areas_xlsx")]
+    return [
+        _tool(fr, "auto", "Integrate", "Ctrl+I"),
+        _view_cmd(fr, "Integrate with options…", "ask_integrate", kinds=CHROM_VIEWS),
+        _view_cmd(fr, "Add the selected range as a peak", "on_add_peak", kinds=CHROM_VIEWS),
+        (None, None),
+        _tool(fr, "drag_peak", "Drag a peak", "D"), _tool(fr, "click_peak", "Click a peak", "I"),
+        _tool(fr, "split", "Split a peak", "K"), _tool(fr, "delete", "Delete a peak", "R"),
+        _tool(fr, "clear", "Remove every peak"),
+        (None, None),
+        _view_cmd(fr, "Export the peak table…", "on_export_table", kinds=CHROM_VIEWS)]
+
+
+def menu_spectrum(fr):
+    v = current_view(fr)
+    hr = kind(fr) == "hrms"
+    cal = getattr(v, "cal", None)
+    out = []
+    if kind(fr) == "compare":  # (the spectra of the Compare view: with m/z on)
+        out = [_tool(fr, "mzspec", "m/z spectra", "M"), _tool(fr, "xic", "Mass chromatogram tool", "X")]
+    out += [_tool(fr, "measure", "Measure", "U"), _tool(fr, "label", "Label", "L")]
+    if hr:
+        out += [_tool(fr, "formula", "Formula", "F"), (None, None),
+                _tool(fr, "calibrate", "Calibrate…"),
+                _cmd("Calibration details…", lambda: cal.open_details(), cal is not None),
+                _cmd("Load a calibration…", lambda: cal.load_cal(), cal is not None),
+                _cmd("Remove the calibration", lambda: cal.remove(), cal is not None)]
+    return out + [
+        (None, None),
+        _view_cmd(fr, "Export the spectrum…", "on_export_spectrum", kinds=MS) if kind(fr) != "pda" else
+        _view_cmd(fr, "Export the UV spectrum…", "on_export_uv", kinds=PDA),
+        _view_cmd(fr, "Copy the spectrum data", "copy_spec", (None,), kinds=MS)]
+
+
+def menu_deconvolution(fr):
+    v = current_view(fr)
+    dec = getattr(v, "dec", None)
+    ms = kind(fr) in MS
+    out = [_cmd("Deconvolute…", lambda: fr.deconvolute(), ms, "Ctrl+D"),
+           _cmd("Mass shifts…", lambda: dec.shifts.open_dialog(), ms and dec is not None),
+           _cmd("Close the results", lambda: dec.close(), ms and dec is not None and bool(dec.results))]
+    if getattr(v, "FULL_WINDOW", False):
+        out.append(_view_cmd(fr, "Open in the Deconvolute window", "open_full", kinds=("ms",)))
+    if kind(fr) == "hrms":
+        import ms_polymer_ui
+        out += [(None, None), ("Polymer", [(lab, fn) for lab, fn in ms_polymer_ui.menu_items(v)])]
+    return out
+
+
+def menu_method(fr):
+    import method_presets
+    return method_presets.menu_items(fr)
+
+
+def menu_help(fr):
+    import shortcuts
+    out = [_cmd("Keyboard shortcuts", lambda: shortcuts.show_window(fr), keys="F1"),
+           _cmd("About " + fr.TITLE, lambda: fr.on_help())]
+    try:
+        import updater
+        prev = updater.previous()
+        if prev:
+            out += [(None, None), _cmd("Back to MSpektra %s" % prev, updater.back_to_previous)]
+    except Exception:
+        pass
+    return out
+
+
+def menus(fr):
+    m = [("File", menu_file), ("Edit", menu_edit), ("View", menu_view), ("Chromatogram", menu_chromatogram),
+         ("Spectrum", menu_spectrum), ("Peaks", menu_peaks), ("Deconvolution", menu_deconvolution)]
+    if "method" in getattr(fr, "chips", {}):
+        m.append(("Method", menu_method))
+    m.append(("Help", menu_help))
+    return [(t, (lambda f=f: [e for e in f(fr) if e is not None])) for t, f in m]
 
 
 # ------------------------------------------------------------------ in the window
 def install(fr, root, tb, vs):
     """The ribbon in place of the top bar tb (which stays, hidden) in the sizer vs of the window."""
-    rb = R.Ribbon(root, tabs(fr), view_group(fr))
+    rb = R.Ribbon(root, tabs(fr), view_group(fr), menus=menus(fr))
     fr.__dict__["ribbon"] = rb
     row = rb.tabrow
     for key, chip in list(getattr(fr, "chips", {}).items()):  # the chips: at the right of the tab row
@@ -336,10 +375,6 @@ def install(fr, root, tb, vs):
             pass
         chip.Reparent(row)
         row.add(chip, 3)
-    FB = T._cls("FlatButton")
-    hb = FB(row, wx.ID_ANY, "", icon="help", kind="ghost", tooltip="About " + fr.TITLE, height=30, padx=8)
-    hb.Bind(wx.EVT_BUTTON, fr.on_help)
-    row.add(hb, 6)
     row.sizer.AddSpacer(fr.FromDIP(8))
     fr._top_labels = {}  # (no top bar to fit)
     tb.Hide()

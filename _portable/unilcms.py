@@ -8083,16 +8083,17 @@ class PostrunFrame(wx.Frame):
     def raw_open_items(self):
         """(label, function) of the raw data entries of the Open menu."""
         if hasattr(self, "open_mzml"):  # HRMS Analysis: .d folders and mzML files, in this menu (no second one)
-            return [("Open a Bruker .d folder…", self.open_d), ("Open an mzML file…", self.open_mzml)]
+            return [("Open a data file (mzML, Thermo .raw)…", self.open_mzml),
+                    ("Open a data folder (Bruker or Agilent .d)…", self.open_d),
+                    ("Open a data folder (Waters .raw)…", self.open_waters)]
         return [("Open raw data…", lambda: self.on_open(None))]
 
     def on_open_menu(self, e=None):
         """Open ▾ in the top bar: raw data, an analysis folder or a saved analysis (Ctrl+O: raw data only)."""
         import ms_project
         fr = self.window()
-        items = fr.raw_open_items() + [("Open analysis folder…", lambda: ms_project.open_folder(fr)),
-                                       ("Open analysis project…", lambda: ms_project.open_file(fr))]
-        m = build_menu(fr, [(label, (lambda f=f: wx.CallAfter(f))) for label, f in items])
+        items = fr.raw_open_items() + [(None, None), ("Open a saved analysis…", lambda: ms_project.open_file(fr))]
+        m = build_menu(fr, [(label, (lambda f=f: wx.CallAfter(f)) if f else None) for label, f in items])
         btn = e.GetEventObject() if e is not None else None
         if isinstance(btn, wx.Window) and not isinstance(btn, wx.Frame):
             popup_menu(btn, m, wx.Point(0, btn.GetSize()[1]))
@@ -8455,7 +8456,8 @@ class LCMSFrame(PostrunFrame):
         PostrunFrame.load(self, path)
 
     def raw_open_items(self):
-        return [("Open raw data…", self.open_files), ("Open a .D or .raw folder…", self.open_folder)]
+        return [("Open a data file…", self.open_files),
+                ("Open a data folder (Agilent .D, Waters .raw)…", self.open_folder)]
 
     def on_open(self, e=None):
         self.open_files()

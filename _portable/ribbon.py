@@ -10,7 +10,7 @@ import wx
 import unidec_theme as T
 from unidec_theme import C, ui_font
 
-TAB_H, BODY_H, CAP_H = 34, 96, 18
+TAB_H, MENU_H, BODY_H, CAP_H = 34, 30, 96, 18
 LARGE_H, SMALL_H = 68, 22
 ICON_L, ICON_S = 26, 16
 GREY = "#A9B1BC"
@@ -363,15 +363,23 @@ class TabRow(wx.Panel):
     def stretch(self):
         pass
 
+    def titles(self):
+        """The menus of the menu bar, else the tabs."""
+        if self.ribbon.menus:
+            return [m[0] for m in self.ribbon.menus]
+        return [t.name for t in self.ribbon.tabs]
+
     def measure(self):
         dc = wx.ClientDC(self)
-        dc.SetFont(ui_font(9.5, 600))
-        x, self.rects = self.FromDIP(8), []
-        for t in self.ribbon.tabs:
-            tw = dc.GetTextExtent(t.name)[0] + self.FromDIP(28)
-            self.rects.append(wx.Rect(x, 0, tw, self.FromDIP(TAB_H)))
+        menus = bool(self.ribbon.menus)
+        dc.SetFont(ui_font(9.5, 400 if menus else 600))
+        x, self.rects = self.FromDIP(4 if menus else 8), []
+        h = self.FromDIP(MENU_H if menus else TAB_H)
+        for t in self.titles():
+            tw = dc.GetTextExtent(t)[0] + self.FromDIP(20 if menus else 28)
+            self.rects.append(wx.Rect(x, 0, tw, h))
             x += tw
-        self.tabs_space.AssignSpacer(wx.Size(x + self.FromDIP(8), self.FromDIP(TAB_H)))
+        self.tabs_space.AssignSpacer(wx.Size(x + self.FromDIP(8), h))
         self.Layout()
 
     def _at(self, pos):
@@ -390,7 +398,11 @@ class TabRow(wx.Panel):
 
     def _click(self, e):
         i = self._at(e.GetPosition())
-        if i >= 0:
+        if i < 0:
+            return
+        if self.ribbon.menus:
+            wx.CallAfter(self.ribbon.open_menu, i)
+        else:
             self.ribbon.select(i)
 
     def _paint(self, e):
@@ -399,6 +411,17 @@ class TabRow(wx.Panel):
         dc.Clear()
         gc = T.crisp(dc)
         w, h = self.GetClientSize()
+        if self.ribbon.menus:  # a menu bar: the titles, the one open or under the mouse on a light band
+            for i, (t, r) in enumerate(zip(self.titles(), self.rects)):
+                if i in (self.hover, self.ribbon.open_i):
+                    gc.SetPen(wx.TRANSPARENT_PEN)
+                    gc.SetBrush(wx.Brush(wx.Colour(C["down"] if i == self.ribbon.open_i else C["hover"])))
+                    gc.DrawRoundedRectangle(r.x + 1, r.y + self.FromDIP(3), r.width - 2, r.height - self.FromDIP(6),
+                                            self.FromDIP(4))
+                gc.SetFont(ui_font(9.5, 400), wx.Colour(C["text"]))
+                tw, th = gc.GetTextExtent(t)
+                gc.DrawText(t, r.x + (r.width - tw) / 2.0, (h - th) / 2.0)
+            return
         for i, (t, r) in enumerate(zip(self.ribbon.tabs, self.rects)):
             on = i == self.ribbon.current
             if self.hover == i and not on:
@@ -418,10 +441,14 @@ class TabRow(wx.Panel):
 
 # ---------------------------------------------------------------------------------------------- ribbon
 class Ribbon(wx.Panel):
-    def __init__(self, parent, tabs, pinned=None):
+    """menus: [(title, entries())] for a menu bar above one toolbar (the first tab) instead of tabs; entries()
+    gives the menu when it is opened (unilcms.build_menu entries)."""
+
+    def __init__(self, parent, tabs, pinned=None, menus=None):
         wx.Panel.__init__(self, parent, style=wx.BORDER_NONE)
         self.SetBackgroundColour(wx.Colour(C["panel"]))
         self.tabs, self.current = tabs, 0
+        self.menus, self.open_i = menus, -1
         self.tabrow = TabRow(self, self)
         self.body = wx.Panel(self, style=wx.BORDER_NONE)
         self.body.SetBackgroundColour(wx.Colour(C["panel"]))
@@ -456,6 +483,28 @@ class Ribbon(wx.Panel):
         if e.GetEventObject() is self:
             self._timer.Stop()
         e.Skip()
+
+    def open_menu(self, i):
+        import unilcms
+        fr = self.GetTopLevelParent()
+        try:
+            entries = self.menus[i][1]()
+        except Exception as ex:
+            print("menu %s: %s" % (self.menus[i][0], ex))
+            return
+        m = unilcms.build_menu(fr, entries)
+        r = self.tabrow.rects[i]
+        self.open_i = i
+        self.tabrow.Refresh()
+        self.tabrow.Update()
+        try:
+            unilcms.popup_menu(self.tabrow, m, wx.Point(r.x, r.y + r.height))
+        finally:
+            m.Destroy()
+            self.open_i = -1
+            if self:
+                self.tabrow.Refresh()
+                wx.CallLater(60, self.read_state)
 
     def select(self, i):
         self.current = i

@@ -406,9 +406,9 @@ REGISTRY = [
              [(CTRL | SHIFT, _k("s"))], accel=True),
     # window: Ctrl combinations (accelerator table), also while typing in a field
     Shortcut("Ctrl+O", "Open a data file", "window", _open, [(CTRL, _k("o"))], accel=True,
-             windows=("lcms",), menu=("Open raw data",)),
+             windows=("lcms",), menu=("Open a data file",)),
     Shortcut("Ctrl+O", "Open a Bruker .d folder", "window", _open, [(CTRL, _k("o"))], accel=True,
-             windows=("hrms",), menu=("Open a Bruker .d folder",)),
+             windows=("hrms",), menu=("Open a data folder (Bruker or Agilent .d)",)),
     Shortcut("Ctrl+W", "Close the file shown", "window", _close, [(CTRL, _k("w"))], accel=True),
     Shortcut("Ctrl+R", "Create a report", "window", _report, [(CTRL, _k("r"))], accel=True),
     Shortcut("Ctrl+Tab, Ctrl+Page Down", "Next open file", "window", _next(1),
