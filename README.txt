@@ -39,32 +39,20 @@ large change 0.1 and a big change 1.0.
 
 4.28 (10.10.2026)
 Updates while MSpektra runs.
-* MSpektra looks for a newer version 5 s after it starts and then every hour
-  while it runs; the update bar appears without a restart.
+* A new version is shown while MSpektra is open, without a restart.
 
 4.27 (10.10.2026)
 First update through the update bar.
-* No other changes.
 
 4.26 (10.10.2026)
 Update bar.
-* A newer version is shown in a bar at the top of the start screen and
-  under the top bar of LCMS and HRMS Analysis (Update, then Restart now;
-  x hides it until the next start), instead of the notice at the top right.
-* A release has three files: the zip, update.json and update.json.sig;
-  updates download only the changed parts from inside the zip. MSpektra
-  4.25 cannot read these: it opens the download page for 4.26 once.
+* A new version is shown in a bar at the top of the window.
+* Smaller updates. From 4.25, download 4.26 once by hand.
 
 4.25 (10.10.2026)
 Updates with one click.
-* When a newer MSpektra is released, a notice appears at the top right and an
-  Update button next to the version; Update downloads only the parts that
-  changed (often less than 1 MB), Restart now installs them and starts the
-  new version.
-* The previous version is kept: About > Back to <version> returns to it, and
-  an update that does not start is put back by itself.
-* Updates are signed: only files made with the MSpektra release key are
-  installed. Nothing but the files of the update is requested.
+* MSpektra tells you when a new version is out and installs it with one click.
+* About > Back to <version> returns to the version before.
 
 4.24 (10.10.2026)
 Windows 11 look.
