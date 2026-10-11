@@ -92,6 +92,14 @@ def _clean(folder):
                 if now-os.path.getmtime(p)>STALE_TMP_S:os.remove(p)
             except OSError:pass
 
+def _hide(path):
+    # the lock and the previous copy beside a saved analysis: hidden files (the folder may be any folder the user
+    # chose; Windows shows only the analysis)
+    if os.name=='nt':
+        try:
+            import ctypes;ctypes.windll.kernel32.SetFileAttributesW(str(path),0x2)
+        except Exception:pass
+
 def write(path,header,arrays,keep=None):
     """keep: None (the file replaced goes to .previous), or a suffix: the project replaced and its .previous are
     kept as <name>.<keep> and <name>.previous-<keep>, which later saves never rotate or replace."""
@@ -112,7 +120,7 @@ def write(path,header,arrays,keep=None):
             if os.path.isfile(path+'.previous'):_keep(path+'.previous',path+'.previous-'+keep)
         elif os.path.isfile(path):
             previous=path+'.previous'
-            pending=previous+'.tmp';shutil.copyfile(path,pending);os.replace(pending,previous)
+            pending=previous+'.tmp';shutil.copyfile(path,pending);os.replace(pending,previous);_hide(previous)
         os.replace(tmp,path)
     finally:
         if os.path.isfile(tmp):os.remove(tmp)
@@ -231,6 +239,7 @@ def lock(path,owner):
             continue
         except OSError:return True  # no lock possible here (read only); the save reports its own error
         with os.fdopen(fd,'w',encoding='utf-8') as f:json.dump(dict(pid=os.getpid(),started=_started(os.getpid()),owner=owner),f)
+        _hide(lp)
         _HELD[key]=owner
         return True
     return False

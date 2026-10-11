@@ -3361,6 +3361,9 @@ class TabBase(wx.Panel):
     def build_tools(self, spectrum_tools):
         self.tools = ToolStrip(self, self.tool_items(spectrum_tools), self.set_tool, self.tool_action)
         self.tools.set_mode("select")
+        import ms_ribbon
+        if ms_ribbon.enabled(self.frame):
+            self.tools.Hide()  # (its tools are in the ribbon of the window)
         import shortcuts
         shortcuts.decorate_tools(self)  # e.g. "Zoom: drag a box on any plot (Z)"
         self.Bind(wx.EVT_CHAR_HOOK, self._keys)
@@ -6628,7 +6631,7 @@ class FilesPanel(wx.Panel):
             button(btn["open"], "+", hk == "open")
             n = len(self.rows())
             if n:
-                gc.SetFont(ui_font(8, 700), wx.Colour(C["accent_text"]))
+                gc.SetFont(ui_font(8, 400), wx.Colour(C["accent_text"]))
                 t = str(n)
                 tw, th = gc.GetTextExtent(t)
                 gc.DrawText(t, (w - tw) / 2.0, btn["open"].y + btn["open"].height + self.FromDIP(10))
@@ -6636,7 +6639,7 @@ class FilesPanel(wx.Panel):
         hh = self._head_h()
         by, bh = self._band
         header_band(by - self.top, bh)
-        gc.SetFont(ui_font(7.8, 700), wx.Colour(C["muted"]))
+        gc.SetFont(ui_font(7.8, 400), wx.Colour(C["muted"]))
         th = gc.GetTextExtent("ANALYSES")[1]
         gc.DrawText("ANALYSES", self.FromDIP(9), by + (bh - th) / 2.0 - self.top)
         button(btn["open"], "+", hk == "open")
@@ -6675,7 +6678,7 @@ class FilesPanel(wx.Panel):
             elif kind == "grp":
                 name, n = pl
                 x = square(rr.x, rr.y + rr.height / 2.0, self.GROUP_COL.get(name, C["muted"]))
-                tw = text(name, x, rr, ui_font(8, 600), C["muted"], rr.x + rr.width - x)
+                tw = text(name, x, rr, ui_font(8, 400), C["muted"], rr.x + rr.width - x)  # regular: nothing bold in the panel
                 if rr.x + rr.width - (x + tw) > self.FromDIP(20):
                     text(str(n), x + tw + self.FromDIP(5), rr, ui_font(7.5, 400), C["faint"], self.FromDIP(30))
             elif kind == "node":
@@ -6705,7 +6708,7 @@ class FilesPanel(wx.Panel):
                 self._paint_result(gc, k, rr, d, pl[0], pl[1], button, band, text)
         # folder
         header_band(fy, self.FromDIP(self.FHEAD) - self.FromDIP(2))
-        gc.SetFont(ui_font(7.8, 700), wx.Colour(C["muted"]))
+        gc.SetFont(ui_font(7.8, 400), wx.Colour(C["muted"]))
         gc.DrawText("FOLDER", self.FromDIP(9), fy + self.FromDIP(8))
         tw = gc.GetTextExtent("FOLDER")[0]
         button(btn["folder"], "folder", hk == "folder")
@@ -7481,6 +7484,13 @@ class PostrunFrame(wx.Frame):
         except Exception as ex:
             _log("update: %s" % ex)
         vs.Add(body, 1, wx.EXPAND)
+        import ms_ribbon  # the ribbon in place of the top bar (ms_ribbon.py; "ribbon": false for the top bar)
+        if ms_ribbon.enabled(self):
+            try:
+                ms_ribbon.install(self, root, tb, vs)
+            except Exception:
+                import traceback
+                traceback.print_exc()
         root.SetSizer(vs)
         fs = wx.BoxSizer(wx.VERTICAL)
         fs.Add(root, 1, wx.EXPAND)
@@ -7568,7 +7578,7 @@ class PostrunFrame(wx.Frame):
         information chips of SPARE_CHIPS are left out (the status bar
         has the same)."""
         tb = self.toolbar
-        if not tb or not self._top_labels:
+        if not tb or not self._top_labels or self.__dict__.get("ribbon"):  # (the ribbon: no top bar to fit)
             return
         room = tb.GetClientSize().width
         btns = [b for b in self._top_labels if b.IsShown()]

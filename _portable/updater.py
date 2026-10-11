@@ -555,7 +555,8 @@ def _dialog_class():
     from unidec_theme import C, ui_font
 
     class UpdateDialog(wx.Dialog):
-        """Version, what is new, a progress bar; Update downloads, Restart now installs."""
+        """MSpektra X is here, the version step and size, the release notes (a link to the release page);
+        Download update, then Restart now."""
 
         def __init__(self, parent, info):
             wx.Dialog.__init__(self, parent, title="Update")
@@ -564,27 +565,36 @@ def _dialog_class():
             self.man = info.get("man")
             self._cancel = False
             self._busy = False
-            pad = self.FromDIP(16)
+            pad = self.FromDIP(20)
             vs = wx.BoxSizer(wx.VERTICAL)
-            head = wx.StaticText(self, label="MSpektra %s" % info["version"])
-            head.SetFont(ui_font(13, 600))
-            vs.Add(head, 0, wx.LEFT | wx.RIGHT | wx.TOP, pad)
-            notes = [n for n in info.get("notes", []) if n][:8]
-            if notes:
-                txt = wx.StaticText(self, label="\n".join("• " + n for n in notes))
-                txt.SetFont(ui_font(9.5))
-                txt.Wrap(self.FromDIP(440))
-                vs.Add(txt, 0, wx.LEFT | wx.RIGHT | wx.TOP, pad)
-            self.gauge = wx.Gauge(self, range=1000, size=self.FromDIP(wx.Size(440, 6)))
-            vs.Add(self.gauge, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, pad)
-            self.status = wx.StaticText(self, label=self._ready_text())
-            self.status.SetForegroundColour(wx.Colour(C["muted"]))
-            self.status.SetFont(ui_font(9))
-            vs.Add(self.status, 0, wx.LEFT | wx.RIGHT | wx.TOP, self.FromDIP(6))
+            self.head = wx.StaticText(self, label="")
+            self.head.SetFont(ui_font(14, 600))
+            vs.Add(self.head, 0, wx.LEFT | wx.RIGHT | wx.TOP, pad)
+            self.sub = wx.StaticText(self, label="")
+            self.sub.SetFont(ui_font(10))
+            self.sub.SetForegroundColour(wx.Colour(C["muted"]))
+            vs.AddSpacer(self.FromDIP(6))
+            vs.Add(self.sub, 0, wx.LEFT | wx.RIGHT, pad)
+            vs.Add(self.FromDIP(1), self.FromDIP(14))
+            self.meta = wx.StaticText(self, label="")
+            self.meta.SetFont(ui_font(9.5))
+            vs.Add(self.meta, 0, wx.LEFT | wx.RIGHT, pad)
+            self.gauge = wx.Gauge(self, range=1000, size=self.FromDIP(wx.Size(420, 6)))
+            self.gauge.Hide()
+            vs.AddSpacer(self.FromDIP(8))
+            vs.Add(self.gauge, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, pad)
+            self.link = wx.StaticText(self, label="View release notes")
+            f = ui_font(9.5)
+            f.SetUnderlined(True)
+            self.link.SetFont(f)
+            self.link.SetForegroundColour(wx.Colour(C["accent_text"]))
+            self.link.SetCursor(wx.Cursor(wx.CURSOR_HAND))
+            self.link.Bind(wx.EVT_LEFT_UP, lambda e: self._notes())
+            vs.AddSpacer(self.FromDIP(4))
+            vs.Add(self.link, 0, wx.LEFT | wx.RIGHT, pad)
             flat = T._cls("FlatButton")
-            self.later = flat(self, label="Later", kind="secondary", height=32)
-            self.go = flat(self, label="", kind="primary", height=32, min_width=110)
-            self._set_go()
+            self.later = flat(self, label="Later", kind="secondary", height=32, min_width=90)
+            self.go = flat(self, label="", kind="primary", height=32, min_width=140)
             self.later.Bind(wx.EVT_BUTTON, self.on_later)
             self.go.Bind(wx.EVT_BUTTON, self.on_go)
             bs = wx.BoxSizer(wx.HORIZONTAL)
@@ -592,28 +602,38 @@ def _dialog_class():
             bs.Add(self.later, 0, wx.RIGHT, self.FromDIP(8))
             bs.Add(self.go, 0)
             vs.Add(bs, 0, wx.EXPAND | wx.ALL, pad)
+            vs.SetMinSize(wx.Size(self.FromDIP(460), -1))
+            self._texts()
             self.SetSizerAndFit(vs)
             self.CentreOnParent()
             self.Bind(wx.EVT_CLOSE, self.on_later)
 
-        def _ready_text(self):
-            if self.info.get("staged"):
-                return "Downloaded"
-            if self.man and self.man.get("_full"):
-                return "This version needs the full download"
-            if self.man:
-                return "%.1f MB" % (self.man["_bytes"] / 1048576.0)
-            return ""
+        def _step(self, tail):
+            return "%s → %s · %s" % (current_version(), self.info["version"], tail)
 
-        def _set_go(self):
+        def _texts(self):
+            v = self.info["version"]
             if self.info.get("staged"):
+                self.head.SetLabel("MSpektra %s is ready" % v)
+                self.sub.SetLabel("Restart MSpektra to finish the update.")
+                self.meta.SetLabel(self._step("downloaded"))
                 self.go.SetLabel("Restart now")
-                self.gauge.SetValue(1000)
             elif self.man and self.man.get("_full"):
+                self.head.SetLabel("MSpektra %s is here" % v)
+                self.sub.SetLabel("This version is a new download.")
+                self.meta.SetLabel(self._step("full download"))
                 self.go.SetLabel("Download page")
             else:
-                self.go.SetLabel("Update")
+                self.head.SetLabel("MSpektra %s is here" % v)
+                self.sub.SetLabel("See what’s new and update when you’re ready.")
+                size = (self.man or {}).get("_bytes", 0) / 1048576.0
+                self.meta.SetLabel(self._step("%.1f MB" % max(size, 0.1)))
+                self.go.SetLabel("Download update")
             self.Layout()
+
+        def _notes(self):
+            import webbrowser
+            webbrowser.open("%s/tag/v%s" % (RELEASES, self.info["version"]))
 
         def on_later(self, e=None):
             if self._busy:
@@ -629,14 +649,15 @@ def _dialog_class():
                 wx.CallAfter(apply_and_restart)
                 return
             if self.man and self.man.get("_full"):
-                import webbrowser
-                webbrowser.open("%s/tag/v%s" % (RELEASES, self.info["version"]))
+                self._notes()
                 self.EndModal(wx.ID_OK)
                 return
             self._busy = True
             self.go.Enable(False)
             self.later.SetLabel("Cancel")
-            self.status.SetLabel("Downloading")
+            self.gauge.Show()
+            self.meta.SetLabel("Downloading…")
+            self.Fit()
 
             def progress(done, total):
                 wx.CallAfter(self._progress, done, total)
@@ -654,7 +675,7 @@ def _dialog_class():
         def _progress(self, done, total):
             try:
                 self.gauge.SetValue(int(1000 * done / max(total, 1)))
-                self.status.SetLabel("%.1f of %.1f MB" % (done / 1048576.0, total / 1048576.0))
+                self.meta.SetLabel("Downloading · %.1f of %.1f MB" % (done / 1048576.0, total / 1048576.0))
             except RuntimeError:
                 pass
 
@@ -663,16 +684,17 @@ def _dialog_class():
                 self._busy = False
                 self.later.SetLabel("Later")
                 self.go.Enable(True)
+                self.gauge.Hide()
                 if ok:
                     self.info = dict(self.info, staged=True)
                     _found(self.info)
-                    self.status.SetLabel("Downloaded")
-                    self._set_go()
+                    self._texts()
                 elif self._cancel:
                     self.EndModal(wx.ID_CANCEL)
                 else:
-                    self.gauge.SetValue(0)
-                    self.status.SetLabel("Download failed: %s" % (err or "try again later"))
+                    _log("download failed: %s" % err)
+                    self.meta.SetLabel("Download failed. Try again later.")
+                self.Fit()
             except RuntimeError:
                 pass
 

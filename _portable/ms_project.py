@@ -187,6 +187,7 @@ class Controller:
         self.blocked=set()  # projects whose recovery failed: kept unchanged until Save replaces them
         self.keep={}  # project -> suffix under which the next save keeps the file it replaces
         self.targets={}  # doc -> project it is saved into (None until the first save): the files edited
+        self.chosen={}  # doc -> analysis file chosen in the Save window (or opened): Save writes there without asking
         self.locks=set()  # projects this window holds
         self.notes={}  # project -> why it is not written (status bar, once)
         self.dirty=False;self._mark=None;self._tools={}
@@ -350,6 +351,7 @@ class Controller:
         if self.closed or not notify:
             self.signature=signature;return
         self.signature=signature;self.frame.SetStatusText('Analysis saved' if manual else 'Analysis saved automatically',1)
+        if manual and paths:self.frame.SetStatusText('Saved to '+paths[0],0)
         self.frame.files.refresh_folder(force=True)
 
     def failed_save(self,ex,manual):
@@ -375,9 +377,10 @@ class Controller:
 
     # ------------------------------------------------------------ opening
     def saved_project(self,path):
-        """The saved analysis of the raw data file path: next to it or in the user folder, and only when the
-        file is one of its sources."""
-        for p in _candidates(path):
+        """The saved analysis of the raw data file path: the file it was last saved to in the Save window, next to
+        it or in the user folder, and only when the file is one of its sources."""
+        last=(T._load().get('analysis_files') or {}).get(_key(path))
+        for p in ([last] if isinstance(last,str) else [])+_candidates(path):
             if not os.path.isfile(p):continue
             try:h=S.peek(p)
             except Exception as ex:
@@ -512,6 +515,7 @@ class Controller:
                     Z.project_restored(self.frame,docs)
                     self.restoring=False;self.pending=None;self.dirty=False
                     self.targets[docs[anchor]]=project  # updated after the next edit
+                    if os.path.basename(project).lower()!=S.NAME:self.chosen[docs[anchor]]=project  # (a file chosen in the Save window)
                     self._tools=self._tool_windows()
                     try:
                         live=self.eligible();self.signature=S.Encoder(live).signature(capture(self.frame,live))[0]
@@ -556,6 +560,7 @@ class Controller:
                     if not self.close_unsaved(ex):return
             path=self.targets.pop(doc,None)
             if path and not any(p and _key(p)==_key(path) for p in self.targets.values()):self.release(path)
+        self.chosen.pop(doc,None)
         self.old_close(doc)
 
     def close(self,event):
@@ -575,22 +580,66 @@ class Controller:
 def install(frame):
     frame.__dict__['_project']=Controller(frame)
 
-def save(frame,e=None):
+def _last_folder(frame):
+    f=T._load().get('save_folder')
+    return f if isinstance(f,str) and os.path.isdir(f) else None
+
+def ask_path(frame,doc,current=None):
+    """The Save window: where the analysis of doc goes. It opens in the folder of the last save (else the folder
+    of the data) with the name of the data file. None when cancelled."""
+    folder=os.path.dirname(current) if current else _last_folder(frame)
+    if not folder or not os.path.isdir(folder):folder=os.path.dirname(doc.path.rstrip('\\/'))
+    name=os.path.basename(current) if current else os.path.splitext(os.path.basename(doc.path.rstrip('\\/')))[0]+S.EXT
+    dlg=wx.FileDialog(frame,'Save the analysis',defaultDir=folder,defaultFile=name,
+                      wildcard='MSpektra analysis (*.msanalysis)|*.msanalysis',style=wx.FD_SAVE|wx.FD_OVERWRITE_PROMPT)
+    try:
+        import unilcms
+        if unilcms.show_open_dialog(dlg)!=wx.ID_OK:return None
+        path=dlg.GetPath()
+    finally:dlg.Destroy()
+    if not path.lower().endswith(S.EXT):path+=S.EXT
+    return os.path.abspath(path)
+
+def _remember(raw,project):
+    """The folder of the last save (the next Save window opens there) and the analysis file of the raw data (it
+    is offered again when the data file is opened)."""
+    files=dict(T._load().get('analysis_files') or {})
+    files.pop(_key(raw),None);files[_key(raw)]=project
+    if len(files)>300:files=dict(list(files.items())[-300:])
+    T._save({'save_folder':os.path.dirname(project),'analysis_files':files})
+
+def save(frame,e=None,ask=False):
+    """Save: the first time (or ask: Save as) the Save window asks where; then into that file without asking."""
     c=frame.__dict__['_project']
     try:
         docs=c.eligible()
         shown=frame.active if frame.active in docs else (docs[0] if docs else None)
+        if shown is None:raise ValueError('Open a data file first')
+        if c.restoring:raise ValueError('Wait until the saved analysis has finished opening')
+        if c.busy():raise ValueError('Wait for loading, averaging or deconvolution to finish')
         blocked=[d for d in docs if (d in c.targets or d is shown) and c.is_blocked(d)]
         if blocked:
             if wx.MessageBox('Replace the saved analysis that could not be opened? The old file is kept beside it (.before-recovery).',T.APP_NAME,wx.YES_NO|wx.NO_DEFAULT|wx.ICON_WARNING,frame)!=wx.YES:return
             for d in blocked:
                 for p in [c.project_of(d)]+_candidates(d.path):
                     if _key(p) in c.blocked:c.blocked.discard(_key(p));c.keep[_key(p)]='before-recovery';c.notes.pop(_key(p),None)
+        path=c.chosen.get(shown)
+        if ask or not path:
+            path=ask_path(frame,shown,path)
+            if not path:return None
+            old=c.targets.get(shown)
+            c.targets[shown]=path;c.chosen[shown]=path
+            if old and _key(old)!=_key(path) and not any(p and _key(p)==_key(old) for d,p in c.targets.items() if d is not shown):
+                c.release(old)
+            _remember(shown.path,path)
         return c.save(manual=True)
     except Exception as ex:c.error('Analysis could not be saved',ex)
 
+def save_as(frame,e=None):
+    return save(frame,e,ask=True)
+
 def open_file(frame):
-    dlg=wx.FileDialog(frame,'Open a saved analysis',defaultDir=frame.folder(),wildcard='MSpektra analysis (*.msanalysis)|*.msanalysis',style=wx.FD_OPEN|wx.FD_FILE_MUST_EXIST)
+    dlg=wx.FileDialog(frame,'Open a saved analysis',defaultDir=_last_folder(frame) or frame.folder(),wildcard='MSpektra analysis (*.msanalysis)|*.msanalysis',style=wx.FD_OPEN|wx.FD_FILE_MUST_EXIST)
     try:
         if dlg.ShowModal()==wx.ID_OK:frame.load(dlg.GetPath())
     finally:dlg.Destroy()
