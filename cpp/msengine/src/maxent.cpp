@@ -92,11 +92,12 @@ namespace {
 inline int omp_threads() { return ms::threads(); }
 
 // time spent in the parts of a run (MS_PROFILE set: printed to stderr at its end)
-enum { T_BUILD, T_FORWARD, T_ADJOINT, T_OBJECTIVE, T_LBFGS, T_NORMAL, T_ENVFIT, T_TOTAL, T_N };
+enum { T_BUILD, T_FORWARD, T_ADJOINT, T_OBJECTIVE, T_LBFGS, T_NORMAL, T_ENVFIT, T_EXP, T_DIR, T_PAIR, T_OUTPUT, T_TOTAL, T_N };
 double prof_t[T_N];
 long prof_n[T_N];  // calls
 const char* prof_name[T_N] = {"model build", "forward", "adjoint", "objective (all)", "lbfgs (all)",
-                              "node normal", "envelope fit", "total"};
+                              "node normal", "envelope fit", "exp (objective)", "lbfgs direction",
+                              "lbfgs pair", "output", "total"};
 struct Timed {
     int k;
     std::chrono::steady_clock::time_point s;
@@ -116,6 +117,43 @@ struct FpState {
     void apply() const {}
 #endif
 };
+
+// exp of fdlibm (Sun Microsystems, e_exp.c; error below 1 ulp) in plain double arithmetic, for the masses
+// f = exp(u): msvcrt's exp runs on the x87 unit, 29 ns a value against 8 ns, and was off the correctly
+// rounded value more often (17 % against 10 % of values, never by more than 1 ulp)
+inline double fexp(double x) {
+    const double ln2hi = 6.93147180369123816490e-01, ln2lo = 1.90821492927058770002e-10,
+                 invln2 = 1.44269504088896338700e+00, P1 = 1.66666666666666019037e-01,
+                 P2 = -2.77777777770155933842e-03, P3 = 6.61375632143793436117e-05,
+                 P4 = -1.65339022054652515390e-06, P5 = 4.13813679705723846039e-08;
+    if (!(x == x)) return x;
+    if (x > 7.09782712893383973096e+02) return HUGE_VAL;
+    if (x < -7.45133219101941108420e+02) return 0.0;
+    double hi = 0, lo = 0;
+    int k = 0;
+    const double ax = std::fabs(x);
+    if (ax > 0.34657359027997264) {   // x = k ln 2 + r, |r| <= ln 2 / 2
+        if (ax < 1.0397207708399179) { k = x > 0 ? 1 : -1; hi = x - k * ln2hi; lo = k * ln2lo; }
+        else { k = (int)(invln2 * x + (x > 0 ? 0.5 : -0.5)); const double t = k; hi = x - t * ln2hi; lo = t * ln2lo; }
+        x = hi - lo;
+    } else if (ax < 3.725290298461914e-09) {
+        return 1.0 + x;
+    }
+    const double t = x * x;
+    const double c = x - t * (P1 + t * (P2 + t * (P3 + t * (P4 + t * P5))));
+    if (k == 0) return 1.0 - ((x * c) / (c - 2.0) - x);
+    double y = 1.0 - ((lo - (x * c) / (2.0 - c)) - hi);
+    uint64_t b;
+    std::memcpy(&b, &y, 8);
+    if (k >= -1021) {   // times 2^k
+        b += (uint64_t)(int64_t)k << 52;
+        std::memcpy(&y, &b, 8);
+        return y;
+    }
+    b += (uint64_t)(int64_t)(k + 1000) << 52;
+    std::memcpy(&y, &b, 8);
+    return y * 9.33263618503218878990e-302;   // 2^-1000
+}
 
 template <class F> void parallel_range(size_t n, F&& f) {
     // f(i0, i1) over disjoint contiguous blocks
@@ -321,7 +359,7 @@ struct Blur {
 // each active mass has one entry per charge from its lowest to its highest
 // charge inside the grid, the lower grid point (int32) and the weight of the
 // upper one (float32; negative across a gap in the grid), 8 bytes. Both
-// products read the entries once, in order (they are bound by the memory
+// products read a 5 byte copy of the entries once, in order (bound by the memory
 // speed). At a given charge the lower grid point never falls as the mass
 // rises (for the products of one charge: rows_of). The
 // envelope weight c(z | M) is applied on the fly from the node table, so a
@@ -345,6 +383,14 @@ struct Model {
     static constexpr size_t NBLK = 60;
     std::vector<size_t> b_j, b_r0, b_r1, b_p;
     std::vector<double> part;
+    // The entries again for the two products, 5 bytes each (they are bound by the memory speed): the weight and
+    // the step in grid rows from the entry of the same charge at the mass before (255: the row is the next one
+    // of x_row, for the first entry of a charge in a block and for larger steps). b_row[b K + k]: the row of
+    // charge k before block b; b_x[b]: block b's first row in x_row
+    std::vector<float> c_w;
+    std::vector<uint8_t> c_d;
+    std::vector<int32_t> x_row, b_row;
+    std::vector<size_t> b_x;
     size_t nnz = 0;                          // non zero weights (for the profile)
     // envelope nodes: Q nodes log spaced over the mass range, C is (Q + 1) x K
     // (row Q repeats row Q - 1 so that the interpolation never reads past the end)
@@ -362,7 +408,7 @@ struct Model {
 
     // bytes the model takes for ne entries
     static double bytes_for(size_t ne, size_t n, size_t na) {
-        return (double)ne * sizeof(Entry) + 8.0 * NBLK * n + 8.0 * n + 16.0 * na;
+        return (double)ne * (sizeof(Entry) + 5) + 8.0 * NBLK * n + 8.0 * n + 16.0 * na;
     }
     // the entry of mass j at charge k (k one of its charges)
     const Entry& entry(size_t j, int k) const { return ent[m_off[j] + (size_t)(k - m_k0[j])]; }
@@ -510,6 +556,25 @@ struct Model {
             b_p[b + 1] = b_p[b] + (b_r1[b] - b_r0[b]);
         }
         part.assign(b_p[nb], 0.0);
+        // the 5 byte entries
+        c_w.resize(ne); c_d.resize(ne); x_row.clear(); b_row.assign(nb * (size_t)K, 0); b_x.assign(nb + 1, 0);
+        {
+            std::vector<int64_t> prev(K, -1);   // the last row of each charge (-1: none yet)
+            for (size_t b = 0; b < nb; b++) {
+                for (int k = 0; k < K; k++) b_row[b * K + k] = (int32_t)std::max<int64_t>(prev[k], 0);
+                b_x[b] = x_row.size();
+                for (size_t j = b_j[b]; j < b_j[b + 1]; j++)
+                    for (size_t p = m_off[j]; p < m_off[j + 1]; p++) {
+                        const int k = m_k0[j] + (int)(p - m_off[j]);
+                        const int64_t i = ent[p].i, dd = i - prev[k];
+                        c_w[p] = ent[p].wh;
+                        if (prev[k] < 0 || dd < 0 || dd >= 255) { c_d[p] = 255; x_row.push_back((int32_t)i); }
+                        else c_d[p] = (uint8_t)dd;
+                        prev[k] = i;
+                    }
+            }
+            b_x[nb] = x_row.size();
+        }
         tmp.assign(n, 0.0);
         // envelope nodes, log spaced to start with
         Q = std::max(1, nodes);
@@ -545,17 +610,23 @@ struct Model {
             const size_t r0 = b_r0[b];
             double* P = part.data() + b_p[b];
             std::fill(P, P + (b_r1[b] - r0), 0.0);
+            std::vector<int32_t> cur(b_row.begin() + b * K, b_row.begin() + (b + 1) * K);
+            const int32_t* xr = x_row.data() + b_x[b];
             for (size_t j = b_j[b]; j < b_j[b + 1]; j++) {
                 const double fj = f[j], tj = nt[j];
                 const double* c0 = C.data() + (size_t)nq[j] * K;
-                const Entry* e = ent.data() + m_off[j];
+                const float* w = c_w.data() + m_off[j];
+                const uint8_t* st = c_d.data() + m_off[j];
                 const int k0 = m_k0[j], ne = (int)(m_off[j + 1] - m_off[j]);
+                int32_t* cu = cur.data() + k0;
                 for (int c = 0; c < ne; c++) {
-                    const double wh = e[c].wh;
+                    const int32_t row = st[c] == 255 ? *xr++ : cu[c] + st[c];
+                    cu[c] = row;
+                    const double wh = w[c];
                     if (wh < 0) continue;
                     const int k = k0 + c;
                     const double ce = c0[k] + tj * (c0[K + k] - c0[k]);
-                    const size_t i = (size_t)e[c].i - r0;
+                    const size_t i = (size_t)row - r0;
                     P[i] += ce * (1.0 - wh) * fj;
                     P[i + 1] += ce * wh * fj;
                 }
@@ -574,28 +645,38 @@ struct Model {
     }
 
     // gradient with respect to the masses of a (weighted) residual r on the grid
-    void adjoint_f(const double* r, double* out) {
+    void adjoint_f(const double* r, double* out) { adjoint_f(r, out, [](size_t, double) {}); }
+    // ... and post(j, out[j]) for every mass, in the same pass
+    template <class Post> void adjoint_f(const double* r, double* out, Post&& post) {
         Timed tm(T_ADJOINT);
         blur.apply(r, tmp.data(), n);
         const double* g = tmp.data();
         // a mass adds its terms by charge
         pblocks(b_r0.size(), [&](size_t b) {
+            std::vector<int32_t> cur(b_row.begin() + b * K, b_row.begin() + (b + 1) * K);
+            const int32_t* xr = x_row.data() + b_x[b];
             for (size_t j = b_j[b]; j < b_j[b + 1]; j++) {
                 const double tj = nt[j];
                 const double* c0 = C.data() + (size_t)nq[j] * K;
-                const Entry* e = ent.data() + m_off[j];
+                const float* w = c_w.data() + m_off[j];
+                const uint8_t* st = c_d.data() + m_off[j];
                 const int k0 = m_k0[j], ne = (int)(m_off[j + 1] - m_off[j]);
-                double s = 0;
+                int32_t* cu = cur.data() + k0;
+                double s = 0, s2 = 0;   // two sums (lower and upper grid point): half the chain of additions
                 for (int c = 0; c < ne; c++) {
-                    const double wh = e[c].wh;
+                    const int32_t row = st[c] == 255 ? *xr++ : cu[c] + st[c];
+                    cu[c] = row;
+                    const double wh = w[c];
                     if (wh < 0) continue;
                     const int k = k0 + c;
                     const double ce = c0[k] + tj * (c0[K + k] - c0[k]);
-                    const size_t i = (size_t)e[c].i;
+                    const size_t i = (size_t)row;
                     s += ce * (1.0 - wh) * g[i];
-                    s += ce * wh * g[i + 1];
+                    s2 += ce * wh * g[i + 1];
                 }
+                s += s2;
                 out[j] = s;
+                post(j, s);
             }
         });
     }
@@ -953,20 +1034,23 @@ struct Objective {
         size_t na = u.size(), n = y->size();
         f.resize(na); r.resize(n); adj.resize(na); fit.resize(n);
         // (on every core; the sums in fixed blocks: psum)
-        pfor(na, [&](size_t a, size_t b) { for (size_t j = a; j < b; j++) f[j] = std::exp(u[j]); });
-        model->forward(f.data(), fit.data());
+        double* ff = f.data(); const double* uu = u.data();
+        const double dl = dflt, ld = log_dflt;
+        double ent;
+        {   // f = exp(u) and the entropy in one pass
+            Timed te(T_EXP);
+            ent = psum(na, [&](size_t j) { const double fj = fexp(uu[j]); ff[j] = fj; return fj - dl - fj * (uu[j] - ld); });
+        }
+        model->forward(ff, fit.data());
         const double* yy = y->data(); const double* ww = w->data();
         double* rr = r.data();
         const double* ft = fit.data();
         double chi2 = psum(n, [&](size_t i) { double d = ft[i] - yy[i]; rr[i] = ww[i] * d; return ww[i] * d * d; });
         chi2 *= 0.5;
-        const double* ff = f.data(); const double* uu = u.data();
-        const double dl = dflt, ld = log_dflt;
-        double ent = psum(na, [&](size_t j) { return ff[j] - dl - ff[j] * (uu[j] - ld); });
-        model->adjoint_f(r.data(), adj.data());
         grad.resize(na);
-        double* gg = grad.data(); const double* aj = adj.data(); const double al = alpha;
-        pfor(na, [&](size_t a, size_t b) { for (size_t j = a; j < b; j++) gg[j] = ff[j] * (aj[j] + al * (uu[j] - ld)); });
+        double* gg = grad.data(); const double al = alpha;
+        // the gradient as the adjoint gives each mass its sum
+        model->adjoint_f(r.data(), adj.data(), [&](size_t j, double s) { gg[j] = ff[j] * (s + al * (uu[j] - ld)); });
         evals++;
         return chi2 - alpha * ent;
     }
@@ -1131,22 +1215,34 @@ void lbfgs_b(Objective& obj, std::vector<double>& x, double lo, double hi, int m
         double sc = gmax > 0 ? 1.0 / gmax : 1.0;
         pfor(n, [&](size_t a, size_t b) { for (size_t j = a; j < b; j++) d[j] = clip(x[j] - sc * hd[j] * g[j]) - x[j]; });
     };
+    // Kept from the pass that stores a pair (it reads every vector the next iteration needs first): the
+    // projected gradient's largest value and S'g, Y' hd g at the new point
+    bool have_pg = false, have_ab = false;
+    double pg_next = 0;
+    std::vector<double> ab_next;
+    const size_t nblk = std::max<size_t>(1, (n + PBLOCK - 1) / PBLOCK);
+    std::vector<double> bmax(nblk);
     for (int it = 0; it < maxiter; it++) {
-        double pgmax = pmax(n, 0.0, [&](size_t i) {
+        double pgmax = have_pg ? pg_next : pmax(n, 0.0, [&](size_t i) {
             double gi = g[i];
             if ((x[i] <= lo && gi > 0) || (x[i] >= hi && gi < 0)) gi = 0;
             return std::fabs(gi);
         });
+        have_pg = false;
         if (pgmax <= pgtol) { if (getenv("MS_DEBUG")) fprintf(stderr, "  lbfgs pgtol stop it %d f %.6g\n", it, fx); break; }
         if (it == 0) set_diag();   // one metric per call (a fixed variable scaling keeps the pairs consistent)
+        const auto tdir0 = std::chrono::steady_clock::now();
         int h = (int)S.size();
+        double dg = 0, stpmx_neg = -1e10;
+        bool have_dg = false;
         if (h == 0) {
             first_direction();
         } else {
             // H g = gamma hd (g - Y u) + S R^-T ((D + gamma W) u - gamma Y' hd g), u = R^-1 S'g, with R the upper
             // triangle of S'Y and D its diagonal; gamma = s'y / y' hd y of the newest pair
             std::vector<double> ab(2 * h);
-            psums(n, 2 * h, ab.data(), [&](size_t i0, size_t i1, double* acc) {
+            if (have_ab && ab_next.size() == ab.size()) ab = ab_next;
+            else psums(n, 2 * h, ab.data(), [&](size_t i0, size_t i1, double* acc) {
                 for (int i = 0; i < h; i++) {
                     const float* si = S[i].data();
                     double v = 0;
@@ -1175,12 +1271,15 @@ void lbfgs_b(Objective& obj, std::vector<double>& x, double lo, double hi, int m
                 for (int j = 0; j < i; j++) v -= SY[j * M + i] * p[j];
                 p[i] = v / SY[i * M + i];
             }
-            // d = clip(x - H g) - x, in short pieces that stay in the cache while every pair is added
-            pfor(n, [&](size_t a, size_t b) {
+            // d = clip(x - H g) - x, in short pieces that stay in the cache while every pair is added; in the
+            // same pass d'g (the blocks of psum, each summed in order) and the largest step inside the box
+            psums(n, 1, &dg, [&](size_t i0, size_t i1, double* acc) {
                 double r[1024];
-                for (size_t c0 = a; c0 < b; c0 += 1024) {
-                    const size_t L = std::min(b, c0 + 1024) - c0;
+                double v = 0, mx = -1e10;
+                for (size_t c0 = i0; c0 < i1; c0 += 1024) {
+                    const size_t L = std::min(i1, c0 + 1024) - c0;
                     const double *gc = g.data() + c0, *hc = hd.data() + c0, *xc = x.data() + c0;
+                    double* dc = d.data() + c0;
                     for (size_t j = 0; j < L; j++) r[j] = gc[j];
                     for (int i = 0; i < h; i++) {
                         const float* yi = Y[i].data() + c0; const double ui = u[i];
@@ -1191,23 +1290,35 @@ void lbfgs_b(Objective& obj, std::vector<double>& x, double lo, double hi, int m
                         const float* si = S[i].data() + c0; const double pi = p[i];
                         for (size_t j = 0; j < L; j++) r[j] += pi * si[j];
                     }
-                    for (size_t j = 0; j < L; j++) d[c0 + j] = clip(xc[j] - r[j]) - xc[j];
+                    for (size_t j = 0; j < L; j++) {
+                        const double dj = clip(xc[j] - r[j]) - xc[j];
+                        dc[j] = dj;
+                        v += dj * gc[j];
+                        mx = std::max(mx, dj > 0 ? -((hi - xc[j]) / dj) : dj < 0 ? -((lo - xc[j]) / dj) : -1e10);
+                    }
                 }
+                acc[0] = v;
+                bmax[i0 / PBLOCK] = mx;
             });
+            for (size_t b = 0; b < nblk; b++) stpmx_neg = std::max(stpmx_neg, bmax[b]);
+            have_dg = true;
         }
-        double dg = pdot(d.data(), g.data(), n);
+        have_ab = false;
+        prof_t[T_DIR] += std::chrono::duration<double>(std::chrono::steady_clock::now() - tdir0).count(); prof_n[T_DIR]++;
+        if (!have_dg) dg = pdot(d.data(), g.data(), n);
         if (!(dg < 0)) {
             S.clear(); Y.clear();
             first_direction();
             dg = pdot(d.data(), g.data(), n);
+            have_dg = false;
             if (!(dg < 0)) break;
         }
         // largest step inside the box (the smallest ratio: any order gives the same minimum)
-        double stpmx = -pmax(n, -1e10, [&](size_t j) {
+        double stpmx = -(have_dg ? stpmx_neg : pmax(n, -1e10, [&](size_t j) {
             if (d[j] > 0) return -((hi - x[j]) / d[j]);
             if (d[j] < 0) return -((lo - x[j]) / d[j]);
             return -1e10;
-        });
+        }));
         // L-BFGS-B (lnsrlb): with constraints the first iteration's step is at most 1
         if (it == 0) stpmx = 1.0;
         Dcsrch ls;
@@ -1246,31 +1357,58 @@ void lbfgs_b(Objective& obj, std::vector<double>& x, double lo, double hi, int m
             restarts++;
             continue;
         }
+        Timed tpair(T_PAIR);
         s_buf.resize(n); y_buf.resize(n);
         float* s = s_buf.data(); float* yk = y_buf.data();
-        pfor(n, [&](size_t a, size_t b) { for (size_t j = a; j < b; j++) { s[j] = (float)(xn[j] - x[j]); yk[j] = (float)(gn[j] - g[j]); } });
-        // in one pass: s_i'y and y_i' hd y of the pairs kept, then s'y, y'y and y' hd y
+        // in one pass: s and y; s_i'y and y_i' hd y of the pairs kept, then s'y, y'y and y' hd y; for the next
+        // iteration S'g and Y' hd g at the new point (old pairs, then the new one) and the projected gradient
         const int hp = (int)S.size();
-        std::vector<double> nw(2 * hp + 3);
-        psums(n, 2 * hp + 3, nw.data(), [&](size_t i0, size_t i1, double* acc) {
+        const int na2 = 4 * hp + 5;
+        std::vector<double> nw(na2);
+        psums(n, na2, nw.data(), [&](size_t i0, size_t i1, double* acc) {
+            double pg = 0;
+            for (size_t j = i0; j < i1; j++) {
+                s[j] = (float)(xn[j] - x[j]); yk[j] = (float)(gn[j] - g[j]);
+                double gi = gn[j];
+                if ((xn[j] <= lo && gi > 0) || (xn[j] >= hi && gi < 0)) gi = 0;
+                pg = std::max(pg, std::fabs(gi));
+            }
+            bmax[i0 / PBLOCK] = pg;
             for (int i = 0; i < hp; i++) {
                 const float* si = S[i].data();
-                double v = 0;
-                for (size_t j = i0; j < i1; j++) v += (double)si[j] * yk[j];
-                acc[i] = v;
+                double v = 0, w = 0;
+                for (size_t j = i0; j < i1; j++) { v += (double)si[j] * yk[j]; w += si[j] * gn[j]; }
+                acc[i] = v; acc[2 * hp + 3 + i] = w;
             }
             for (int i = 0; i < hp; i++) {
                 const float* yi = Y[i].data();
-                double v = 0;
-                for (size_t j = i0; j < i1; j++) v += yi[j] * (hd[j] * yk[j]);
-                acc[hp + i] = v;
+                double v = 0, w = 0;
+                for (size_t j = i0; j < i1; j++) { v += yi[j] * (hd[j] * yk[j]); w += yi[j] * (hd[j] * gn[j]); }
+                acc[hp + i] = v; acc[3 * hp + 4 + i] = w;
             }
-            double sy = 0, yy = 0, yhy = 0;
-            for (size_t j = i0; j < i1; j++) { sy += (double)s[j] * yk[j]; yy += (double)yk[j] * yk[j]; yhy += yk[j] * (hd[j] * yk[j]); }
+            double sy = 0, yy = 0, yhy = 0, sg = 0, yg = 0;
+            for (size_t j = i0; j < i1; j++) {
+                sy += (double)s[j] * yk[j]; yy += (double)yk[j] * yk[j]; yhy += yk[j] * (hd[j] * yk[j]);
+                sg += s[j] * gn[j]; yg += yk[j] * (hd[j] * gn[j]);
+            }
             acc[2 * hp] = sy; acc[2 * hp + 1] = yy; acc[2 * hp + 2] = yhy;
+            acc[3 * hp + 3] = sg; acc[4 * hp + 4] = yg;
         });
+        pg_next = 0;
+        for (size_t b = 0; b < nblk; b++) pg_next = std::max(pg_next, bmax[b]);
+        have_pg = true;
         const double sy = nw[2 * hp];
-        if (sy > 2.220446049250313e-16 * nw[2 * hp + 1]) {
+        const bool keep = sy > 2.220446049250313e-16 * nw[2 * hp + 1];
+        {   // S'g and Y' hd g of the pairs of the next iteration
+            const int first = keep && hp >= m ? 1 : 0, last = keep ? hp + 1 : hp, hn = last - first;
+            ab_next.assign(2 * hn, 0.0);
+            for (int i = first; i < last; i++) {
+                ab_next[i - first] = nw[2 * hp + 3 + i];
+                ab_next[hn + i - first] = nw[3 * hp + 4 + i];
+            }
+            have_ab = true;
+        }
+        if (keep) {
             const size_t M = (size_t)m;
             std::vector<float> old_s, old_y;    // the oldest pair: its vectors take the next pair
             int first = 0;                      // the first pair kept
@@ -2033,7 +2171,7 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
     // signal, per node (a least squares fit at this point would be sparse and
     // the masses would settle on a single charge each: ghosts at M x z'/z)
     {
-        for (size_t j = 0; j < na; j++) f[j] = std::exp(u[j]);
+        pfor(na, [&](size_t a0, size_t b0) { for (size_t j = a0; j < b0; j++) f[j] = fexp(u[j]); });
         model.node_normal(f.data(), y.data(), w.data(), G, bvec);
         std::vector<double> c((size_t)model.Q * K, 1.0 / K);
         for (int q = 0; q < model.Q; q++) {
@@ -2154,10 +2292,10 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
         if (have_fit) set_weights();
         for (int sweep = 0; sweep < 2; sweep++) {
             lbfgs_b(obj, u, lo_u, hi_u, iterations);
-            for (size_t j = 0; j < na; j++) { u[j] = std::min(hi_u, std::max(lo_u, u[j])); f[j] = std::exp(u[j]); }
+            pfor(na, [&](size_t a0, size_t b0) { for (size_t j = a0; j < b0; j++) { u[j] = std::min(hi_u, std::max(lo_u, u[j])); f[j] = fexp(u[j]); } });
             refit_envelope();
         }
-        for (size_t j = 0; j < na; j++) f[j] = std::exp(u[j]);
+        pfor(na, [&](size_t a0, size_t b0) { for (size_t j = a0; j < b0; j++) f[j] = fexp(u[j]); });
         model.forward(f.data(), fitv.data());
         have_fit = true;
         double chi2n = chi2_signal();
@@ -2278,7 +2416,8 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
         }
         la = search.next();
     }
-    for (size_t j = 0; j < na; j++) f[j] = std::exp(u[j]);
+    Timed tout(T_OUTPUT);
+    pfor(na, [&](size_t a0, size_t b0) { for (size_t j = a0; j < b0; j++) f[j] = fexp(u[j]); });
     model.forward(f.data(), fitv.data());
     const double chi2_final = chi2_signal();
     // ---- _to_mass_axis
