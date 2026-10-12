@@ -5,6 +5,7 @@ spectrometry, PDA, Compare ...) are large buttons pinned at the start of the rib
 The ribbon only shows commands: each Item calls code that exists elsewhere (the hidden tool strips of the
 views, the hidden top bar buttons, menus), and its state (shown, enabled, active, label) is read again a few
 times a second, so every other way to use a command (shortcuts, menus) keeps the ribbon right."""
+import time
 import wx
 
 import unidec_theme as T
@@ -401,6 +402,11 @@ class TabRow(wx.Panel):
         if i < 0:
             return
         if self.ribbon.menus:
+            # a click on the title of the menu that is open closes it: Windows closes the menu and then
+            # still hands the click to this row, which opened the menu again at once
+            ci, ct = self.ribbon.closed
+            if i == self.ribbon.open_i or (i == ci and time.monotonic() - ct < 0.3):
+                return
             wx.CallAfter(self.ribbon.open_menu, i)
         else:
             self.ribbon.select(i)
@@ -449,6 +455,7 @@ class Ribbon(wx.Panel):
         self.SetBackgroundColour(wx.Colour(C["panel"]))
         self.tabs, self.current = tabs, 0
         self.menus, self.open_i = menus, -1
+        self.closed = (-1, 0.0)   # the menu closed last and when (time.monotonic)
         self.tabrow = TabRow(self, self)
         self.body = wx.Panel(self, style=wx.BORDER_NONE)
         self.body.SetBackgroundColour(wx.Colour(C["panel"]))
@@ -502,6 +509,7 @@ class Ribbon(wx.Panel):
         finally:
             m.Destroy()
             self.open_i = -1
+            self.closed = (i, time.monotonic())
             if self:
                 self.tabrow.Refresh()
                 wx.CallLater(60, self.read_state)

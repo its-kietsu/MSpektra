@@ -2421,8 +2421,11 @@ class DeconvPanel(object):
             n_lab = max(n_lab, len(isop) + len(peaks))
         elif label_all:
             n_lab = max(n_lab, len(peaks))  # IsoDec: every mass in view (the menu item did nothing)
-        elif isop and sw * 1.00335 / wv < 0.45 * 10 * 0.6 * 8.0:
-            # too narrow for every other isotope label to fit: label the species
+        elif isop and (sw * 1.00335 / wv < 0.45 * 10 * 0.6 * 8.0 or
+                       float(res.get("params", {}).get("mass_step", 1.0) or 1.0) >= 0.1):
+            # too narrow for every other isotope label to fit, or a mass step of 0.1 Da and more (an
+            # isotope peak of a few points: its top half centroid was not the table's mass, the label
+            # changed on zooming in, e.g. 12229.57 to 12229.3442): label the species
             isop = []
         hfrac = 1.3 * 8.0 / sh  # height of a label line in axes fractions
 
