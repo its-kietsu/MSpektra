@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MSpektra: LC-MS and HRMS analysis software for Windows</title>
+<meta name="description" content="MSpektra is a free Windows program for LC-MS and HRMS data: chromatograms, mass spectra, peak integration, exact mass, formula finder and protein deconvolution (UniDec, maximum entropy, IsoDec). Reads Shimadzu, Agilent, Waters, Thermo, Bruker and mzML files.">
+<meta name="keywords" content="LC-MS software, HRMS, mass spectrometry, deconvolution, intact protein mass, maximum entropy, MaxEnt, UniDec, IsoDec, Shimadzu lcd, Agilent .D, Waters raw, Thermo raw, Bruker .d, mzML, Windows">
+<link rel="canonical" href="https://its-kietsu.github.io/MSpektra/">
+<link rel="icon" type="image/png" href="favicon.png">
+<meta property="og:type" content="website">
+<meta property="og:title" content="MSpektra: LC-MS and HRMS analysis software for Windows">
+<meta property="og:description" content="Free Windows program for LC-MS and HRMS data with protein deconvolution.">
+<meta property="og:url" content="https://its-kietsu.github.io/MSpektra/">
+<meta property="og:image" content="https://its-kietsu.github.io/MSpektra/icon.png">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "MSpektra",
+  "applicationCategory": "ScientificApplication",
+  "operatingSystem": "Windows",
+  "description": "Windows program for LC-MS and HRMS analysis with deconvolution: chromatograms, mass spectra, peak integration, exact mass, formula finder, UniDec, maximum entropy and IsoDec deconvolution.",
+  "url": "https://its-kietsu.github.io/MSpektra/",
+  "downloadUrl": "https://github.com/its-kietsu/MSpektra/releases/latest",
+  "license": "https://github.com/its-kietsu/MSpektra/blob/main/LICENSE",
+  "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}
+}
+</script>
+<style>
+:root {
+  --bg: #F1F4F9; --panel: #FFFFFF; --line: #E5EAF2; --text: #131A24; --muted: #57616E;
+  --accent: #2A62C4; --accent-hover: #3470D4; --accent-down: #16407F; --chip: #E9EFFA;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #11161E; --panel: #19202B; --line: #2A3342; --text: #E6EBF2; --muted: #9AA5B4;
+    --accent: #5B8FE8; --accent-hover: #74A2EE; --accent-down: #3F74D0; --chip: #1F2A3B;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 16px/1.55 "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif;
+}
+a { color: var(--accent); }
+.wrap { max-width: 960px; margin: 0 auto; padding: 0 16px; }
+header { padding: 56px 0 40px; }
+.brand { display: flex; align-items: center; gap: 18px; }
+.brand img { width: 72px; height: 72px; flex: none; }
+h1 { font-size: 40px; line-height: 1.1; margin: 0; letter-spacing: -0.5px; }
+.lead { font-size: 19px; color: var(--muted); margin: 6px 0 0; }
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; margin-top: 28px; }
+.button {
+  display: inline-block; background: var(--accent); color: #fff; text-decoration: none;
+  font-weight: 600; padding: 12px 22px; border-radius: 8px;
+}
+.button:hover { background: var(--accent-hover); }
+.button:active { background: var(--accent-down); }
+.note { color: var(--muted); font-size: 14px; }
+h2 { font-size: 22px; margin: 0 0 14px; }
+section { padding: 28px 0; }
+.cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
+.card h3 { margin: 0 0 8px; font-size: 18px; }
+.card p { margin: 0 0 10px; color: var(--muted); font-size: 15px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.chips li { background: var(--chip); border-radius: 6px; padding: 2px 8px; font-size: 13px; }
+ol.steps { margin: 0; padding-left: 22px; }
+ol.steps li { margin: 6px 0; }
+.cite { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; font-size: 15px; }
+footer { border-top: 1px solid var(--line); margin-top: 24px; padding: 22px 0 40px; color: var(--muted); font-size: 14px; }
+footer a { margin-right: 18px; }
+@media (max-width: 760px) {
+  header { padding: 36px 0 28px; }
+  h1 { font-size: 32px; }
+  .brand img { width: 56px; height: 56px; }
+  .cards { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="brand">
+      <img src="icon.png" alt="MSpektra icon" width="72" height="72">
+      <div>
+        <h1>MSpektra</h1>
+        <p class="lead">LC-MS and HRMS analysis with deconvolution, for Windows.</p>
+      </div>
+    </div>
+    <div class="actions">
+      <a class="button" href="https://github.com/its-kietsu/MSpektra/releases/latest">Download the latest version</a>
+      <span class="note">Free, MIT License. Nothing to install.</span>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <section>
+    <h2>What it does</h2>
+    <div class="cards">
+      <div class="card">
+        <h3>LCMS Analysis</h3>
+        <p>Chromatograms, mass spectra, PDA and UV data, peak integration and a view to compare runs.</p>
+        <ul class="chips">
+          <li>Shimadzu .lcd</li><li>Agilent .D</li><li>Waters .raw</li><li>Thermo .raw</li>
+          <li>mzML</li><li>mzXML</li><li>ANDI .cdf</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>HRMS Analysis</h3>
+        <p>High resolution mass spectra with calibration, exact mass and a formula finder.</p>
+        <ul class="chips">
+          <li>Bruker .d</li><li>timsTOF</li><li>Agilent MassHunter</li><li>Waters .raw</li>
+          <li>Thermo Orbitrap</li><li>mzML</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Deconvolution</h3>
+        <p>Intact protein masses from charge state series, with reports in PDF and Word.</p>
+        <ul class="chips">
+          <li>UniDec</li><li>Maximum entropy</li><li>IsoDec</li><li>Isotope resolved</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Getting started</h2>
+    <ol class="steps">
+      <li>Download <code>MSpektra-&lt;version&gt;.zip</code> from the <a href="https://github.com/its-kietsu/MSpektra/releases/latest">latest release</a>.</li>
+      <li>Extract it to a short folder path, for example the Desktop.</li>
+      <li>Start <code>MSpektra.exe</code>. New versions install themselves with one click.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Credit</h2>
+    <div class="cite">
+      The deconvolution engine is UniDec by Michael T. Marty. If you publish results obtained with the
+      deconvolution, please cite: Marty et al., Anal. Chem. 2015, 87 (8), 4370&ndash;4376,
+      <a href="https://doi.org/10.1021/acs.analchem.5b00140">doi:10.1021/acs.analchem.5b00140</a>.
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <a href="https://github.com/its-kietsu/MSpektra">Source code on GitHub</a>
+    <a href="https://github.com/its-kietsu/MSpektra/releases">All releases</a>
+    <a href="https://github.com/its-kietsu/MSpektra/blob/main/LICENSE">MIT License</a>
+  </div>
+</footer>
+</body>
+</html>
