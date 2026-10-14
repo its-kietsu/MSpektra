@@ -1,4 +1,4 @@
-MSpektra 4.33 - portable Windows package   (12.10.2026)
+MSpektra 4.34 - portable Windows package   (14.10.2026)
 ========================================================
 
 Analysis of LC-MS and HRMS data, with deconvolution:
@@ -36,6 +36,14 @@ The version is shown on the start screen, in the help window (?) of LCMS
 and HRMS Analysis, and in the first line of each log file. It went up by
 0.1 with every update until 3.3. Since 3.31 a small change adds 0.01, a
 large change 0.1 and a big change 1.0.
+
+4.34 (14.10.2026)
+Smoother screen.
+* Views, files and the side panel change in one step, without
+  half drawn plots; the Compare view no longer flashes parts at the
+  top left while it opens.
+* Tiles are resized in one step.
+* Hints in narrow plots go on two lines.
 
 4.33 (12.10.2026)
 Fixes.

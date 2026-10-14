@@ -924,8 +924,31 @@ class PlotCard(wx.Panel):
             self.ax.xaxis.label.set_visible(not compact)
             self.ax.yaxis.label.set_visible(not compact)
             self.ax.set_position([l / w, b / h, max(0.05, 1 - (l + r) / w), max(0.05, 1 - (b + t) / h)])
+            self._fit_notes(w * (1 - (l + r) / w) * self.fig.dpi)
         except Exception:
             pass
+
+    def _fit_notes(self, width_px):
+        """A note in the middle of the plot (an empty plot's hint) on two lines when one is wider than the plot,
+        so it does not run over the axis numbers of a narrow tile."""
+        notes = [tx for tx in self.ax.texts if tx.get_transform() is self.ax.transAxes and
+                 tuple(tx.get_position()) == (0.5, 0.5) and tx.get_ha() == "center"]
+        if not notes:
+            return
+        r = self.canvas.get_renderer()
+        for tx in notes:
+            cur = tx.get_text()
+            if cur != getattr(tx, "_two_lines", None):   # (a text set since: that one)
+                tx._one_line = cur
+            one = tx._one_line
+            tx._two_lines = None
+            tx.set_text(one)
+            words = one.split()
+            if "\n" in one or len(words) < 2 or tx.get_window_extent(r).width <= 0.94 * width_px:
+                continue
+            k = min(range(1, len(words)), key=lambda i: abs(len(" ".join(words[:i])) - len(" ".join(words[i:]))))
+            tx._two_lines = " ".join(words[:k]) + "\n" + " ".join(words[k:])
+            tx.set_text(tx._two_lines)
 
     def draw(self):
         self.place()
@@ -2730,6 +2753,16 @@ def _is_plot_tile(p):
     return isinstance(p, SplitBox) and any(isinstance(q, PlotCard) for q in p.panes)
 
 
+def _at_once(method):
+    """A method that changes the sizes of tiles, shown at once (change_at_once)."""
+    def run(self, *a, **k):
+        out = []
+        change_at_once(self.GetTopLevelParent(), lambda: out.append(method(self, *a, **k)))
+        return out[0] if out else None
+    run.__name__, run.__doc__ = method.__name__, method.__doc__
+    return run
+
+
 class SplitBox(wx.Panel):
     """Panes in a column (or a row) separated by gaps. Drag a gap to resize
     the two panes next to it; a blue guide shows the new position and the
@@ -2770,12 +2803,14 @@ class SplitBox(wx.Panel):
             except RuntimeError:
                 pass
 
+    @_at_once
     def close(self, pane):
         self._sync()
         self.closed.add(pane)
         self._visible()
         self.relayout()
 
+    @_at_once
     def reopen(self, pane):
         self._sync()  # widths dragged since the tile was closed are kept
         self.closed.discard(pane)
@@ -2877,6 +2912,7 @@ class SplitBox(wx.Panel):
             self._hover = i
             self.Refresh()
 
+    @_at_once
     def _finish(self, delta):
         i, c0, sizes = self._drag
         a, b = self._new_sizes(delta)
@@ -2979,6 +3015,7 @@ class StackBox(wx.Panel):
             except RuntimeError:
                 pass
 
+    @_at_once
     def close(self, pane):
         self.closed.add(pane)
         self._update_visible()
@@ -2986,6 +3023,7 @@ class StackBox(wx.Panel):
             self.on_change()
         self.relayout()
 
+    @_at_once
     def reopen(self, pane):
         self.closed.discard(pane)
         self._update_visible()
@@ -3098,6 +3136,7 @@ class StackBox(wx.Panel):
             y += hgt + self.gap
         self.Refresh()
 
+    @_at_once
     def fit_all(self):
         self.frac = {}
         T._save({self.mode_key: "fit"})
@@ -3105,6 +3144,7 @@ class StackBox(wx.Panel):
             self.on_change()
         self.relayout()
 
+    @_at_once
     def two(self):
         self.frac = {}
         T._save({self.mode_key: "two"})
@@ -3112,6 +3152,7 @@ class StackBox(wx.Panel):
             self.on_change()
         self.relayout()
 
+    @_at_once
     def journal(self, scale=None):
         self.frac = {}
         upd = {self.mode_key: "journal"}
@@ -3181,6 +3222,7 @@ class StackBox(wx.Panel):
             self._hover = i
             self.Refresh()
 
+    @_at_once
     def _finish(self, delta):
         i, c0, hs = self._drag
         h = self._new_height(delta)
@@ -7411,6 +7453,72 @@ class ReportDialog(wx.Dialog):
                 "figs_all": {k: {fk: cb.GetValue() for fk, cb in b.items()} for k, b in self.fig_boxes.items()}}
 
 
+def draw_pending_plots(win):
+    """The plots shown in win that are not drawn yet (a view just shown, a new size): drawn now. Again while
+    drawing one asked for another to be drawn (linked axes)."""
+    from ms_plot_render import canvas_class
+    cls = canvas_class()
+    for _ in range(3):
+        drawn = 0
+        stack = [win]
+        while stack:
+            w = stack.pop()
+            for c in w.GetChildren():
+                if not c.IsShown() or isinstance(c, wx.TopLevelWindow):
+                    continue
+                if isinstance(c, cls):
+                    if not getattr(c, "_isDrawn", True):
+                        c.draw()
+                        drawn += 1
+                        card = c.GetParent()   # its live layer now too (it would come one event later)
+                        if getattr(card, "live", None) and getattr(card, "_bgcache", None) is not None:
+                            card.blit_live()
+                else:
+                    stack.append(c)
+        if not drawn:
+            break
+
+
+def change_at_once(fr, change):
+    """change() shows another view or new tile sizes: the window keeps what it shows until the new layout is done,
+    its plots drawn and the top bar shows its tools, then shows it at once (no parts drawn one by one, no
+    controls seen at the corner of the window while they are made)."""
+    if fr.IsFrozen():   # (inside another such change: that one shows it)
+        change()
+        return
+    fr.Freeze()
+    try:
+        change()
+        draw_pending_plots(fr)
+        rb = fr.__dict__.get("ribbon")
+        if rb is not None:
+            try:
+                rb.read_state()
+            except RuntimeError:
+                pass
+    finally:
+        fr.Thaw()
+    try:   # painted now, the window and everything in it, in one pass (Update paints only the window itself)
+        if wx.Platform == "__WXMSW__":
+            import ctypes
+            ctypes.windll.user32.RedrawWindow(ctypes.c_void_p(fr.GetHandle()), None, None,
+                                              0x0080 | 0x0100)   # RDW_ALLCHILDREN | RDW_UPDATENOW
+        else:
+            fr.Update()
+    except (RuntimeError, OSError, AttributeError):
+        pass
+
+
+def _view_at_once(method):
+    """A method of the window that changes what it shows (another file, the side panel), shown at once."""
+    def run(self, *a, **k):
+        out = []
+        change_at_once(self.window(), lambda: out.append(method(self, *a, **k)))
+        return out[0] if out else None
+    run.__name__, run.__doc__ = method.__name__, method.__doc__
+    return run
+
+
 class PostrunFrame(wx.Frame):
     """Window with a tool bar (open, tabs, file chips, Deconvolute, help), a
     list of the open files on the left, the views of the file shown and a
@@ -7696,6 +7804,7 @@ class PostrunFrame(wx.Frame):
                 pg.Layout()
         return doc
 
+    @_view_at_once
     def activate(self, doc):
         fr = self.window()
         if doc is None or doc not in fr.docs:
@@ -7901,7 +8010,7 @@ class PostrunFrame(wx.Frame):
                 self.window().seg.set_active(i)
 
     def on_tab(self, i):
-        self.book.SetSelection(i)
+        change_at_once(self.window(), lambda: self.book.SetSelection(i))
 
     def on_help(self, e=None):
         ver = getattr(T, "APP_VERSION", "")
@@ -8056,6 +8165,7 @@ class PostrunFrame(wx.Frame):
     def link_menu(self):
         return []
 
+    @_view_at_once
     def set_side(self, show=None, remember=True):
         """Side panel of every view (of every open file) shown or hidden
         (None: switch)."""
@@ -8386,9 +8496,12 @@ class LCMSFrame(PostrunFrame):
                 pass
 
     def on_tab(self, i):
-        PostrunFrame.on_tab(self, i)
-        self._sync_compare()
+        def change():
+            self.book.SetSelection(i)
+            self._sync_compare()
+        change_at_once(self.window(), change)
 
+    @_view_at_once
     def activate(self, doc):
         fr = self.window()
         tab = fr.__dict__.get("_compare_tab")
@@ -8419,6 +8532,7 @@ class LCMSFrame(PostrunFrame):
         if tab is not None:
             tab.files_changed()
 
+    @_view_at_once
     def set_side(self, show=None, remember=True):
         fr = self.window()
         tab = fr.__dict__.get("_compare_tab")
