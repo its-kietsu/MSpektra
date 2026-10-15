@@ -52,6 +52,8 @@ Better maximum entropy.
   little; it is also faster, about 1.3 times.
 * Masses are as before. The maximum entropy of 4.35 can still be used:
   "maxent_engine": "4.35" in the settings file.
+* Updates no longer fail when OneDrive or a virus scanner holds a file
+  for a moment (folders on the OneDrive Desktop).
 
 4.35 (15.10.2026)
 Works on new installs.

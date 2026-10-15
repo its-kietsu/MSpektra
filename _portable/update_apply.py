@@ -51,11 +51,25 @@ def read_json(path):
         return None
 
 
+def replace(src, dst, tries=40):
+    """os.replace, tried again for up to 10 s while another program holds a file for a moment: OneDrive syncing
+    a folder on the OneDrive Desktop, or a virus scanner (15.10.2026: "Access is denied" on journal.json at the
+    102nd move of the update to 4.36, which then was undone)."""
+    for i in range(tries):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(0.25)
+
+
 def write_json(path, data):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=1)
-    os.replace(tmp, path)
+    replace(tmp, path)
 
 
 def processes_in_folder():
@@ -109,7 +123,7 @@ def move(src, dst, journal):
     """Moves src to dst (paths in the MSpektra folder) and writes it to the journal."""
     s, d = os.path.join(ROOT, src), os.path.join(ROOT, dst)
     os.makedirs(os.path.dirname(d), exist_ok=True)
-    os.replace(s, d)
+    replace(s, d)
     journal.append([src, dst])
     write_json(os.path.join(OLD, "journal.json"), journal)
 
@@ -123,7 +137,7 @@ def undo(journal):
                 os.makedirs(os.path.dirname(s), exist_ok=True)
                 if os.path.exists(s):  # (an unfinished move)
                     shutil.rmtree(s, ignore_errors=True) if os.path.isdir(s) else os.remove(s)
-                os.replace(d, s)
+                replace(d, s)
         except OSError as ex:
             log("undo failed:", src, ex)
 

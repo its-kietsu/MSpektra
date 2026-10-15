@@ -304,6 +304,9 @@ def _helper(args):
     """Starts update_apply.py from a copy in the temp folder (the files of _portable are replaced) with the
     Python of this folder, detached from MSpektra."""
     src = os.path.join(ROOT, "_portable", "update_apply.py")
+    new = os.path.join(STAGING, "_portable", "update_apply.py")
+    if not args and os.path.isfile(new):
+        src = new  # the installer of the version installed (its fixes apply to this update already); standard library only
     dst = os.path.join(tempfile.gettempdir(), "mspektra_update_%d.py" % os.getpid())
     shutil.copyfile(src, dst)
     pyw = os.path.join(ROOT, "python", "pythonw.exe")
