@@ -1,4 +1,4 @@
-MSpektra 4.34 - portable Windows package   (14.10.2026)
+MSpektra 4.35 - portable Windows package   (15.10.2026)
 ========================================================
 
 Analysis of LC-MS and HRMS data, with deconvolution:
@@ -29,6 +29,9 @@ build), plus the MSpektra add-ons in _portable. Nothing is installed on
 the computer, no admin rights are needed, and it does not touch or depend on
 Anaconda or any other Python on the PC.
 
+Requirements: 64-bit Windows 10 or 11 on an Intel (about 2009 or newer)
+or AMD (about 2011 or newer) processor.
+
 
 VERSION HISTORY
 ---------------
@@ -36,6 +39,16 @@ The version is shown on the start screen, in the help window (?) of LCMS
 and HRMS Analysis, and in the first line of each log file. It went up by
 0.1 with every update until 3.3. Since 3.31 a small change adds 0.01, a
 large change 0.1 and a big change 1.0.
+
+4.35 (15.10.2026)
+Works on new installs.
+* The Deconvolute window and the classic tools open again on copies
+  installed from the zip (a part of the Python libraries was left out
+  of the recent zips); copies installed from those zips are repaired
+  at the next start.
+* Thermo files with only MS2 scans (native MS on Orbitrap UHMR) open.
+* Resizing tiles or the file list shows one clean line while you drag
+  (no more trails of the blue line); the size changes when you let go.
 
 4.34 (14.10.2026)
 Smoother screen.

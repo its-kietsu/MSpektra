@@ -587,9 +587,37 @@ def _net(a):
     return out
 
 
+_ACTIVATION = {"HigherEnergyCollisionalDissociation": "HCD", "CollisionInducedDissociation": "CID",
+               "ElectronTransferDissociation": "ETD", "ElectronCaptureDissociation": "ECD",
+               "UltraVioletPhotoDissociation": "UVPD", "MultiPhotonDissociation": "MPD",
+               "SAactivation": "SA", "ProtonTransferReaction": "PTR",
+               "NegativeElectronTransferDissociation": "NETD"}
+
+
+def thermo_full_ms2(flt):
+    """Label ("FTMS ms2 HCD 70") of a Thermo full scan MS2 whose scan range
+    starts near the isolation centre (all ion activation, as on UHMR
+    instruments for native MS), else None (product ion scans of a window)."""
+    try:
+        if str(flt.MSOrder) != "Ms2" or str(flt.ScanMode) != "Full" or int(flt.MassCount) < 1:
+            return None
+        centre = float(flt.GetMass(0))
+        low = float(flt.GetMassRange(0).Low) if int(flt.MassRangeCount) else 0.0
+        if centre <= 0 or not (centre / 1.5 <= low <= 1.5 * centre):
+            return None
+        act = str(flt.GetActivation(0))
+        lab = "%s ms2 %s" % (str(flt.MassAnalyzer).replace("MassAnalyzer", ""), _ACTIVATION.get(act, act))
+        energy = float(flt.GetEnergy(0))
+        return lab + (" %g" % energy if energy > 0 else "")
+    except Exception:
+        return None
+
+
 class ThermoSource(Source):
     """Thermo .raw file, read with RawFileReader: the MS1 scans, one event per
-    polarity and mass analyzer (FTMS before ITMS) and SIM apart from full scans."""
+    polarity and mass analyzer (FTMS before ITMS) and SIM apart from full scans.
+    A file without MS1 gives its full scan MS2 (thermo_full_ms2), one event
+    per activation."""
     kind = "Thermo .raw"
     vendor = "Thermo"
 
@@ -606,21 +634,37 @@ class ThermoSource(Source):
         raw.SelectInstrument(Device.MS, 1)
         h = raw.RunHeaderEx
         rows, keys = [], []
+        ms2_rows, ms2_keys = [], []  # full scan MS2 (all ion activation): used when there is no MS1
         n_msms = 0
         for s in range(int(h.FirstSpectrum), int(h.LastSpectrum) + 1):
             flt = raw.GetFilterForScanNumber(s)
+            ms2 = None
             if str(flt.MSOrder) != "Ms":
                 n_msms += 1
-                continue
+                ms2 = None if rows else thermo_full_ms2(flt)
+                if ms2 is None:
+                    continue
             st = raw.GetScanStatsForScanNumber(s)
             pol = -1 if str(flt.Polarity) == "Negative" else 1
             ana = str(flt.MassAnalyzer).replace("MassAnalyzer", "")
             mode = str(flt.ScanMode)
-            keys.append((pol, 0 if ana == "FTMS" else 1, ana, mode))
-            rows.append([float(raw.RetentionTimeFromScanNumber(s)), pol, not bool(st.IsCentroidScan), None,
-                         float(st.LowMass), float(st.HighMass), float(st.TIC), float(st.BasePeakIntensity), s])
+            row = [float(raw.RetentionTimeFromScanNumber(s)), pol, not bool(st.IsCentroidScan), None,
+                   float(st.LowMass), float(st.HighMass), float(st.TIC), float(st.BasePeakIntensity), s]
+            if ms2 is None:
+                keys.append((pol, 0 if ana == "FTMS" else 1, ana, mode))
+                rows.append(row)
+            else:
+                ms2_keys.append((pol, 0 if ana == "FTMS" else 1, ms2))
+                ms2_rows.append(row)
+        if rows:
+            index, events = _events_by(keys, lambda key: key[2] + ("" if key[3] == "Full" else " " + key[3]))
+        else:
+            rows, keys = ms2_rows, ms2_keys
+            n_msms -= len(rows)
+            index, events = _events_by(keys, lambda key: key[2])
+            for key, e in index.items():
+                events[e]["label"] = "%s (%s)" % ("Positive" if key[0] > 0 else "Negative", key[2])
         self.n_msms = n_msms
-        index, events = _events_by(keys, lambda key: key[2] + ("" if key[3] == "Full" else " " + key[3]))
         for row, key in zip(rows, keys):
             row[3] = index[key]
         self._finish([tuple(x) for x in rows], events)

@@ -280,6 +280,24 @@ def _addon(label, func):
         print("%s could not be enabled:\n%s" % (label, traceback.format_exc()))
 
 
+def _repair_python():
+    """Release zips of 10.10.-15.10.2026 (4.25 to 4.34) left out python\\...\\networkx\\algorithms\\link_analysis
+    (the release builder skipped every folder named *_analysis), so unidec.GUniDec (the Deconvolute window) and
+    the classic tools could not be imported on new installs. Updates do not replace python\\, so the folder is
+    restored here from _portable\\repair\\ when it is missing."""
+    import zipfile
+    target = os.path.join(PYDIR, "Lib", "site-packages", "networkx", "algorithms")
+    src = os.path.join(ROOT, "_portable", "repair", "networkx_link_analysis.zip")
+    if not os.path.isdir(target) or os.path.isdir(os.path.join(target, "link_analysis")) or not os.path.isfile(src):
+        return
+    try:
+        with zipfile.ZipFile(src) as z:
+            z.extractall(target)
+        print("Restored", os.path.join(target, "link_analysis"))
+    except Exception as e:
+        print("Could not restore networkx link_analysis:", e)
+
+
 def main():
     t0 = time.perf_counter()
     if READONLY:
@@ -300,6 +318,7 @@ def main():
     _isolate_sys_path()
     _unblock_files()
     _apply_pending_updates()
+    _repair_python()
     _retire_old_launcher()
     _setup_environment()
     sys.path.insert(0, os.path.join(ROOT, "_portable"))

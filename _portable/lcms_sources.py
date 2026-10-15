@@ -140,7 +140,7 @@ def _event_labels(events):
     out = []
     for e, p in zip(events, pol):
         name = e.get("label") or ""
-        if p and pol.count(p) == 1:
+        if p and pol.count(p) == 1 and not e.get("named"):
             out.append(p)
         else:
             out.append(" ".join(x for x in (name, p) if x) or "Scans")
@@ -622,14 +622,18 @@ def read_thermo(path, progress=None):
             r.SelectInstrument(Dev.MS, 1)
             h = r.RunHeaderEx
             first, last = int(h.FirstSpectrum), int(h.LastSpectrum)
-            rows = []
+            from hrms_vendor import thermo_full_ms2
+            rows, ms2_rows = [], []  # full scan MS2 (all ion activation): used when there is no MS1
             for s in range(first, last + 1):
                 f = r.GetFilterForScanNumber(s)
+                ms2 = None
                 if int(f.MSOrder) != 1:
                     sc.n_msms += 1
-                    continue
+                    ms2 = None if rows else thermo_full_ms2(f)
+                    if ms2 is None:
+                        continue
                 pol = "+" if int(f.Polarity) == 1 else ("-" if int(f.Polarity) == 0 else None)
-                ana = str(f.MassAnalyzer).replace("MassAnalyzer", "")
+                ana = ms2 or str(f.MassAnalyzer).replace("MassAnalyzer", "")
                 st = r.GetScanStatsForScanNumber(s)
                 mz = it = None
                 if not st.IsCentroidScan:
@@ -639,15 +643,22 @@ def read_thermo(path, progress=None):
                 if mz is None:
                     seg = r.GetSegmentedScanFromScanNumber(s, st)
                     mz, it = _np(seg.Positions), _np(seg.Intensities)
-                rows.append((pol, ana, r.RetentionTimeFromScanNumber(s), mz, it, float(st.TIC),
-                             float(st.BasePeakIntensity), float(st.LowMass), float(st.HighMass)))
+                (rows if ms2 is None else ms2_rows).append((
+                    pol, ana, r.RetentionTimeFromScanNumber(s), mz, it, float(st.TIC),
+                    float(st.BasePeakIntensity), float(st.LowMass), float(st.HighMass)))
                 if progress is not None and s % 200 == 0:
                     progress(s - first, last - first + 1)
+            named = False
+            if not rows and ms2_rows:
+                rows, named = ms2_rows, True
+                sc.n_msms -= len(rows)
             anas = set(r_[1] for r_ in rows)
             for pol, ana, rt, mz, it, tic, bpc, lo, hi in rows:
                 key = (pol, ana)
                 if key not in keys:
-                    keys[key] = sc.add_event(pol, ana if len(anas) > 1 else "", lo, hi)
+                    keys[key] = sc.add_event(pol, ana if named or len(anas) > 1 else "", lo, hi)
+                    if named:
+                        sc.events[keys[key]]["named"] = True  # label shown even with one event
                 e = sc.events[keys[key]]
                 e["mz_low"], e["mz_high"] = min(e["mz_low"], lo), max(e["mz_high"], hi)
                 sc.add(keys[key], rt, mz, it, tic, bpc)

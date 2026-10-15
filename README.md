@@ -10,6 +10,10 @@ Windows program for LC-MS and HRMS analysis with deconvolution.
 
 Get `MSpektra-<version>.zip` from [Releases](../../releases), extract it to a short folder path (for example the Desktop) and start `MSpektra.exe`. Nothing is installed; the zip includes its own Python. See `README.txt` for the manual.
 
+Use the `MSpektra-<version>.zip` file, not "Source code" or the green Code button: those hold only the sources, without the Python runtime the program needs.
+
+Requirements: 64-bit Windows 10 or 11 on an Intel (about 2009 or newer) or AMD (about 2011 or newer) processor.
+
 From 4.26 on, MSpektra tells you when a new version is out and updates itself with one click.
 
 ## Deconvolution engine: UniDec

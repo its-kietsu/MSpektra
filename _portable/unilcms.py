@@ -2763,6 +2763,34 @@ def _at_once(method):
     return run
 
 
+class DragGuide(wx.PopupWindow):
+    """The blue line shown while a gap or an edge is dragged. A window of its own on top (not a child of the
+    view): moved fast, a child line left copies of itself on the plots below it until they were drawn again."""
+
+    def __init__(self, owner):
+        wx.PopupWindow.__init__(self, owner.GetTopLevelParent(), wx.BORDER_NONE)
+        self.owner = owner
+        self.SetBackgroundColour(wx.Colour(C["accent"]))
+
+    def place(self, x, y, w, h):
+        """At x, y, w, h of the owner's client area, cut to the part of the owner shown on the screen."""
+        r = wx.Rect(self.owner.ClientToScreen(wx.Point(int(x), int(y))), wx.Size(max(int(w), 1), max(int(h), 1)))
+        win = self.owner
+        while win is not None:
+            cw, ch = win.GetClientSize()
+            r = r.Intersect(wx.Rect(win.ClientToScreen(wx.Point(0, 0)), wx.Size(cw, ch)))
+            if win.IsTopLevel():
+                break
+            win = win.GetParent()
+        if r.width <= 0 or r.height <= 0:
+            self.Hide()
+            return
+        self.SetSize(r)
+        if not self.IsShown():
+            self.Show()
+        self.Update()
+
+
 class SplitBox(wx.Panel):
     """Panes in a column (or a row) separated by gaps. Drag a gap to resize
     the two panes next to it; a blue guide shows the new position and the
@@ -2875,8 +2903,7 @@ class SplitBox(wx.Panel):
         if not self.HasCapture():
             self.CaptureMouse()
         w, h = self.GetClientSize()
-        self._guide = wx.Panel(self, style=wx.BORDER_NONE)
-        self._guide.SetBackgroundColour(wx.Colour(C["accent"]))
+        self._guide = DragGuide(self)
         self._move_guide(0)
 
     def _new_sizes(self, delta):
@@ -2895,10 +2922,9 @@ class SplitBox(wx.Panel):
         t = max(2, self.FromDIP(3))
         mid = start + (self.gap - t) // 2
         if self._vertical():
-            self._guide.SetSize(0, mid, w, t)
+            self._guide.place(0, mid, w, t)
         else:
-            self._guide.SetSize(mid, 0, t, h)
-        self._guide.Raise()
+            self._guide.place(mid, 0, t, h)
 
     def _motion(self, e):
         c = self._coord(e)
@@ -3188,8 +3214,7 @@ class StackBox(wx.Panel):
         self._drag = (i, e.GetY(), self.heights())
         if not self.HasCapture():
             self.CaptureMouse()
-        self._guide = wx.Panel(self, style=wx.BORDER_NONE)
-        self._guide.SetBackgroundColour(wx.Colour(C["accent"]))
+        self._guide = DragGuide(self)
         self._move_guide(0)
 
     def _dclick(self, e):
@@ -3209,8 +3234,7 @@ class StackBox(wx.Panel):
         i, c0, hs = self._drag
         top = sum(hs[:i]) + self.gap * i
         t = max(2, self.FromDIP(3))
-        self._guide.SetSize(0, top + self._new_height(delta) + (self.gap - t) // 2, self.GetClientSize()[0], t)
-        self._guide.Raise()
+        self._guide.place(0, top + self._new_height(delta) + (self.gap - t) // 2, self.GetClientSize()[0], t)
 
     def _motion(self, e):
         if self._drag is not None:
@@ -6211,6 +6235,7 @@ class FilesPanel(wx.Panel):
         self.nsel = None  # key of the trace or spectrum clicked last
         self._acting = False  # a change made here (the cursor stays) rather than elsewhere
         self._drag = None  # (mouse x on the screen, width) while the right edge is dragged
+        self._guide = None  # the line at the new width while dragging (the width is set when released)
         self._tree_due = False
         self.folder, self.fitems, self._fsig, self._info = "", [], None, {}
         st = settings()
@@ -6341,21 +6366,23 @@ class FilesPanel(wx.Panel):
     # geometry
     def _apply_width(self):
         """Width: the one dragged (at most 45 % of the window), 24 DIP when folded; True when it changed."""
-        if self.collapsed:
-            w = self.FromDIP(24)
-        else:
-            w = self.FromDIP(self.width_dip)
-            try:
-                fw = wx.GetTopLevelParent(self).GetClientSize()[0]
-                if fw > 200:
-                    w = min(w, int(fw * 0.45))
-            except Exception:
-                pass
+        w = self.FromDIP(24) if self.collapsed else self._px_width(self.width_dip)
         if self.GetMinSize().width == w and self.GetSize()[0] == w:
             return False
         self.SetMinSize(wx.Size(w, -1))
         self.SetSize(wx.Size(w, self.GetSize()[1]))
         return True
+
+    def _px_width(self, wd):
+        """Pixels of a width in DIP, at most 45 % of the window."""
+        w = self.FromDIP(wd)
+        try:
+            fw = wx.GetTopLevelParent(self).GetClientSize()[0]
+            if fw > 200:
+                w = min(w, int(fw * 0.45))
+        except Exception:
+            pass
+        return w
 
     def rows(self):
         return [d for d in self.frame.docs if d.path or d.loading]
@@ -6911,12 +6938,8 @@ class FilesPanel(wx.Panel):
             x0, w0 = self._drag
             sx = self.ClientToScreen(e.GetPosition()).x
             wd = int(round(self.ToDIP(w0 + sx - x0)))
-            wd = min(max(wd, self.WIDTH_MIN), self.WIDTH_MAX)
-            if wd != self.width_dip:
-                self.width_dip = wd
-                if self._apply_width():
-                    self.GetParent().Layout()
-                self.Refresh()
+            self._drag_w = min(max(wd, self.WIDTH_MIN), self.WIDTH_MAX)
+            self._place_guide()
             return
         kind, v = self._hit(e.GetPosition())
         self.SetCursor(wx.Cursor(wx.CURSOR_SIZEWE if kind == "grip" else wx.CURSOR_ARROW))
@@ -6988,12 +7011,27 @@ class FilesPanel(wx.Panel):
             self.hover, self.hover_x, self.hover_part = -1, False, None
             self.Refresh()
 
+    def _place_guide(self):
+        par = self.GetParent()
+        if self._guide is None:
+            self._guide = DragGuide(par)
+        t = max(2, self.FromDIP(3))
+        x, y = self.GetPosition()
+        self._guide.place(x + self._px_width(self._drag_w) - t, y, t, self.GetSize()[1])
+
     def _end_drag(self):
         if self._drag is None:
             return
         self._drag = None
         if self.HasCapture():
             self.ReleaseMouse()
+        if self._guide is not None:
+            self._guide.Destroy()
+            self._guide = None
+        if self._drag_w != self.width_dip:
+            self.width_dip = self._drag_w
+            if self._apply_width():
+                self.GetParent().Layout()
         T._save({"files_width": int(self.width_dip)})
         self.Refresh()
 
@@ -7003,6 +7041,7 @@ class FilesPanel(wx.Panel):
     def _click(self, e):
         if self._on_grip(e.GetPosition()):  # the right edge: dragged to a new width
             self._drag = (self.ClientToScreen(e.GetPosition()).x, self.GetSize()[0])
+            self._drag_w = self.width_dip
             self.CaptureMouse()
             self.Refresh()
             return
