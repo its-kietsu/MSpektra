@@ -1,4 +1,4 @@
-MSpektra 4.35 - portable Windows package   (15.10.2026)
+MSpektra 4.36 - portable Windows package   (15.10.2026)
 ========================================================
 
 Analysis of LC-MS and HRMS data, with deconvolution:
@@ -39,6 +39,19 @@ The version is shown on the start screen, in the help window (?) of LCMS
 and HRMS Analysis, and in the first line of each log file. It went up by
 0.1 with every update until 3.3. Since 3.31 a small change adds 0.01, a
 large change 0.1 and a big change 1.0.
+
+4.36 (15.10.2026)
+Better maximum entropy.
+* Maximum entropy gives truer amounts: species with different charges are
+  no longer weighted by their charge (a protein next to its complex, or
+  proteins of different size, were off by up to 20 times), and mixtures
+  of different proteins are fitted better.
+* Maximum entropy keeps small species next to large ones (for example a
+  monomer next to its complex, or a half antibody next to the antibody).
+* Maximum entropy gives the same result when the settings change a
+  little; it is also faster, about 1.3 times.
+* Masses are as before. The maximum entropy of 4.35 can still be used:
+  "maxent_engine": "4.35" in the settings file.
 
 4.35 (15.10.2026)
 Works on new installs.

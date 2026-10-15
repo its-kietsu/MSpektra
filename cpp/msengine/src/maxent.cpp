@@ -77,6 +77,7 @@
 #include <cstdint>
 #include <memory>
 #include <chrono>
+#include <atomic>
 #if defined(__x86_64__) || defined(__i386__)
 #include <xmmintrin.h>
 #endif
@@ -383,6 +384,28 @@ struct Model {
     static constexpr size_t NBLK = 60;
     std::vector<size_t> b_j, b_r0, b_r1, b_p;
     std::vector<double> part;
+    // EXPERIMENT (with MS_MEMSYS): the parts of the forward product by block and charge, over the rows that charge
+    // reaches from the block (a block of masses lands in one narrow window per charge): window (b, k) is rows
+    // w_r0 .. w_r1 - 1 at part_w[w_off]
+    bool windowed = false;
+    std::vector<size_t> w_r0, w_r1, w_off;
+    std::vector<double> part_w;
+    void make_windows() {
+        const size_t nb = b_r0.size();
+        w_r0.assign(nb * K, 0); w_r1.assign(nb * K, 0); w_off.assign(nb * K + 1, 0);
+        pblocks(nb, [&](size_t b) {
+            for (size_t j = b_j[b]; j < b_j[b + 1]; j++)
+                for (size_t p = m_off[j]; p < m_off[j + 1]; p++) {
+                    if (ent[p].wh < 0) continue;
+                    const size_t q = b * K + m_k0[j] + (p - m_off[j]), i = (size_t)ent[p].i;
+                    if (w_r1[q] == 0) { w_r0[q] = i; w_r1[q] = i + 2; }
+                    else { w_r0[q] = std::min(w_r0[q], i); w_r1[q] = std::max(w_r1[q], i + 2); }
+                }
+        });
+        for (size_t q = 0; q < nb * K; q++) w_off[q + 1] = w_off[q] + (w_r1[q] - w_r0[q]);
+        part_w.assign(w_off[nb * K], 0.0);
+        windowed = true;
+    }
     // The entries again for the two products, 5 bytes each (they are bound by the memory speed): the weight and
     // the step in grid rows from the entry of the same charge at the mass before (255: the row is the next one
     // of x_row, for the first entry of a charge in a block and for larger steps). b_row[b K + k]: the row of
@@ -471,12 +494,18 @@ struct Model {
         coord_cp = coord; uselog = log; adduct = a; charges_cp = charges;
         const size_t nm = masses.size();
         std::vector<char> active(nm, 0);
-        // the masses inside the grid at charge k (positions increase with the mass): fn(j, i0, w1, ok), ok false
-        // across a gap
-        auto walk = [&](int k, auto&& fn) {
+        // the masses ja .. jb - 1 inside the grid at charge k (positions increase with the mass): fn(j, i0, w1, ok),
+        // ok false across a gap. The lower grid point of the first mass by a search, then by a cursor (the same
+        // point a cursor from the first mass finds: a part of the masses can be walked on each core)
+        auto walk = [&](int k, size_t ja, size_t jb, auto&& fn) {
             const double z = charges[k];
             long i0 = -1;
-            for (size_t j = 0; j < nm; j++) {
+            if (ja < jb) {
+                double pos = (masses[ja] + z * a) / z;
+                if (log) pos = std::log(std::max(pos, 1e-9));
+                i0 = (long)(std::upper_bound(coord.begin(), coord.end(), pos) - coord.begin()) - 1;
+            }
+            for (size_t j = ja; j < jb; j++) {
                 double pos = (masses[j] + z * a) / z;
                 if (log) pos = std::log(std::max(pos, 1e-9));
                 while (i0 + 1 < (long)n && coord[i0 + 1] <= pos) i0++;
@@ -492,15 +521,25 @@ struct Model {
         std::vector<uint16_t> kmin(nm, 0xffff), kmax(nm, 0);
         nnz = 0;
         size_t ne_max = 0;
-        for (int k = 0; k < K; k++) {
-            bool first = true;
-            walk(k, [&](size_t j, size_t, double, bool ok) {
-                if (first) { m_lo[k] = j; first = false; }
-                m_hi[k] = j + 1;
-                if (kmin[j] == 0xffff) kmin[j] = (uint16_t)k;
-                kmax[j] = (uint16_t)k;
-                if (ok) { active[j] = 1; nnz += 2; }
+        for (int k = 0; k < K; k++) {   // each core a part of the masses (each mass is written by one)
+            std::atomic<size_t> lo_k{SIZE_MAX}, hi_k{0}, nz{0};
+            parallel_range(nm, [&](size_t ja, size_t jb) {
+                size_t first = SIZE_MAX, last = 0, cnt = 0;
+                walk(k, ja, jb, [&](size_t j, size_t, double, bool ok) {
+                    if (first == SIZE_MAX) first = j;
+                    last = j + 1;
+                    if (kmin[j] == 0xffff) kmin[j] = (uint16_t)k;
+                    kmax[j] = (uint16_t)k;
+                    if (ok) { active[j] = 1; cnt += 2; }
+                });
+                if (first != SIZE_MAX) {
+                    for (size_t v = lo_k.load(); first < v && !lo_k.compare_exchange_weak(v, first);) {}
+                    for (size_t v = hi_k.load(); last > v && !hi_k.compare_exchange_weak(v, last);) {}
+                }
+                nz += cnt;
             });
+            if (lo_k.load() != SIZE_MAX) { m_lo[k] = lo_k.load(); m_hi[k] = hi_k.load(); }
+            nnz += nz.load();
             ne_max += m_hi[k] - m_lo[k];
         }
         std::vector<int> colmap(nm, -1);
@@ -533,11 +572,13 @@ struct Model {
         ent.assign(m_off[na], Entry{0, -1.0f});
         // pass 2: fill (every charge of an active mass is met)
         for (int k = 0; k < K; k++)
-            walk(k, [&](size_t j, size_t i0, double w1, bool ok) {
-                if (!active[j]) return;
-                Entry& e = ent[m_off[colmap[j]] + (size_t)(k - kmin[j])];
-                e.i = (int32_t)i0;
-                e.wh = ok ? (float)w1 : -1.0f;
+            parallel_range(nm, [&](size_t ja, size_t jb) {
+                walk(k, ja, jb, [&](size_t j, size_t i0, double w1, bool ok) {
+                    if (!active[j]) return;
+                    Entry& e = ent[m_off[colmap[j]] + (size_t)(k - kmin[j])];
+                    e.i = (int32_t)i0;
+                    e.wh = ok ? (float)w1 : -1.0f;
+                });
             });
         // the mass blocks: about equal entries each, and the grid rows each reaches
         const size_t ne = ent.size();
@@ -603,6 +644,7 @@ struct Model {
     // m/z spectrum (grid) of the masses f with the envelope
     void forward(const double* f, double* out) {
         Timed tm(T_FORWARD);
+        if (windowed) { forward_windowed(f, out); return; }
         // each mass block its own part of the grid rows (masses in order, each by charge); then the parts are added
         // in block order
         const size_t nb = b_r0.size();
@@ -638,6 +680,53 @@ struct Model {
             for (size_t q = 0; q < nb; q++) {
                 const size_t lo = std::max(a, b_r0[q]), hi = std::min(b, b_r1[q]);
                 const double* P = part.data() + b_p[q] - b_r0[q];
+                for (size_t i = lo; i < hi; i++) t[i] += P[i];
+            }
+        });
+        blur.apply(tmp.data(), out, n);
+    }
+
+    void forward_windowed(const double* f, double* out) {
+        const size_t nb = b_r0.size();
+        pblocks(nb, [&](size_t b) {
+            std::vector<double*> Pk(K);
+            for (int k = 0; k < K; k++) {
+                const size_t q = b * K + k;
+                double* P = part_w.data() + w_off[q];
+                std::fill(P, P + (w_r1[q] - w_r0[q]), 0.0);
+                Pk[k] = P - w_r0[q];
+            }
+            std::vector<int32_t> cur(b_row.begin() + b * K, b_row.begin() + (b + 1) * K);
+            const int32_t* xr = x_row.data() + b_x[b];
+            for (size_t j = b_j[b]; j < b_j[b + 1]; j++) {
+                const double fj = f[j], tj = nt[j];
+                const double* c0 = C.data() + (size_t)nq[j] * K;
+                const float* w = c_w.data() + m_off[j];
+                const uint8_t* st = c_d.data() + m_off[j];
+                const int k0 = m_k0[j], ne = (int)(m_off[j + 1] - m_off[j]);
+                int32_t* cu = cur.data() + k0;
+                for (int c = 0; c < ne; c++) {
+                    const int32_t row = st[c] == 255 ? *xr++ : cu[c] + st[c];
+                    cu[c] = row;
+                    const double wh = w[c];
+                    if (wh < 0) continue;
+                    const int k = k0 + c;
+                    const double ce = c0[k] + tj * (c0[K + k] - c0[k]);
+                    double* P = Pk[k];
+                    P[row] += ce * (1.0 - wh) * fj;
+                    P[row + 1] += ce * wh * fj;
+                }
+            }
+        });
+        // the windows added up in a fixed order (block, then charge)
+        const size_t nw = nb * K;
+        parallel_range(n, [&](size_t a, size_t b) {
+            double* t = tmp.data();
+            std::fill(t + a, t + b, 0.0);
+            for (size_t q = 0; q < nw; q++) {
+                const size_t lo = std::max(a, w_r0[q]), hi = std::min(b, w_r1[q]);
+                if (hi <= lo) continue;
+                const double* P = part_w.data() + w_off[q] - w_r0[q];
                 for (size_t i = lo; i < hi; i++) t[i] += P[i];
             }
         });
@@ -899,9 +988,29 @@ std::vector<double> nnls_qp(const std::vector<double>& G, const std::vector<doub
     if (!(lam > 0)) return x;
     double lpen = 0;
     if (use_pen) for (double t : pen) lpen = std::max(lpen, t);
-    const double step = 1.0 / (1.05 * lam + 4.0 * (1.0 + ratio * ratio) * lpen);
+    // EXPERIMENT (MS_ME_RATIO2): a charge state's two neighbours *together* carry at least `ratio` of it,
+    // lam (max(0, r x_z - x_z-1 - x_z+1))^2: still no charge state alone, but a narrow native envelope
+    // (BSA: 36 %, 100 %, 24 %, 0.2 %) is allowed; the pairwise form forces 1/3 on every neighbour
+    static const bool ratio2 = getenv("MS_ME_RATIO2") != nullptr;
+    const double step = ratio2 ? 1.0 / (1.05 * lam + 6.0 * (2.0 + ratio * ratio) * lpen)
+                               : 1.0 / (1.05 * lam + 4.0 * (1.0 + ratio * ratio) * lpen);
     auto add_pen_grad = [&](const std::vector<double>& z, std::vector<double>& grad) {
         if (!use_pen) return;
+        if (ratio2) {
+            for (int q = 0; q < Q; q++)
+                for (int k = 0; k < K; k++) {
+                    const size_t i = (size_t)q * K + k;
+                    const double l = pen[(size_t)q * K + std::min(k, K - 2)];
+                    if (!(l > 0)) continue;
+                    const double nb = (k > 0 ? z[i - 1] : 0.0) + (k + 1 < K ? z[i + 1] : 0.0);
+                    const double d = std::max(0.0, ratio * z[i] - nb);
+                    if (d <= 0) continue;
+                    grad[i] += 2.0 * l * ratio * d;
+                    if (k > 0) grad[i - 1] -= 2.0 * l * d;
+                    if (k + 1 < K) grad[i + 1] -= 2.0 * l * d;
+                }
+            return;
+        }
         for (int q = 0; q < Q; q++)
             for (int k = 0; k + 1 < K; k++) {
                 const size_t i0 = (size_t)q * K + k, i1 = i0 + 1;
@@ -949,10 +1058,61 @@ std::vector<double> nnls_qp(const std::vector<double>& G, const std::vector<doub
 //    cannot explain a stretch of the spectrum with one charge alone. Weighted
 //    by the data curvature of the two charges, which makes the spike dearer
 //    than any fit it could buy.
+// EXPERIMENT (MS_ME_LAMLOCAL=w): the coupling of two neighbouring envelope nodes falls with their mass ratio,
+// lam_node x exp(-(ln(m1/m0) / w)^2): nodes of one protein's cluster (variants, adducts: a few % apart) stay tied,
+// unrelated proteins (29 against 148 kDa) get their own charge distributions. The caller sets the node masses.
+// The engine of a run (since 4.36). noise_model 0 (automatic): the engine of 4.36, found on the experiment/memsys
+// branch and frozen for the paper (commit 48e81f5): area output (each charge state divided by z, so species are not
+// weighted by their charge), the noise measured once on the data and kept (no re-estimation from the residuals),
+// chi2 over the points with signal (3 sd of their own noise), neighbour rule 0.2, charge envelopes coupled only
+// within a few % of mass, envelope nodes seeded where signal is unexplained, final pass by the Skilling-Bryan path
+// (hybrid solver). noise_model 1 or 4: the engine as in 4.35 (every one of these off); 2 and 3: the comparison noise
+// models of the 4.35 engine. The MS_* environment variables still override each part (development, benchmarks).
+struct MaxentOptions {
+    bool legacy = true;
+    int area = 0;              // 0 heights (4.35), 1 divided by z (signal), 2 by z^2 (ions on image-current detectors)
+    bool memsys = false, hybrid = false;
+    bool noise2 = false, fixnoise = false, snrmask = false, seednodes = false;
+    double ratio = -1;         // minimum neighbour ratio; < 0: the default of envelope_fit (0.33)
+    double lamlocal = 0, lamlocal0 = 0, lamend = 0;
+};
+static bool opt_flag(const char* name, bool dflt) {
+    const char* v = getenv(name);
+    return v ? std::strcmp(v, "0") != 0 : dflt;
+}
+static double opt_num(const char* name, double dflt) {
+    const char* v = getenv(name);
+    return v ? atof(v) : dflt;
+}
+static MaxentOptions maxent_options(bool legacy) {
+    MaxentOptions o;
+    o.legacy = legacy;
+    const bool n = !legacy;
+    o.area = (int)opt_num("MS_ME_AREA", n ? 1 : 0);
+    o.memsys = opt_flag("MS_MEMSYS", n);
+    o.hybrid = o.memsys && opt_flag("MS_MEMSYS_SAFE", n);
+    o.noise2 = opt_flag("MS_ME_NOISE2", n);
+    o.fixnoise = opt_flag("MS_ME_FIXNOISE", n);
+    o.snrmask = opt_flag("MS_ME_SNRMASK", n);
+    o.seednodes = opt_flag("MS_ME_SEEDNODES", n);
+    o.ratio = opt_num("MS_ME_RATIO", n ? 0.2 : -1.0);
+    o.lamlocal = opt_num("MS_ME_LAMLOCAL", n ? 0.03 : 0.0);
+    o.lamlocal0 = opt_num("MS_ME_LAMLOCAL0", n ? 0.03 : 0.0);
+    o.lamend = opt_num("MS_ME_LAMEND", n ? 1.0 : 0.0);
+    return o;
+}
+static thread_local const MaxentOptions* g_opt = nullptr;   // set by run_maxent for the functions it calls
+static const MaxentOptions& opt() {
+    static const MaxentOptions legacy_default;   // (a call outside a run: as 4.35)
+    return g_opt ? *g_opt : legacy_default;
+}
+static thread_local const std::vector<double>* g_env_node_mass = nullptr;
 std::vector<double> envelope_fit(std::vector<double> G, const std::vector<double>& b, int Q, int K, int zfirst,
                                  const std::vector<double>& warm, int smooth = 15, double lam_node = 0.1,
                                  double ratio = 0.33, double lam_ratio = 3.0) {
     Timed tm(T_ENVFIT);
+    if (const char* ln = getenv("MS_ME_LAMNODE")) lam_node = atof(ln);   // EXPERIMENT: coupling of neighbouring nodes
+    if (opt().ratio >= 0) ratio = opt().ratio;   // minimum neighbour ratio (4.36: 0.2)
     const int P = Q * K;
     double tr = 0;
     for (int p = 0; p < P; p++) tr += G[(size_t)p * P + p];
@@ -979,12 +1139,26 @@ std::vector<double> envelope_fit(std::vector<double> G, const std::vector<double
             }
     }
     if (Q > 1 && lam_node > 0) {
-        for (int q = 0; q + 1 < Q; q++)
+        const double wloc = opt().lamlocal;
+        for (int q = 0; q + 1 < Q; q++) {
+            double lq = lam_node;
+            if (wloc > 0 && g_env_node_mass && (int)g_env_node_mass->size() == Q) {
+                const double m0 = (*g_env_node_mass)[q], m1 = (*g_env_node_mass)[q + 1];
+                // MS_ME_LAMLOCAL0=w0: full coupling within w0 (one protein's family and its charge off-by-one
+                // ghosts, M (z-1)/z: a few %), falling over w beyond it
+                const double w0 = opt().lamlocal0;
+                if (m0 > 0 && m1 > 0) { const double t = std::max(0.0, std::fabs(std::log(m1 / m0)) - w0) / wloc; lq = lam_node * std::exp(-t * t); }
+                // MS_ME_LAMEND=f: the two ends of the mass range carry no species; their nodes keep at least f of
+                // the coupling (a free envelope there fits the noise as a broad floor)
+                const double fend = opt().lamend;
+                if (q == 0 || q + 2 == Q) lq = std::max(lq, fend * lam_node);
+            }
             for (int k = 0; k < K; k++) {
                 const size_t i0 = (size_t)q * K + k, i1 = i0 + K;
-                G[i0 * P + i0] += lam_node * scale; G[i1 * P + i1] += lam_node * scale;
-                G[i0 * P + i1] -= lam_node * scale; G[i1 * P + i0] -= lam_node * scale;
+                G[i0 * P + i0] += lq * scale; G[i1 * P + i1] += lq * scale;
+                G[i0 * P + i1] -= lq * scale; G[i1 * P + i0] -= lq * scale;
             }
+        }
     }
     double dmax = 0;
     for (int p = 0; p < P; p++) dmax = std::max(dmax, G[(size_t)p * P + p]);
@@ -1701,13 +1875,27 @@ bool noise_from_data(const ms::e2::Spec& s, const std::vector<char>& keep, doubl
     const size_t W = n >= 4000 ? 16 : 8;
     if (n < 20 * W || !(scale > 0)) return false;
     std::vector<double> mw, vw, d2;
+    // EXPERIMENT (MS_ME_NOISE2): windows may hold zeros (up to half: counting data of a single quadrupole has them
+    // between the ions), and the median based scatter is scaled by the tail factor of the quiet half of the spectrum
+    // (mean square against median based scatter: 1 for Gaussian noise, 5 to 100 for spiky data, whose variance the
+    // median does not see)
+    const bool noise2 = opt().noise2;
+    // windows with zeros only when too few windows are free of them (counting data); where zeros come from a
+    // threshold (a clipped baseline) the windows without zeros measure the noise and the others would bias it
+    std::vector<double> t_mean, t_ms, t_md;
+    bool used_zeros = false;
+    for (int zpass = 0; zpass < (noise2 ? 2 : 1); zpass++) {
+    used_zeros = zpass == 1;
+    if (zpass == 1) { if (mw.size() >= 40) break; mw.clear(); vw.clear(); t_mean.clear(); t_ms.clear(); t_md.clear(); }
+    const bool allow_zeros = zpass == 1;
     for (size_t a = 0; a + W <= n; a += W) {
-        bool ok = true; double mean = 0;
+        bool ok = true; double mean = 0; size_t zeros = 0;
         for (size_t i = a; i < a + W; i++) {
-            if ((!keep.empty() && !keep[i]) || !(s.y[i] > 0)) { ok = false; break; }
+            if (!keep.empty() && !keep[i]) { ok = false; break; }
+            if (!(s.y[i] > 0)) { if (!allow_zeros) { ok = false; break; } zeros++; }
             mean += s.y[i];
         }
-        if (!ok) continue;
+        if (!ok || (allow_zeros && (2 * zeros > W || !(mean > 0)))) continue;
         mean /= W;
         d2.clear();
         for (size_t i = a + 1; i + 1 < a + W; i++) d2.push_back(s.y[i - 1] - 2.0 * s.y[i] + s.y[i + 1]);
@@ -1718,8 +1906,10 @@ bool noise_from_data(const ms::e2::Spec& s, const std::vector<char>& keep, doubl
         double rms = 0;
         for (double v : d2) rms += v * v;
         rms = std::sqrt(rms / d2.size() / 6.0);
+        if (noise2 && sd > 0) { t_mean.push_back(mean); t_ms.push_back(rms * rms); t_md.push_back(sd * sd); }
         if (!(sd > 0) || rms > 2.5 * sd) continue;   // a peak inside the window
         mw.push_back(mean); vw.push_back(sd * sd);
+    }
     }
     if (mw.size() < 40) return false;
     std::vector<size_t> order(mw.size());
@@ -1742,6 +1932,15 @@ bool noise_from_data(const ms::e2::Spec& s, const std::vector<char>& keep, doubl
     for (size_t i = 0; i < bm.size(); i++) wt[i] = bw[i] / std::max(bv[i] * bv[i], 1e-300);
     std::vector<double> ab = nnls_tiny(basis, bv, wt, (int)bm.size(), 2);
     if (!(ab[0] >= 0) || !(ab[1] >= 0)) return false;
+    if (noise2 && t_mean.size() >= 40) {
+        std::vector<double> sm = t_mean;
+        const double mmed = ms::e2::median(sm);
+        std::vector<double> a1, b1;
+        for (size_t i = 0; i < t_mean.size(); i++) if (t_mean[i] <= mmed) { a1.push_back(t_ms[i]); b1.push_back(t_md[i]); }
+        const double T = std::min(1000.0, std::max(1.0, ms::e2::median(a1) / std::max(ms::e2::median(b1), 1e-300)));
+        ab[0] *= T; ab[1] *= T;
+        if (getenv("MS_DEBUG")) fprintf(stderr, "  noise from data: tail factor %.3g, floor %.3g, per intensity %.3g (raw units)\n", T, std::sqrt(ab[0]), ab[1]);
+    }
     const double F = (d_mz > 0 && dx_raw > 0) ? std::min(2.0 / 3.0, dx_raw / d_mz) : 2.0 / 3.0;
     nm.s0 = std::sqrt(F * ab[0]) / scale;
     nm.ginv = F * ab[1] / scale;
@@ -1872,6 +2071,45 @@ struct AlphaSearch {
     }
 };
 
+// EXPERIMENT (MS_MEMSYS): eigenvalues and vectors of a small symmetric matrix (Jacobi rotations; n <= 8):
+// A (n x n, row major) -> ev (ascending order not kept), V (columns: the vectors, row major n x n)
+static void small_eigen(std::vector<double> A, int n, std::vector<double>& ev, std::vector<double>& V) {
+    V.assign((size_t)n * n, 0.0);
+    for (int i = 0; i < n; i++) V[(size_t)i * n + i] = 1.0;
+    for (int sweep = 0; sweep < 100; sweep++) {
+        double off = 0;
+        for (int i = 0; i < n; i++)
+            for (int j = i + 1; j < n; j++) off += A[(size_t)i * n + j] * A[(size_t)i * n + j];
+        if (off < 1e-30) break;
+        for (int p = 0; p < n; p++)
+            for (int q = p + 1; q < n; q++) {
+                double apq = A[(size_t)p * n + q];
+                if (std::fabs(apq) < 1e-300) continue;
+                double app = A[(size_t)p * n + p], aqq = A[(size_t)q * n + q];
+                double th = 0.5 * (aqq - app) / apq;
+                double t = (th >= 0 ? 1.0 : -1.0) / (std::fabs(th) + std::sqrt(th * th + 1.0));
+                double c = 1.0 / std::sqrt(t * t + 1.0), s = t * c;
+                for (int k = 0; k < n; k++) {   // A <- J' A J
+                    double akp = A[(size_t)k * n + p], akq = A[(size_t)k * n + q];
+                    A[(size_t)k * n + p] = c * akp - s * akq;
+                    A[(size_t)k * n + q] = s * akp + c * akq;
+                }
+                for (int k = 0; k < n; k++) {
+                    double apk = A[(size_t)p * n + k], aqk = A[(size_t)q * n + k];
+                    A[(size_t)p * n + k] = c * apk - s * aqk;
+                    A[(size_t)q * n + k] = s * apk + c * aqk;
+                }
+                for (int k = 0; k < n; k++) {
+                    double vkp = V[(size_t)k * n + p], vkq = V[(size_t)k * n + q];
+                    V[(size_t)k * n + p] = c * vkp - s * vkq;
+                    V[(size_t)k * n + q] = s * vkp + c * vkq;
+                }
+            }
+    }
+    ev.resize(n);
+    for (int i = 0; i < n; i++) ev[i] = A[(size_t)i * n + i];
+}
+
 // ============================================================ driver
 void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_params& p, ms_maxent_result& out,
                 ms_progress_fn cb, void* user) {
@@ -1916,7 +2154,15 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
     int min_rounds = p.min_rounds > 0 ? p.min_rounds : 4;
     if (p.rounds < 0 || p.iterations < 0 || p.min_rounds < 0) throw std::invalid_argument("rounds must be a positive whole number");
     if (!std::isfinite(p.peak_width) || p.peak_width < 0) throw std::invalid_argument("peak_width must be finite and non-negative");
+    // noise_model 0: the 4.36 engine; 1 or 4: as in 4.35 (floor + counting, re-estimated); 2, 3: comparison models
+    const bool legacy = p.noise_model != 0;
     const int noise_kind = p.noise_model >= 0 && p.noise_model <= 3 ? p.noise_model : 0;
+    const MaxentOptions run_opt = maxent_options(legacy);
+    struct OptScope {
+        const MaxentOptions* prev;
+        explicit OptScope(const MaxentOptions* o) : prev(g_opt) { g_opt = o; }
+        ~OptScope() { g_opt = prev; }
+    } opt_scope(&run_opt);
     const double chi2_target = p.chi2_target > 0 && std::isfinite(p.chi2_target) ? p.chi2_target : 1.0;
     if (p.envelope_nodes < 0 || p.envelope_nodes > 64) throw std::invalid_argument("envelope_nodes must be between 0 (automatic) and 64");
 
@@ -2133,10 +2379,37 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
         double d_mz = use_log ? d * median(grid) : d;
         bool ok = noise_kind != 2 && noise_from_data(spec, thr > 0 ? keep : std::vector<char>(), scale, dx_raw, d_mz, noise);
         if (!ok) { noise.s0 = noise_old; noise.ginv = 0; noise.eps = 0; noise.from_data = false; }
+        // EXPERIMENT (MS_ME_NOISE="a,b"): the noise measured outside, from the scan to scan variance of the averaged
+        // scans (independent of any fit): variance of one averaged raw point = a + b y (raw intensity units),
+        // converted to the grid as noise_from_data converts its own estimate
+        if (const char* ev = getenv("MS_ME_NOISE")) {
+            double va = 0, vb = 0;
+            if (sscanf(ev, "%lf,%lf", &va, &vb) == 2 && va >= 0 && vb >= 0) {
+                const double F = (d_mz > 0 && dx_raw > 0) ? std::min(2.0 / 3.0, dx_raw / d_mz) : 2.0 / 3.0;
+                noise.s0 = std::sqrt(F * va) / scale; noise.ginv = F * vb / scale; noise.eps = 0; noise.F = F;
+                noise.from_data = true;
+                if (debug) fprintf(stderr, "  noise from outside: s0 %.4g, 1/g %.4g (grid units, F %.3g)\n", noise.s0, noise.ginv, F);
+            }
+        }
         if (noise_kind == 2) noise.s0 = std::max(noise_old, 2e-3);
         else noise.s0 = std::max(noise.s0, 1e-4);
     }
     const NoiseModel noise_data = noise;   // lower bounds for the re-estimation
+    // EXPERIMENT (MS_ME_KAPPA): instead of the re-estimation from the residuals binned by intensity, the noise measured
+    // on the data (floor, counting term) plus a model-error term (kappa y)^2, kappa = 1.4826 x the median of
+    // |residual| / intensity over the points above a tenth of the largest intensity (the peak shape, adducts and
+    // isotopes the model does not have: its error grows with the signal, it is not noise)
+    const bool kappa_mode = getenv("MS_ME_KAPPA") != nullptr;
+    auto kappa_noise = [&](const std::vector<double>& yb, const std::vector<double>& r) {
+        NoiseModel nm = noise_data;
+        double ymax = 0;
+        for (size_t i = 0; i < yb.size(); i++) ymax = std::max(ymax, yb[i]);
+        std::vector<double> rel;
+        for (size_t i = 0; i < yb.size(); i++) if (yb[i] >= 0.1 * ymax && yb[i] > 0) rel.push_back(std::fabs(r[i]) / yb[i]);
+        if (rel.size() >= 10) nm.eps = 1.4826 * median(rel);
+        if (getenv("MS_ME_KAPPA_SCALE")) nm.eps *= atof(getenv("MS_ME_KAPPA_SCALE"));
+        return nm;
+    };
     // weights 1 / sigma_i^2 with the variance of the larger of the data and the
     // fit of the previous round (Pearson's form): where the model has intensity
     // but the data none, e.g. on the flanks of a peak whose shape is not the
@@ -2157,7 +2430,11 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
     // most of the grid is empty baseline, which would make the average chi
     // squared look fine while weak peaks are not fitted yet
     std::vector<char> signal(ng, 0);
-    for (size_t i = 0; i < ng; i++) signal[i] = ybar[i] > 3.0 * noise.s0;
+    // EXPERIMENT (MS_ME_SNRMASK): a point has signal when its intensity is 3 sd of its own noise above zero (floor
+    // and counting term): with counting noise most of a spectrum is weak baseline that an empty result fits within
+    // its noise, and the average over those points would stop the search before any peak is fitted
+    const bool snrmask = opt().snrmask;
+    for (size_t i = 0; i < ng; i++) signal[i] = snrmask ? ybar[i] > 3.0 * std::sqrt(noise.var(ybar[i])) : ybar[i] > 3.0 * noise.s0;
     dilate(signal, std::max(1L, (long)(3 * model.sig)));
     long n_sig = 0;
     for (char s : signal) n_sig += s;
@@ -2209,7 +2486,28 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
     // one envelope refit: weighted NNLS at the nodes, then one common scale moved into f
     auto refit_envelope = [&]() {
         model.node_normal(f.data(), y.data(), w.data(), G, bvec);
-        std::vector<double> cn = envelope_fit(G, bvec, model.Q, K, charges.front(), model.envelope());
+        g_env_node_mass = &model.node_mass;
+        const std::vector<double> prev = model.envelope();
+        std::vector<double> cn = envelope_fit(G, bvec, model.Q, K, charges.front(), prev);
+        g_env_node_mass = nullptr;
+        // EXPERIMENT (MS_ME_SEEDNODES): a node whose masses carry (almost) no intensity yet has nothing to fit its
+        // envelope to; it keeps the envelope it had (a seed node's start from the data), rescaled with the others
+        const bool keep_unsupported = opt().seednodes;
+        if (keep_unsupported && model.Q > 1) {
+            const size_t P = (size_t)model.Q * K;
+            std::vector<double> sup(model.Q, 0.0);
+            double smax = 0;
+            for (int q = 0; q < model.Q; q++) {
+                for (int k = 0; k < K; k++) sup[q] += G[((size_t)q * K + k) * P + (size_t)q * K + k];
+                smax = std::max(smax, sup[q]);
+            }
+            double an = 0, ap = 0;
+            for (int q = 0; q < model.Q; q++)
+                if (sup[q] >= 1e-4 * smax) for (int k = 0; k < K; k++) { an += cn[(size_t)q * K + k]; ap += prev[(size_t)q * K + k]; }
+            const double rs = ap > 0 ? an / ap : 1.0;
+            for (int q = 0; q < model.Q; q++)
+                if (sup[q] < 1e-4 * smax) for (int k = 0; k < K; k++) cn[(size_t)q * K + k] = rs * prev[(size_t)q * K + k];
+        }
         double s = 0;
         for (double v : cn) s += v;
         s /= model.Q;
@@ -2223,7 +2521,9 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
     // envelope nodes at the species found so far (automatic mode): the ends of the
     // mass range plus the local maxima of the smoothed mass intensity above 1 % of
     // the largest, at least 2 % apart in mass, at most 10 (and within the cost cap)
+    std::vector<double> seed_used;   // EXPERIMENT (MS_ME_SEEDNODES): nodes placed at seeds by the last species_nodes()
     auto species_nodes = [&]() {
+        seed_used.clear();
         const size_t nm = masses.size();
         std::vector<double> I(nm, 0.0);
         for (size_t j = 0; j < na; j++) {
@@ -2247,15 +2547,107 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
         std::sort(cand.begin(), cand.end(), [](const std::pair<double, double>& a, const std::pair<double, double>& b) { return a.first > b.first; });
         std::vector<double> nodes = {masses.front(), masses.back()};
         const int qcost = (int)std::floor(std::sqrt(3e9 / std::max<double>(ng, 1.0)) / std::max(K, 1));
-        const int qmax = std::max(2, std::min(12, qcost));
-        for (auto& c : cand) {
-            if ((int)nodes.size() >= qmax) break;
-            bool near = false;
-            for (double m : nodes) if (std::fabs(std::log(c.second / m)) < 0.02) { near = true; break; }
-            if (!near) nodes.push_back(c.second);
+        int qmax = std::max(2, std::min(12, qcost));
+        // EXPERIMENT (MS_ME_SEEDNODES): a species the first pass did not fit has no node, so the envelope there is
+        // interpolated from unrelated proteins and the final pass cannot fit it either (measured: GroEL monomer next
+        // to the 13-mer, IgG4 half-molecule next to the antibody, carbonic anhydrase in a protein mix). Seeds: the
+        // signal the fit leaves, projected back onto mass with every charge weighted alike, local maxima above 2 % of
+        // the same projection of the data; they come after the species found and get at least 4 nodes in all
+        const bool seeds = opt().seednodes;
+        std::vector<std::pair<double, double>> seedc;
+        if (seeds) {
+            // per charge the largest value within a peak width of the mass's m/z (v: the data or what the fit leaves)
+            const long rad = std::max(1L, (long)(2 * model.sig));
+            auto sample = [&](double M, const std::vector<double>& v, std::vector<double>& sk) {
+                for (int k = 0; k < K; k++) {
+                    const double z = charges[k];
+                    double pos = (M + z * a) / z;
+                    if (use_log) pos = std::log(std::max(pos, 1e-9));
+                    long ic = (long)(std::upper_bound(coord.begin(), coord.end(), pos) - coord.begin()) - 1;
+                    double best = 0;
+                    if (ic >= 0 && ic < (long)ng)
+                        for (long i = std::max(0L, ic - rad); i <= std::min((long)ng - 1, ic + rad); i++) best = std::max(best, v[i]);
+                    sk[k] = best;
+                }
+            };
+            // a species shows at neighbouring charges: the score sums min(s_z, s_z+1), which a mass explained by
+            // scattered residuals of other species (every other charge, random coincidences) does not reach
+            std::vector<double> rp(ng);
+            for (size_t i = 0; i < ng; i++) rp[i] = std::max(0.0, y[i] - fitv[i]);
+            const double dl = 0.0005;   // coarse mass grid, 0.05 % steps
+            const double l0 = std::log(masses.front()), l1 = std::log(masses.back());
+            const int nc = std::max(3, (int)((l1 - l0) / dl));
+            std::vector<double> sr(nc), sy(nc), skr(K), sky(K);
+            for (int c = 0; c < nc; c++) {
+                const double M = std::exp(l0 + (l1 - l0) * c / (nc - 1));
+                sample(M, rp, skr); sample(M, y, sky);
+                double a1 = 0, a2 = 0;
+                for (int k = 0; k + 1 < K; k++) { a1 += std::min(skr[k], skr[k + 1]); a2 += std::min(sky[k], sky[k + 1]); }
+                sr[c] = a1; sy[c] = a2;
+            }
+            const double symax = *std::max_element(sy.begin(), sy.end());
+            // significance: the score of noise alone is the typical (median) score of all masses; a seed must stand
+            // 3 times above it as well as at 2 % of the data's best (a noisy single scan otherwise seeds on noise)
+            std::vector<double> srs = sr;
+            const double sbg = ms::e2::median(srs);
+            for (int c = 1; c + 1 < nc; c++)
+                if (sr[c] > sr[c - 1] && sr[c] >= sr[c + 1] && sr[c] >= 0.02 * symax && sr[c] >= 3.0 * sbg)
+                    seedc.push_back({sr[c], std::exp(l0 + (l1 - l0) * c / (nc - 1))});
+            std::sort(seedc.begin(), seedc.end(), [](const std::pair<double, double>& p1, const std::pair<double, double>& p2) { return p1.first > p2.first; });
+            if (getenv("MS_DEBUG"))
+                for (size_t s2 = 0; s2 < std::min<size_t>(seedc.size(), 6); s2++)
+                    fprintf(stderr, "  seed %.1f Da (%.3g of the data score)\n", seedc[s2].second, seedc[s2].first / std::max(symax, 1e-300));
         }
+        auto add_nodes = [&](const std::vector<std::pair<double, double>>& cs, bool is_seed) {
+            for (auto& c : cs) {
+                if ((int)nodes.size() >= qmax) break;
+                bool near = false;
+                for (double m : nodes) if (std::fabs(std::log(c.second / m)) < 0.02) { near = true; break; }
+                if (!near) { nodes.push_back(c.second); if (is_seed) seed_used.push_back(c.second); }
+            }
+        };
+        add_nodes(cand, false);
+        if (!seedc.empty()) qmax = std::max(qmax, (int)nodes.size() + std::min<int>(2, (int)seedc.size()));   // room for up to two seeds
+        add_nodes(seedc, true);
         std::sort(nodes.begin(), nodes.end());
         return nodes;
+    };
+    // the envelope of a node placed at a seed starts from the data, not from its neighbours: per charge the largest
+    // signal the fit leaves within a peak width of the seed's m/z, smoothed over neighbouring charges (a copy of
+    // the neighbours' charges would put the seed's intensity where its peaks are not, and the refit, which only
+    // sees the intensity the masses already carry, could not move it)
+    auto seed_envelopes = [&]() {
+        if (seed_used.empty()) return;
+        std::vector<double> E = model.envelope();
+        const long rad = std::max(1L, (long)(2 * model.sig));
+        for (int q = 0; q < model.Q; q++) {
+            const double M = model.node_mass[q];
+            if (std::none_of(seed_used.begin(), seed_used.end(), [&](double sm) { return std::fabs(sm - M) < 1e-6 * M; })) continue;
+            std::vector<double> sc(K, 0.0);
+            for (int k = 0; k < K; k++) {
+                const double z = charges[k];
+                double pos = (M + z * a) / z;
+                if (use_log) pos = std::log(std::max(pos, 1e-9));
+                long i0 = (long)(std::upper_bound(coord.begin(), coord.end(), pos) - coord.begin()) - 1;
+                if (i0 < 0 || i0 >= (long)ng) continue;
+                for (long i = std::max(0L, i0 - rad); i <= std::min((long)ng - 1, i0 + rad); i++) sc[k] = std::max(sc[k], y[i] - fitv[i]);
+            }
+            double tot = 0;
+            std::vector<double> sm(K, 0.0);
+            for (int k = 0; k < K; k++) {
+                sm[k] = 0.5 * std::max(0.0, sc[k]) + 0.25 * std::max(0.0, k > 0 ? sc[k - 1] : 0.0) + 0.25 * std::max(0.0, k + 1 < K ? sc[k + 1] : 0.0);
+                tot += sm[k];
+            }
+            if (!(tot > 0)) continue;
+            double rowsum = 0;
+            for (int k = 0; k < K; k++) rowsum += E[(size_t)q * K + k];
+            for (int k = 0; k < K; k++) E[(size_t)q * K + k] = (rowsum > 0 ? rowsum : 1.0) * sm[k] / tot;
+            if (getenv("MS_DEBUG")) {
+                int kb = (int)(std::max_element(sm.begin(), sm.end()) - sm.begin());
+                fprintf(stderr, "  seed node %.1f Da: envelope from the data, peak at charge %d\n", M, (int)charges[kb]);
+            }
+        }
+        model.set_envelope(E);
     };
     // The search for alpha. First pass: alpha falls (slope limited steps in ln
     // alpha towards the target) until chi squared per signal point improves by
@@ -2285,8 +2677,441 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
     AlphaSearch search;
     std::vector<std::pair<double, double>> pass_pts;   // (ln alpha, chi2n) of the current pass
     double la = std::log(alpha);
+    // EXPERIMENT (MS_MEMSYS): the alpha search of Skilling and Bryan (1984, the "Cambridge algorithm" of
+    // MemSys): one path instead of rounds of L-BFGS runs. Each step builds 4 search directions in the entropy
+    // metric (f grad S, f grad C, and the curvature of C applied to each: f A'WA of them), models S and C as
+    // quadratics in their span and takes the step (and alpha) that brings C two thirds of the way down to the
+    // least C within a trust region (distance^2 <= r * sum f in the metric 1/f). The pass ends when C stops
+    // falling (the best fit) or reaches the target; as in the rounds, the noise is then estimated again and the
+    // envelope nodes put at the species. C here: sum w (A f - y)^2 over the grid.
+    const bool memsys = opt().memsys;
+    // safe (MS_MEMSYS_SAFE): the first pass as in 4.33 (the rounds, the same noise re-estimation and nodes), the
+    // path for the final pass only; the noise is then decided exactly as 4.33 decides it
+    const bool hybrid = opt().hybrid;
+    int memsys_start = 0;
+    if (memsys && !hybrid && !getenv("MS_MEMSYS_NOWIN")) model.make_windows();
+    auto memsys_run = [&]() {
+        Timed tmm(T_LBFGS);   // (profile: the whole path)
+        const int ND = getenv("MS_MEMSYS_ND") ? std::max(2, std::min(8, atoi(getenv("MS_MEMSYS_ND")))) : 5;   // directions (5: the masses of 4.33 within 0.5 mDa more often than with 4)
+        const double rfac = getenv("MS_MEMSYS_R") ? atof(getenv("MS_MEMSYS_R")) : 10.0;
+        const int env_every = getenv("MS_MEMSYS_ENV") ? std::max(1, atoi(getenv("MS_MEMSYS_ENV"))) : 5;
+        const int max_it = getenv("MS_MEMSYS_IT") ? atoi(getenv("MS_MEMSYS_IT")) : 300;   // (a cap: passes end when settled)
+        const double flat_tol = getenv("MS_MEMSYS_FLAT") ? atof(getenv("MS_MEMSYS_FLAT")) : 2e-3;
+        const double flat_tol1 = getenv("MS_MEMSYS_FLAT1") ? atof(getenv("MS_MEMSYS_FLAT1")) : 1e-2;   // first pass
+        const double test_tol = getenv("MS_MEMSYS_TEST") ? atof(getenv("MS_MEMSYS_TEST")) : 1.0;
+        const bool adapt = getenv("MS_MEMSYS_ADAPT") != nullptr;   // the trust region grows when steps go as predicted
+        // inner / outer: steps at a fixed envelope and fixed weights until C settles, then one envelope refit;
+        // the pass ends when a refit no longer moves the settled C (instead of a refit every env_every steps)
+        const bool inner = getenv("MS_MEMSYS_NOINNER") == nullptr;
+        const int inner_max = getenv("MS_MEMSYS_INNER_MAX") ? atoi(getenv("MS_MEMSYS_INNER_MAX")) : 40;
+        const double outer_tol = getenv("MS_MEMSYS_OUTER") ? atof(getenv("MS_MEMSYS_OUTER")) : 5e-3;
+        // steps that would lower a mass: multiplicative (f exp(d / f)), so that no mass is clipped at 0.1 f
+        const bool logstep = getenv("MS_MEMSYS_LOGSTEP") != nullptr;
+        // how far each step goes: C aims at Cmin + frac (C0 - Cmin) (frac 1/3: two thirds of the way down), in the
+        // first pass and in the final pass; push: steps at frac 0 (the best fit within the trust region) at the end
+        // of the first pass, so that the noise is estimated from residuals of a fit pushed as hard as 4.33's rounds
+        const double aim1 = getenv("MS_MEMSYS_AIM1") ? atof(getenv("MS_MEMSYS_AIM1")) : 1.0 / 3.0;
+        const double aimF = getenv("MS_MEMSYS_AIM") ? atof(getenv("MS_MEMSYS_AIM")) : 1.0 / 3.0;
+        const int push_n = getenv("MS_MEMSYS_PUSH") ? atoi(getenv("MS_MEMSYS_PUSH")) : 0;
+        // a step that raised C is taken back and the trust region made 4 times smaller (it grows back by 2 after
+        // each step that lowered C)
+        const bool reject = getenv("MS_MEMSYS_NOREJECT") == nullptr;
+        std::vector<double> f_keep, fit_keep;
+        bool have_keep = false;
+        double C_keep = 0;
+        int n_rej = 0;
+        double rcur = rfac, pred_prev = -1;
+        bool limited_prev = false;
+        const double flo = std::exp(lo_u), fhi = std::exp(hi_u);
+        std::vector<std::vector<double>> e(ND, std::vector<double>(na)), Ae(ND, std::vector<double>(ng));
+        std::vector<double> gS(na), gC(na), wr(ng), back(ng);
+        int total_it = 0, n_clip = 0;
+        double C_last = 0;
+        auto sync_u = [&]() { pfor(na, [&](size_t a0, size_t b0) { for (size_t j = a0; j < b0; j++) u[j] = std::log(f[j]); }); };
+        auto sync_f = [&]() { pfor(na, [&](size_t a0, size_t b0) { for (size_t j = a0; j < b0; j++) f[j] = fexp(u[j]); }); };
+        sync_f();
+        for (pass = memsys_start; pass < max_passes; pass++) {
+            const bool final_pass = pass + 1 >= max_passes;
+            double C_prev = -1;
+            int flat_n = 0;
+            bool fit_ok = false;   // fitv is A f already
+            std::string why = "steps";
+            bool do_refit = false;
+            int since_refit = 0;
+            double C_settled = -1;
+            int push_left = -1;
+            for (int it = 0; it < max_it; it++, total_it++, since_refit++) {
+                if (inner ? do_refit : (it > 0 && it % env_every == 0)) {   // the envelope and the weights follow the fit
+                    do_refit = false;
+                    since_refit = 0;
+                    flat_n = 0;
+                    have_keep = false;
+                    sync_u();
+                    refit_envelope();
+                    sync_f();
+                    set_weights();
+                    C_prev = -1;   // C changed with them
+                    fit_ok = false;
+                }
+                // C and its gradient at f
+                if (!fit_ok) model.forward(f.data(), fitv.data());
+                have_fit = true;
+                const double C0 = psum(ng, [&](size_t i) { double d = fitv[i] - y[i]; wr[i] = 2.0 * w[i] * d; return w[i] * d * d; });
+                if (reject && have_keep) {
+                    have_keep = false;
+                    if (C0 > C_keep) {   // worse: back to the point before the step, a smaller trust region
+                        f = f_keep;
+                        sync_u();
+                        fitv = fit_keep;
+                        fit_ok = true;
+                        rcur = std::max(rcur * 0.25, 1e-4);
+                        n_rej++;
+                        if (debug) fprintf(stderr, "memsys step rejected: C %.6g > %.6g, trust region now %.3g\n", C0, C_keep, rcur);
+                        continue;
+                    }
+                    rcur = std::min(rcur * 2.0, rfac);
+                }
+                const double chi2n = chi2_signal();
+                model.adjoint_f(wr.data(), gC.data());
+                // grad S = -ln(f/m) = -(u - ln m); the first two directions, f grad S and f grad C
+                double raw[3];   // sum f gS^2, sum f gC^2, sum f gS gC (the metric lengths and their angle)
+                psums(na, 3, raw, [&](size_t i0, size_t i1, double* acc) {
+                    double a = 0, b = 0, c = 0;
+                    for (size_t j = i0; j < i1; j++) {
+                        const double s = -(u[j] - log_dflt), g = gC[j];
+                        gS[j] = s;
+                        e[0][j] = f[j] * s;
+                        e[1][j] = f[j] * g;
+                        a += f[j] * s * s; b += f[j] * g * g; c += f[j] * s * g;
+                    }
+                    acc[0] = a; acc[1] = b; acc[2] = c;
+                });
+                const double test = 1.0 - raw[2] / std::sqrt(std::max(raw[0] * raw[1], 1e-300));   // 0 at the solution for the alpha
+                const double alpha_eff = 0.5 * std::sqrt(raw[1] / std::max(raw[0], 1e-300));
+                // (the directions keep their own lengths: the small matrices are scaled instead, below)
+                for (int k = 0; k < 2; k++) model.forward(e[k].data(), Ae[k].data());
+                // the curvature of C on them: f A'W A e
+                for (int k = 2; k < ND; k++) {   // direction k: the curvature on direction k - 2
+                    pfor(ng, [&](size_t a0, size_t b0) { for (size_t i = a0; i < b0; i++) back[i] = 2.0 * w[i] * Ae[k - 2][i]; });
+                    double* ek = e[k].data();
+                    model.adjoint_f(back.data(), ek, [&](size_t j, double v) { ek[j] = f[j] * v; });
+                    model.forward(ek, Ae[k].data());
+                }
+                // the quadratic models in the span: G (metric), s (grad S), c (grad C), M (curvature of C)
+                const int NG = ND * (ND + 1) / 2;
+                std::vector<double> sums(NG + 2 * ND + 1), msum(NG);
+                psums(na, NG + 2 * ND + 1, sums.data(), [&](size_t i0, size_t i1, double* acc) {
+                    int q = 0;
+                    for (int a = 0; a < ND; a++)
+                        for (int b = a; b < ND; b++) {
+                            double v = 0;
+                            for (size_t j = i0; j < i1; j++) v += e[a][j] * e[b][j] / f[j];
+                            acc[q++] = v;
+                        }
+                    for (int a = 0; a < ND; a++) {
+                        double vs = 0, vc = 0;
+                        for (size_t j = i0; j < i1; j++) { vs += e[a][j] * gS[j]; vc += e[a][j] * gC[j]; }
+                        acc[NG + a] = vs; acc[NG + ND + a] = vc;
+                    }
+                    double sf = 0;
+                    for (size_t j = i0; j < i1; j++) sf += f[j];
+                    acc[NG + 2 * ND] = sf;
+                });
+                psums(ng, NG, msum.data(), [&](size_t i0, size_t i1, double* acc) {
+                    int q = 0;
+                    for (int a = 0; a < ND; a++)
+                        for (int b = a; b < ND; b++) {
+                            double v = 0;
+                            for (size_t i = i0; i < i1; i++) v += w[i] * Ae[a][i] * Ae[b][i];
+                            acc[q++] = 2.0 * v;
+                        }
+                });
+                std::vector<double> G((size_t)ND * ND), M((size_t)ND * ND), s(ND), c(ND);
+                {
+                    int q = 0;
+                    for (int a = 0; a < ND; a++)
+                        for (int b = a; b < ND; b++, q++) {
+                            G[(size_t)a * ND + b] = G[(size_t)b * ND + a] = sums[q];
+                            M[(size_t)a * ND + b] = M[(size_t)b * ND + a] = msum[q];
+                        }
+                    for (int a = 0; a < ND; a++) { s[a] = sums[NG + a]; c[a] = sums[NG + ND + a]; }
+                }
+                const double sum_f = sums[NG + 2 * ND];
+                // the directions at unit length in the metric: the matrices scaled (the steps scaled back below)
+                std::vector<double> dsc(ND);
+                for (int a = 0; a < ND; a++) dsc[a] = 1.0 / std::sqrt(std::max(G[(size_t)a * ND + a], 1e-300));
+                for (int a = 0; a < ND; a++) {
+                    s[a] *= dsc[a];
+                    c[a] *= dsc[a];
+                    for (int b = 0; b < ND; b++) {
+                        G[(size_t)a * ND + b] *= dsc[a] * dsc[b];
+                        M[(size_t)a * ND + b] *= dsc[a] * dsc[b];
+                    }
+                }
+                // a basis orthonormal in G (directions that add nothing are left out), then M diagonal in it
+                std::vector<double> gev, gV;
+                small_eigen(G, ND, gev, gV);
+                double gmax = 0;
+                for (double v : gev) gmax = std::max(gmax, v);
+                std::vector<int> keep;
+                for (int k = 0; k < ND; k++) if (gev[k] > 1e-8 * gmax) keep.push_back(k);
+                const int dim = (int)keep.size();
+                std::vector<double> B((size_t)ND * dim);   // columns: G^-1/2 directions
+                for (int col = 0; col < dim; col++)
+                    for (int a = 0; a < ND; a++) B[(size_t)a * dim + col] = gV[(size_t)a * ND + keep[col]] / std::sqrt(gev[keep[col]]);
+                std::vector<double> Mp((size_t)dim * dim, 0.0), sp(dim, 0.0), cp(dim, 0.0);
+                for (int i = 0; i < dim; i++) {
+                    for (int a = 0; a < ND; a++) { sp[i] += B[(size_t)a * dim + i] * s[a]; cp[i] += B[(size_t)a * dim + i] * c[a]; }
+                    for (int j = 0; j < dim; j++) {
+                        double v = 0;
+                        for (int a = 0; a < ND; a++)
+                            for (int b = 0; b < ND; b++) v += B[(size_t)a * dim + i] * M[(size_t)a * ND + b] * B[(size_t)b * dim + j];
+                        Mp[(size_t)i * dim + j] = v;
+                    }
+                }
+                std::vector<double> mu, U;
+                small_eigen(Mp, dim, mu, U);
+                std::vector<double> s2(dim, 0.0), c2(dim, 0.0);
+                for (int k = 0; k < dim; k++) {
+                    mu[k] = std::max(mu[k], 0.0);
+                    for (int i = 0; i < dim; i++) { s2[k] += U[(size_t)i * dim + k] * sp[i]; c2[k] += U[(size_t)i * dim + k] * cp[i]; }
+                }
+                // the step for alpha (and the trust region): z_k = (alpha s_k - c_k) / (alpha + mu_k + beta)
+                if (adapt && C_prev > 0 && pred_prev > 0 && C_prev > pred_prev) {
+                    const double ratio = (C_prev - C0) / (C_prev - pred_prev);
+                    if (ratio > 0.75 && limited_prev) rcur = std::min(rcur * 2, 100.0);
+                    else if (ratio < 0.25) rcur = std::max(rcur / 2, 0.01);
+                }
+                const double r2 = rcur * sum_f;
+                std::vector<double> z(dim);
+                auto zfor = [&](double al, double be) {
+                    double d2 = 0;
+                    for (int k = 0; k < dim; k++) { z[k] = (al * s2[k] - c2[k]) / (al + mu[k] + be); d2 += z[k] * z[k]; }
+                    return d2;
+                };
+                auto step_for = [&](double al) {   // z at alpha, inside the trust region
+                    if (zfor(al, 0.0) <= r2) return;
+                    double blo = 0, bhi = std::max(1e-300, al);
+                    for (int t = 0; t < 400 && zfor(al, bhi) > r2; t++) bhi *= 2;
+                    for (int t = 0; t < 100; t++) {
+                        double bm = 0.5 * (blo + bhi);
+                        if (zfor(al, bm) > r2) blo = bm; else bhi = bm;
+                    }
+                    zfor(al, bhi);
+                };
+                auto predC = [&]() {
+                    double v = C0;
+                    for (int k = 0; k < dim; k++) v += c2[k] * z[k] + 0.5 * mu[k] * z[k] * z[k];
+                    return v;
+                };
+                double ns = 0, nc = 0;
+                for (int k = 0; k < dim; k++) { ns += s2[k] * s2[k]; nc += c2[k] * c2[k]; }
+                // the scale of alpha (at the start grad S is 0: f is the default everywhere)
+                const double scale = ns > 1e-30 * nc && ns > 0 ? std::sqrt(nc / ns) : std::sqrt(nc) + 1.0;
+                const double alo = scale * 1e-12, ahi = scale * 1e12;
+                step_for(alo);
+                const double Cmin = predC();
+                const bool on_target = chi2n <= target_cur;
+                const double frac = push_left > 0 ? 0.0 : final_pass ? aimF : aim1;
+                const double aim = on_target ? C0 : Cmin + (C0 - Cmin) * frac;
+                double llo = std::log(alo), lhi = std::log(ahi);
+                for (int t = 0; t < 120; t++) {   // C rises with alpha
+                    double lm = 0.5 * (llo + lhi);
+                    step_for(std::exp(lm));
+                    if (predC() > aim) lhi = lm; else llo = lm;
+                }
+                const double al = std::exp(llo);
+                step_for(al);
+                {
+                    double d2 = 0;
+                    for (int k = 0; k < dim; k++) d2 += z[k] * z[k];
+                    limited_prev = d2 >= 0.99 * r2;
+                    pred_prev = predC();
+                }
+                // the step in f: coefficients on the 4 directions
+                std::vector<double> x(ND, 0.0);
+                for (int a = 0; a < ND; a++)
+                    for (int i = 0; i < dim; i++)
+                        for (int k = 0; k < dim; k++) x[a] += B[(size_t)a * dim + i] * U[(size_t)i * dim + k] * z[k];
+                for (int a = 0; a < ND; a++) x[a] *= dsc[a];   // on the directions as they are in memory
+                for (double& v : x) if (!std::isfinite(v)) v = 0;   // never a step that is not a number
+                if (reject) { f_keep = f; fit_keep = fitv; C_keep = C0; have_keep = true; }
+                double clipped = 0;   // masses held at a limit (then the fit is not the old fit plus the step's)
+                psums(na, 1, &clipped, [&](size_t i0, size_t i1, double* acc) {
+                    double cnt = 0;
+                    for (size_t j = i0; j < i1; j++) {
+                        double v = f[j];
+                        for (int a = 0; a < ND; a++) v += x[a] * e[a][j];
+                        const double lin = v;
+                        if (logstep && v < f[j]) v = f[j] * std::exp(std::max(-30.0, (v - f[j]) / f[j]));
+                        v = std::max(v, 0.1 * f[j]);   // stays positive
+                        f[j] = std::min(fhi, std::max(flo, v));
+                        u[j] = std::log(f[j]);
+                        cnt += f[j] != lin;
+                    }
+                    acc[0] = cnt;
+                });
+                if (clipped == 0 && !getenv("MS_MEMSYS_NOLIN")) {   // the new fit: the old one plus the step's (A is linear)
+                    pfor(ng, [&](size_t a0, size_t b0) {
+                        for (size_t i = a0; i < b0; i++) {
+                            double v = fitv[i];
+                            for (int a = 0; a < ND; a++) v += x[a] * Ae[a][i];
+                            fitv[i] = v;
+                        }
+                    });
+                    fit_ok = true;
+                } else {
+                    fit_ok = false;
+                }
+                n_clip += clipped > 0;
+                history.push_back({alpha_eff, chi2n});
+                alpha = alpha_eff;
+                if (debug)
+                    fprintf(stderr, "memsys pass %d step %d: C %.6g chi2n %.4f test %.3g alpha %.3g dim %d aim %.6g Cmin %.6g\n",
+                            pass + 1, it + 1, C0, chi2n, test, alpha_eff, dim, aim, Cmin);
+                ms::tick(cb, user, std::min(rounds - 1, total_it / 10), rounds);
+                // the end of the pass: C stopped falling (best fit), or on target, with the step settled
+                if (C_prev > 0 && (inner ? since_refit >= 2 : it >= 5)) flat_n = (C_prev - C0) / C0 < (final_pass ? flat_tol : flat_tol1) ? flat_n + 1 : 0;
+                C_prev = C0;
+                C_last = C0;
+                if (push_left > 0) {
+                    if (--push_left == 0) break;
+                    continue;
+                }
+                if (inner) {
+                    const bool settled = ((on_target || flat_n >= 3) && test < test_tol) || since_refit + 1 >= inner_max;
+                    if (settled) {
+                        const bool same = C_settled > 0 && std::fabs(C_settled - C0) / C0 < (final_pass ? outer_tol : 5 * outer_tol);
+                        if (debug) fprintf(stderr, "memsys settled after %d steps: C %.6g (before the last refit %.6g)\n", since_refit + 1, C0, C_settled);
+                        if (same) {
+                            why = on_target ? "target" : "best fit";
+                            if (!final_pass && push_n > 0) { push_left = push_n; continue; }
+                            break;
+                        }
+                        C_settled = C0;
+                        do_refit = true;
+                    }
+                    continue;
+                }
+                if (on_target && test < test_tol) { why = "target"; break; }
+                if (flat_n >= 3 && test < test_tol) { why = "best fit"; break; }
+            }
+            sync_f();
+            // polish: L-BFGS (as in 4.33's rounds) at the alpha the path found, with an envelope refit after each
+            // sweep: the fine, weak structure that the few directions of the path converge on slowly
+            {
+                const int polish1 = getenv("MS_MEMSYS_POLISH") ? atoi(getenv("MS_MEMSYS_POLISH")) : 50;
+                // (the final pass: none by default; the polish matters for the noise estimated after the first pass)
+                const int polish = !final_pass ? polish1 : getenv("MS_MEMSYS_POLISH_FINAL") ? atoi(getenv("MS_MEMSYS_POLISH_FINAL")) : 0;
+                const int sweeps = getenv("MS_MEMSYS_POLISH_SWEEPS") ? atoi(getenv("MS_MEMSYS_POLISH_SWEEPS")) : 1;
+                // first pass: at a lower alpha (the fit pushed as far as 4.33's rounds push it before the noise is
+                // estimated from its residuals)
+                const double pa1 = getenv("MS_MEMSYS_PA1") ? atof(getenv("MS_MEMSYS_PA1")) : 1.0;
+                if (polish > 0) {
+                    obj.alpha = final_pass ? alpha : alpha * pa1;
+                    sync_u();
+                    for (int sw = 0; sw < sweeps; sw++) {
+                        lbfgs_b(obj, u, lo_u, hi_u, polish);
+                        pfor(na, [&](size_t a0, size_t b0) { for (size_t j = a0; j < b0; j++) { u[j] = std::min(hi_u, std::max(lo_u, u[j])); f[j] = fexp(u[j]); } });
+                        refit_envelope();
+                    }
+                    sync_f();
+                    if (debug) fprintf(stderr, "memsys pass %d polished at alpha %.4g (%zu evaluations so far)\n", pass + 1, alpha, obj.evals);
+                }
+            }
+            model.forward(f.data(), fitv.data());
+            if (debug) fprintf(stderr, "memsys pass %d ends (%s) after %d steps in all (%d with masses at a limit, %d rejected), chi2n %.4f\n", pass + 1, why.c_str(), total_it, n_clip, n_rej, chi2_signal());
+            if (final_pass) {
+                reached = why == "target";
+                stop_reason = why == "target" ? "target" : why == "best fit" ? "unattainable" : "rounds";
+                if (why == "best fit") plateau = chi2_signal();
+                break;
+            }
+            // between the passes: the noise from the residuals, the envelope nodes at the species
+            std::vector<double> r(ng);
+            for (size_t i = 0; i < ng; i++) r[i] = fitv[i] - y[i];
+            std::string dbg;
+            {
+                NoiseModel nm = noise_from_residuals(yvar, r, signal, noise_data, noise_kind, debug ? &dbg : nullptr);
+            if (kappa_mode) nm = kappa_noise(yvar, r);
+            if (opt().fixnoise) nm = noise;   // the noise measured on the data kept (no re-estimation; 4.36)
+                if (debug) fprintf(stderr, "  noise re-estimation: s0 %.3g -> %.3g, 1/g %.3g -> %.3g, eps %.3g -> %.3g\n%s",
+                                   noise.s0, nm.s0, noise.ginv, nm.ginv, noise.eps, nm.eps, dbg.c_str());
+                noise = nm;
+            }
+            if (p.envelope_nodes <= 0) {
+                std::vector<double> nodes = species_nodes();
+                if (nodes != model.node_mass && nodes.size() >= 2) { model.set_nodes(nodes, masses); seed_envelopes(); }
+            }
+            set_weights();
+        }
+        (void)C_last;
+    };
+    // EXPERIMENT (MS_ME_CLASSIC): the final pass stops at the alpha of "Classic" maximum entropy with automatic noise
+    // scaling (Gull and Skilling, MemSys5 users' manual, sections 2.1-2.6): the evidence for alpha and for a common
+    // scale c of the noise is largest where -2 alpha S = G c^2 and c^2 = chi2 / (N - G), i.e. where
+    // Omega = -2 alpha S (N - G) / (G chi2) = 1. G = sum lambda / (lambda + alpha) is the number of good measurements
+    // (lambda: the eigenvalues of the curvature of chi2 / 2 in the entropy metric, B = f^1/2 A'WA f^1/2): estimated as
+    // na - alpha r'(alpha I + B)^-1 r with one fixed random +-1 vector r and conjugate gradients (each step one forward
+    // and one adjoint product). A model that cannot reach chi2 = N (peak shape, adducts) raises c instead of
+    // driving alpha to the best-fit plateau. The noise model's shape stays the one measured on the data.
+    const bool classic = getenv("MS_ME_CLASSIC") != nullptr;
+    const int classic_cg = getenv("MS_ME_CLASSIC_CG") ? atoi(getenv("MS_ME_CLASSIC_CG")) : 100;
+    double last_G = 0, last_c2 = 0;
+    auto evidence_omega = [&]() {
+        const double S = psum(na, [&](size_t j) { const double fj = f[j]; return fj - dflt - fj * (std::log(std::max(fj, 1e-300)) - log_dflt); });
+        double chi2 = 0, Nd = 0;
+        {
+            double acc[2];
+            psums(ng, 2, acc, [&](size_t i0, size_t i1, double* a) {
+                double c = 0, n = 0;
+                for (size_t i = i0; i < i1; i++) if (w[i] > 0) { const double d = fitv[i] - y[i]; c += w[i] * d * d; n += 1; }
+                a[0] = c; a[1] = n;
+            });
+            chi2 = acc[0]; Nd = acc[1];
+        }
+        // conjugate gradients on (alpha I + B) x = r
+        std::vector<double> rv(na), x(na, 0.0), res(na), pv(na), q(na), sq(na), t(na), tg(ng);
+        for (size_t j = 0; j < na; j++) {
+            uint64_t hsh = (uint64_t)j * 0x9E3779B97F4A7C15ull;
+            hsh ^= hsh >> 29; hsh *= 0xBF58476D1CE4E5B9ull; hsh ^= hsh >> 32;
+            rv[j] = (hsh & 1) ? 1.0 : -1.0;
+            sq[j] = std::sqrt(std::max(f[j], 0.0));
+        }
+        auto applyA = [&](const std::vector<double>& v, std::vector<double>& out) {
+            pfor(na, [&](size_t a0, size_t b0) { for (size_t j = a0; j < b0; j++) t[j] = sq[j] * v[j]; });
+            model.forward(t.data(), tg.data());
+            pfor(ng, [&](size_t a0, size_t b0) { for (size_t i = a0; i < b0; i++) tg[i] *= w[i]; });
+            model.adjoint_f(tg.data(), out.data());
+            pfor(na, [&](size_t a0, size_t b0) { for (size_t j = a0; j < b0; j++) out[j] = alpha * v[j] + sq[j] * out[j]; });
+        };
+        res = rv; pv = rv;
+        double rr = psum(na, [&](size_t j) { return res[j] * res[j]; });
+        const double rr0 = rr;
+        int it = 0;
+        for (; it < classic_cg && rr > 1e-8 * rr0; it++) {
+            applyA(pv, q);
+            const double pq = psum(na, [&](size_t j) { return pv[j] * q[j]; });
+            if (!(pq > 0)) break;
+            const double a_ = rr / pq;
+            pfor(na, [&](size_t a0, size_t b0) { for (size_t j = a0; j < b0; j++) { x[j] += a_ * pv[j]; res[j] -= a_ * q[j]; } });
+            const double rr1 = psum(na, [&](size_t j) { return res[j] * res[j]; });
+            const double b_ = rr1 / rr;
+            rr = rr1;
+            pfor(na, [&](size_t a0, size_t b0) { for (size_t j = a0; j < b0; j++) pv[j] = res[j] + b_ * pv[j]; });
+        }
+        const double rx = psum(na, [&](size_t j) { return rv[j] * x[j]; });
+        const double G = std::max(1e-6, std::min((double)na - alpha * rx, Nd - 1.0));
+        const double c2 = chi2 / std::max(Nd - G, 1.0);
+        const double om = -2.0 * alpha * S * (Nd - G) / std::max(G * chi2, 1e-300);
+        last_G = G; last_c2 = c2;
+        if (debug) fprintf(stderr, "  classic: S %.6g chi2 %.6g N %.0f G %.1f (cg %d, residual %.1e) c^2 %.4g Omega %.4f\n",
+                           S, chi2, Nd, G, it, std::sqrt(rr / rr0), c2, om);
+        return om;
+    };
     ms::tick(cb, user, 0, rounds);
-    for (int k = 0; k < rounds; k++) {
+    if (memsys && !hybrid) memsys_run();
+    else for (int k = 0; k < rounds; k++) {
         alpha = std::exp(la);
         obj.alpha = alpha;
         if (have_fit) set_weights();
@@ -2300,6 +3125,7 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
         have_fit = true;
         double chi2n = chi2_signal();
         double lc = std::log(std::max(chi2n, 1e-300) / target_cur);
+        if (classic && pass + 1 >= max_passes) lc = std::log(std::max(evidence_omega(), 1e-300));   // the evidence target
         history.push_back({alpha, chi2n});
         search.add(la, lc);
         pass_pts.push_back({la, chi2n});
@@ -2349,6 +3175,8 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
             for (size_t i = 0; i < ng; i++) r[i] = fitv[i] - y[i];
             std::string dbg;
             NoiseModel nm = noise_from_residuals(yvar, r, signal, noise_data, noise_kind, debug ? &dbg : nullptr);
+            if (kappa_mode) nm = kappa_noise(yvar, r);
+            if (opt().fixnoise) nm = noise;   // the noise measured on the data kept (no re-estimation; 4.36)
             double dmax = 0;
             for (double yb : {0.0, 0.003, 0.01, 0.03, 0.1, 0.3, 1.0}) dmax = std::max(dmax, std::fabs(0.5 * std::log(nm.var(yb) / noise.var(yb))));
             if (debug) fprintf(stderr, "  noise re-estimation: s0 %.3g -> %.3g, 1/g %.3g -> %.3g, eps %.3g -> %.3g (max change %.2f)\n%s",
@@ -2359,6 +3187,7 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
                 std::vector<double> nodes = species_nodes();
                 if (nodes != model.node_mass && nodes.size() >= 2) {
                     model.set_nodes(nodes, masses);
+                    seed_envelopes();
                     renoded = true;
                     if (debug) { fprintf(stderr, "  envelope nodes now at:"); for (double m : nodes) fprintf(stderr, " %.1f", m); fprintf(stderr, "\n"); }
                 }
@@ -2366,7 +3195,13 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
             noise = nm;
             set_weights();
             search.reset(); pass_pts.clear();
-            if (renoded) continue;   // with new nodes the fit changes a lot at the same alpha: measure it first
+            if (hybrid) {   // the final pass by the path
+                if (!getenv("MS_MEMSYS_NOWIN")) model.make_windows();
+                memsys_start = pass;
+                memsys_run();
+                break;
+            }
+            if (renoded || classic) continue;   // with new nodes the fit changes a lot at the same alpha: measure it first
             // the same fit under the new weights is the first point of the final pass
             chi2n = chi2_signal();
             lc = std::log(std::max(chi2n, 1e-300) / target_cur);
@@ -2377,6 +3212,16 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
             continue;
         }
         // final pass
+        if (classic) {   // Omega = 1 (lc = ln Omega): no plateau, no cap
+            if ((on_target && enough) || last_round || (stalled && enough)) {
+                reached = on_target;
+                stop_reason = on_target ? "evidence" : stalled ? "stalled" : "rounds";
+                if (debug) fprintf(stderr, "  classic stop (%s): alpha %.6g G %.1f c^2 %.4g\n", stop_reason.c_str(), alpha, last_G, last_c2);
+                break;
+            }
+            la = search.next();
+            continue;
+        }
         if (std::isnan(plateau)) {
             // descent: until the fit no longer improves or undershoots the target
             bool found = false;
@@ -2444,14 +3289,26 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
     }
     size_t nmg = mgrid.size();
     std::vector<double> mtotal(nmg, 0.0), h(nmg), zh(K, 0.0);
+    // the place of each output mass between the envelope nodes, once (env_at would find it again for every charge)
+    std::vector<int> o_q(nmg);
+    std::vector<double> o_t(nmg);
+    parallel_range(nmg, [&](size_t a0, size_t b0) { for (size_t i = a0; i < b0; i++) model.node_of(mgrid[i], o_q[i], o_t[i]); });
+    // EXPERIMENT (MS_ME_AREA): each charge's profile divided by its charge on the way to the mass axis. A peak of
+    // width w in m/z is z w wide in mass, so heights copied over make a species' area the sum over its charges of
+    // z x its m/z area (the more charges, the larger: +20 % on two proteins at mean charges 14 and 17, +70 % at 12
+    // and 20 against the m/z signal they have). Divided by z the area is the m/z signal summed over the charges;
+    // MS_ME_AREA=2 divides by z^2 (the number of ions where the signal grows with the charge, as in an Orbitrap).
+    const int area_mode = opt().area;
     for (int k = 0; k < K; k++) {
         double z = charges[k];
+        const double zdiv = area_mode == 1 ? z : area_mode == 2 ? z * z : 1.0;
         const double* col = cols.data() + (size_t)k * ng;
         parallel_range(nmg, [&](size_t a0, size_t b0) {
             for (size_t i = a0; i < b0; i++) {
                 double pos = (mgrid[i] + z * a) / z;
                 double xq = use_log ? std::log(std::max(pos, 1e-9)) : pos;
-                h[i] = interp0(xq, coord.data(), col, ng) * model.env_at(mgrid[i], k) * scale;
+                const double* c0 = model.C.data() + (size_t)o_q[i] * K;   // as env_at(mgrid[i], k)
+                h[i] = interp0(xq, coord.data(), col, ng) * (c0[k] + o_t[i] * (c0[K + k] - c0[k])) * scale / zdiv;
             }
         });
         double hm = 0;

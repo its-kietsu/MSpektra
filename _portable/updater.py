@@ -525,7 +525,12 @@ def start(delay_ms=5000):
     def found(man):
         shown = _STATE["result"]
         if shown is not None and version_key(man["version"]) <= version_key(shown["version"]):
-            return  # (already shown, or downloaded)
+            # (already shown, or downloaded); the same version again when its files were replaced on GitHub
+            # and it now updates in the app instead of the download page (as 4.35 on 15.10.2026)
+            old = shown.get("man") or {}
+            if shown.get("staged") or man["version"] != shown["version"] or not old.get("_full") \
+                    or man.get("_full"):
+                return
         _found({"version": man["version"], "staged": False, "man": man, "notes": man.get("notes", [])})
 
     def work():

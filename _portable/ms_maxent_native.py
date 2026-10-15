@@ -6,6 +6,7 @@ Python only transports settings, arrays, progress and result dictionaries.
 """
 import ctypes as C
 import os
+import sys
 import numpy as np
 
 _LIB = None
@@ -51,6 +52,22 @@ def _integer(value, name):
     return n
 
 
+def _engine(p):
+    """noise_model of msengine: 0 = the MaxEnt of 4.36 (area output, noise measured once, charge envelopes local in
+    mass); 4 = the MaxEnt of 4.35, with "maxent_engine": "4.35" in the settings (or in p, as the worker gets it)."""
+    nm = _integer(p.get("noise_model", 0) or 0, "Noise model")
+    if nm:
+        return nm
+    eng = p.get("maxent_engine")
+    if eng is None:
+        T = sys.modules.get("unidec_theme")
+        try:
+            eng = T._load().get("maxent_engine") if T is not None else None
+        except Exception:
+            eng = None
+    return 4 if str(eng or "").strip() == "4.35" else 0
+
+
 def run(spec, p, progress=None):
     import msengine_py as E
     if not E.available():
@@ -88,7 +105,7 @@ def run(spec, p, progress=None):
     q.baseline = int(bool(p.get("baseline")))
     q.baseline_width = float(p.get("baseline_width", 15.0))
     q.envelope_nodes = _integer(p.get("envelope_nodes", 0) or 0, "Envelope nodes")
-    q.noise_model = _integer(p.get("noise_model", 0) or 0, "Noise model")
+    q.noise_model = _engine(p)
     q.chi2_target = float(p.get("chi2_target", 0) or 0)
     callback_error = []
 

@@ -1079,6 +1079,10 @@ class WorkerClient(object):
                 self.handlers = self._job = None
             self._post(token, on_error, "Could not start the deconvolution worker: %s" % ex, "")
             return False
+        if job.get("method") == "maxent" and "maxent_engine" not in (job.get("params") or {}):
+            eng = T._load().get("maxent_engine")  # "4.35": the MaxEnt of 4.35 (ms_maxent_native)
+            if eng:
+                job = dict(job, params=dict(job["params"], maxent_engine=eng))
         data = pickle.dumps(("run", job), protocol=4)
         proc = self.proc
 
