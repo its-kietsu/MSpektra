@@ -1,4 +1,4 @@
-MSpektra 4.36 - portable Windows package   (15.10.2026)
+MSpektra 4.37 - portable Windows package   (16.10.2026)
 ========================================================
 
 Analysis of LC-MS and HRMS data, with deconvolution:
@@ -39,6 +39,14 @@ The version is shown on the start screen, in the help window (?) of LCMS
 and HRMS Analysis, and in the first line of each log file. It went up by
 0.1 with every update until 3.3. Since 3.31 a small change adds 0.01, a
 large change 0.1 and a big change 1.0.
+
+4.37 (16.10.2026)
+Fewer false species.
+* Maximum entropy no longer reports a species at half the mass of a
+  protein when the m/z range cuts off the charge states that would show
+  it is not there (seen with a 12 kDa protein and a mass range of 5000 to
+  20000 Da). Real species at half the mass, such as a half antibody or a
+  dimer next to a tetramer, are kept.
 
 4.36 (15.10.2026)
 Better maximum entropy.

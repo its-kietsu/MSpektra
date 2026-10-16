@@ -1073,6 +1073,7 @@ struct MaxentOptions {
     int area = 0;              // 0 heights (4.35), 1 divided by z (signal), 2 by z^2 (ions on image-current detectors)
     bool memsys = false, hybrid = false;
     bool noise2 = false, fixnoise = false, snrmask = false, seednodes = false;
+    bool seedharm = false;     // lighter nodes not on charge states of a stronger species (harmonic ghosts)
     double ratio = -1;         // minimum neighbour ratio; < 0: the default of envelope_fit (0.33)
     double lamlocal = 0, lamlocal0 = 0, lamend = 0;
 };
@@ -1095,6 +1096,7 @@ static MaxentOptions maxent_options(bool legacy) {
     o.fixnoise = opt_flag("MS_ME_FIXNOISE", n);
     o.snrmask = opt_flag("MS_ME_SNRMASK", n);
     o.seednodes = opt_flag("MS_ME_SEEDNODES", n);
+    o.seedharm = opt_flag("MS_ME_SEEDHARM", n);
     o.ratio = opt_num("MS_ME_RATIO", n ? 0.2 : -1.0);
     o.lamlocal = opt_num("MS_ME_LAMLOCAL", n ? 0.03 : 0.0);
     o.lamlocal0 = opt_num("MS_ME_LAMLOCAL0", n ? 0.03 : 0.0);
@@ -2484,14 +2486,15 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
         return rs / n_sig;
     };
     // one envelope refit: weighted NNLS at the nodes, then one common scale moved into f
+    std::vector<double> seed_used;   // EXPERIMENT (MS_ME_SEEDNODES): nodes placed at seeds by the last species_nodes()
     auto refit_envelope = [&]() {
         model.node_normal(f.data(), y.data(), w.data(), G, bvec);
         g_env_node_mass = &model.node_mass;
         const std::vector<double> prev = model.envelope();
         std::vector<double> cn = envelope_fit(G, bvec, model.Q, K, charges.front(), prev);
         g_env_node_mass = nullptr;
-        // EXPERIMENT (MS_ME_SEEDNODES): a node whose masses carry (almost) no intensity yet has nothing to fit its
-        // envelope to; it keeps the envelope it had (a seed node's start from the data), rescaled with the others
+        // a node whose masses carry (almost) no intensity yet has nothing to fit its envelope to; it keeps the
+        // envelope it had (a seed node's start from the data), rescaled with the others
         const bool keep_unsupported = opt().seednodes;
         if (keep_unsupported && model.Q > 1) {
             const size_t P = (size_t)model.Q * K;
@@ -2508,6 +2511,54 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
             for (int q = 0; q < model.Q; q++)
                 if (sup[q] < 1e-4 * smax) for (int k = 0; k < K; k++) cn[(size_t)q * K + k] = rs * prev[(size_t)q * K + k];
         }
+        // a charge state of a lighter node that falls on a charge state of a stronger, heavier species (both within a
+        // species' width in mass) is that species' signal: the node's envelope is zero there. With envelopes free between distant
+        // masses, a node at M/2 put its whole envelope on the charges z where M sits at 2z: a 12229 Da protein at
+        // m/z 599-1551 (mass range 5000-20000 Da) gave a 6115 Da half-mass ghost at charges 8-10, whose other
+        // charges fall below the window (4-8 % of the signal, 4.36). A real species there keeps its charge states
+        // where the stronger one has none (a half antibody at z, the antibody's envelope far from 2z).
+        if (opt().seedharm && model.Q > 1) {
+            const size_t P = (size_t)model.Q * K;
+            std::vector<double> sup(model.Q, 0.0);
+            double smax = 0;
+            for (int q = 0; q < model.Q; q++) {
+                for (int k = 0; k < K; k++) sup[q] += G[((size_t)q * K + k) * P + (size_t)q * K + k] * cn[(size_t)q * K + k];
+                smax = std::max(smax, sup[q]);
+            }
+            const double hw = 0.0005 * 0.5 * (masses.front() + masses.back());
+            const double mz_win_lo = use_log ? std::exp(coord.front()) : coord.front();
+            const double mz_win_hi = use_log ? std::exp(coord.back()) : coord.back();
+            for (int j = 0; j < model.Q; j++) {
+                if (!(sup[j] >= 0.1 * smax) || smax <= 0) continue;
+                const double Mj = model.node_mass[j];
+                for (int q = 0; q < model.Q; q++) {
+                    const double Mq = model.node_mass[q];
+                    if (q == j || Mq >= Mj || sup[q] >= sup[j] || std::fabs(std::log(Mj / Mq)) < 0.02) continue;   // lighter only
+                    int m = 0;   // Mq = Mj / m (m = 2, 3, 4): a harmonic; only then do its charge states z sit on Mj's m z
+                    for (int mm = 2; mm <= 4 && !m; mm++) if (std::fabs(Mq - Mj / mm) < hw) m = mm;
+                    if (!m) continue;
+                    // only when the data cannot tell: every charge z of the node inside the m/z window sits on a charge
+                    // m z of Mj within the charge range (Mj alone can explain all of it); a real species at Mj / m (the
+                    // haemoglobin dimer next to the tetramer) has charges in the window whose m z lies beyond the
+                    // charge range, which the fit has to answer to
+                    bool falsifiable = false;
+                    std::vector<int> on;
+                    for (int k = 0; k < K && !falsifiable; k++) {
+                        const double pos = (Mq + charges[k] * a) / charges[k];
+                        if (pos < mz_win_lo || pos > mz_win_hi) continue;
+                        const int kk = charges[k] * m - charges.front();   // index of charge m z
+                        if (kk >= 0 && kk < K) on.push_back(k);   // (Mj may carry it there: within the charge range)
+                        else falsifiable = true;
+                    }
+                    if (falsifiable || on.empty()) continue;
+                    for (int k : on) {
+                        if (getenv("MS_DEBUG") && cn[(size_t)q * K + k] > 0)
+                            fprintf(stderr, "  harmonic: node %.1f Da = %.1f / %d, charge %d off (%.3g)\n", Mq, Mj, m, charges[k], cn[(size_t)q * K + k]);
+                        cn[(size_t)q * K + k] = 0;
+                    }
+                }
+            }
+        }
         double s = 0;
         for (double v : cn) s += v;
         s /= model.Q;
@@ -2521,7 +2572,6 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
     // envelope nodes at the species found so far (automatic mode): the ends of the
     // mass range plus the local maxima of the smoothed mass intensity above 1 % of
     // the largest, at least 2 % apart in mass, at most 10 (and within the cost cap)
-    std::vector<double> seed_used;   // EXPERIMENT (MS_ME_SEEDNODES): nodes placed at seeds by the last species_nodes()
     auto species_nodes = [&]() {
         seed_used.clear();
         const size_t nm = masses.size();
@@ -2590,8 +2640,9 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
             // 3 times above it as well as at 2 % of the data's best (a noisy single scan otherwise seeds on noise)
             std::vector<double> srs = sr;
             const double sbg = ms::e2::median(srs);
+            const double seed_min = opt_num("MS_ME_SEEDMIN", 0.02), seed_bg = opt_num("MS_ME_SEEDBG", 3.0);   // (development)
             for (int c = 1; c + 1 < nc; c++)
-                if (sr[c] > sr[c - 1] && sr[c] >= sr[c + 1] && sr[c] >= 0.02 * symax && sr[c] >= 3.0 * sbg)
+                if (sr[c] > sr[c - 1] && sr[c] >= sr[c + 1] && sr[c] >= seed_min * symax && sr[c] >= seed_bg * sbg)
                     seedc.push_back({sr[c], std::exp(l0 + (l1 - l0) * c / (nc - 1))});
             std::sort(seedc.begin(), seedc.end(), [](const std::pair<double, double>& p1, const std::pair<double, double>& p2) { return p1.first > p2.first; });
             if (getenv("MS_DEBUG"))
