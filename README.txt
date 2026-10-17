@@ -1,4 +1,4 @@
-MSpektra 4.37 - portable Windows package   (16.10.2026)
+MSpektra 4.38 - portable Windows package   (17.10.2026)
 ========================================================
 
 Analysis of LC-MS and HRMS data, with deconvolution:
@@ -39,6 +39,15 @@ The version is shown on the start screen, in the help window (?) of LCMS
 and HRMS Analysis, and in the first line of each log file. It went up by
 0.1 with every update until 3.3. Since 3.31 a small change adds 0.01, a
 large change 0.1 and a big change 1.0.
+
+4.38 (17.10.2026)
+Faster maximum entropy and live resizing.
+* Maximum entropy is about 1.3 times faster, with exactly the same
+  results.
+* The progress of maximum entropy no longer starts again from the
+  beginning halfway through.
+* Tiles, panes side by side and the file list resize while their edge is
+  dragged, instead of when the mouse is released.
 
 4.37 (16.10.2026)
 Fewer false species.

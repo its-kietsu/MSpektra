@@ -66,18 +66,68 @@ class SpectrumSticks(LineCollection):
 
 
 _CANVAS = None
+_LIVE = {"on": False, "pending": None}   # a tile edge dragged: plots resized since, drawn again by flush_live
+
+
+def set_live(on):
+    """While a tile or pane edge is dragged (on), a plot given a new size shows its last picture stretched to it
+    (drawing every plot at every mouse move would lag); off: those plots get their new size and are drawn."""
+    _LIVE["on"] = bool(on)
+    if not on:
+        flush_live()
+
+
+def flush_live():
+    """The plots resized during the drag get their real size (drawn by the next paint, or draw_pending_plots)."""
+    pend = _LIVE["pending"]
+    if not pend:
+        return
+    cans = list(pend)
+    pend.clear()
+    import wx
+    for c in cans:
+        try:
+            if c:
+                c._real_size(wx.SizeEvent(c.GetSize()))
+        except RuntimeError:
+            pass   # closed
 
 
 def canvas_class():
     """Do not render invisible file pages during construction/DPI changes."""
     global _CANVAS
     if _CANVAS is None:
+        import weakref
+        import wx
         from matplotlib.backends.backend_wxagg import FigureCanvasWxAgg
+        _LIVE["pending"] = weakref.WeakSet()
+
         class VisibleCanvas(FigureCanvasWxAgg):
             def draw(self, drawDC=None):
                 if not self.is_saving() and not self.IsShownOnScreen():
                     self._isDrawn = False
                     return
                 super().draw(drawDC=drawDC)
+
+            def _real_size(self, event):
+                super()._on_size(event)
+
+            def _on_size(self, event):
+                if _LIVE["on"] and getattr(self, "_isDrawn", False) and getattr(self, "bitmap", None) is not None:
+                    _LIVE["pending"].add(self)
+                    self.Refresh(eraseBackground=False)
+                    return
+                super()._on_size(event)
+
+            def _on_paint(self, event):
+                if self not in _LIVE["pending"]:
+                    super()._on_paint(event)
+                    return
+                dc = wx.PaintDC(self)   # the last picture, stretched to the new size
+                w, h = self.GetClientSize()
+                bm = self.bitmap
+                mdc = wx.MemoryDC(bm)
+                dc.StretchBlit(0, 0, w, h, mdc, 0, 0, bm.GetWidth(), bm.GetHeight())
+                mdc.SelectObject(wx.NullBitmap)
         _CANVAS = VisibleCanvas
     return _CANVAS

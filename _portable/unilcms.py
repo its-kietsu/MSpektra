@@ -2763,38 +2763,53 @@ def _at_once(method):
     return run
 
 
-class DragGuide(wx.PopupWindow):
-    """The blue line shown while a gap or an edge is dragged. A window of its own on top (not a child of the
-    view): moved fast, a child line left copies of itself on the plots below it until they were drawn again."""
+class LiveDrag(object):
+    """An edge being dragged resizes at once: apply(arg) runs for the newest mouse position, at most every 15 ms.
+    Plots show their last picture stretched while the mouse moves and are drawn sharp when it rests or is released."""
 
-    def __init__(self, owner):
-        wx.PopupWindow.__init__(self, owner.GetTopLevelParent(), wx.BORDER_NONE)
-        self.owner = owner
-        self.SetBackgroundColour(wx.Colour(C["accent"]))
+    def __init__(self, win, apply):
+        from ms_plot_render import set_live
+        self.win, self.apply, self.arg = win, apply, None
+        self._step_t = self._rest_t = None
+        set_live(True)
 
-    def place(self, x, y, w, h):
-        """At x, y, w, h of the owner's client area, cut to the part of the owner shown on the screen."""
-        r = wx.Rect(self.owner.ClientToScreen(wx.Point(int(x), int(y))), wx.Size(max(int(w), 1), max(int(h), 1)))
-        win = self.owner
-        while win is not None:
-            cw, ch = win.GetClientSize()
-            r = r.Intersect(wx.Rect(win.ClientToScreen(wx.Point(0, 0)), wx.Size(cw, ch)))
-            if win.IsTopLevel():
-                break
-            win = win.GetParent()
-        if r.width <= 0 or r.height <= 0:
-            self.Hide()
-            return
-        self.SetSize(r)
-        if not self.IsShown():
-            self.Show()
-        self.Update()
+    def move(self, arg):
+        self.arg = arg
+        if self._step_t is None:
+            self._step_t = wx.CallLater(15, self._step)
+
+    def _step(self):
+        self._step_t = None
+        try:
+            self.apply(self.arg)
+        except RuntimeError:
+            return  # closed
+        if self._rest_t is None:
+            self._rest_t = wx.CallLater(250, self._sharp)
+        else:
+            self._rest_t.Start(250)
+
+    def _sharp(self):
+        self._rest_t = None
+        from ms_plot_render import flush_live
+        try:
+            change_at_once(self.win.GetTopLevelParent(), flush_live)
+        except RuntimeError:
+            pass
+
+    def end(self):
+        """Stops; the plots get their sizes (drawn by draw_pending_plots when called inside change_at_once)."""
+        from ms_plot_render import set_live
+        for t in (self._step_t, self._rest_t):
+            if t is not None:
+                t.Stop()
+        self._step_t = self._rest_t = None
+        set_live(False)
 
 
 class SplitBox(wx.Panel):
     """Panes in a column (or a row) separated by gaps. Drag a gap to resize
-    the two panes next to it; a blue guide shows the new position and the
-    panes are resized when the mouse is released."""
+    the two panes next to it (they follow the mouse)."""
 
     def __init__(self, parent, orient=wx.VERTICAL, gap=10, min_size=60):
         wx.Panel.__init__(self, parent, style=wx.BORDER_NONE)
@@ -2805,9 +2820,10 @@ class SplitBox(wx.Panel):
         self.panes, self.weights = [], []  # the panes shown (closed ones left out)
         self.all_panes, self.all_weights = [], []
         self.closed = set()
-        self.on_change = None  # callback(weights) after a drag
+        self.on_change = None  # callback(weights) while and after a drag
         self._drag = None
-        self._guide = None
+        self._live = None
+        self._delta = 0
         self._hover = None
         for ev, fn in ((wx.EVT_SIZE, lambda e: self.relayout()), (wx.EVT_LEFT_DOWN, self._down),
                        (wx.EVT_MOTION, self._motion), (wx.EVT_LEFT_UP, self._up),
@@ -2899,37 +2915,41 @@ class SplitBox(wx.Panel):
         if i is None:
             e.Skip()
             return
-        self._drag = (i, self._coord(e), self._sizes())
+        self._drag = (i, self._coord(e), self._sizes(), list(self.weights))
+        self._delta = 0
         if not self.HasCapture():
             self.CaptureMouse()
-        w, h = self.GetClientSize()
-        self._guide = DragGuide(self)
-        self._move_guide(0)
+        self._live = LiveDrag(self, self._apply_drag)
 
     def _new_sizes(self, delta):
-        i, c0, sizes = self._drag
+        i, c0, sizes = self._drag[:3]
         pair = sizes[i] + sizes[i + 1]
         if pair < 2 * self.min:
             return sizes[i], sizes[i + 1]  # too small for two panes of the least size: unchanged
         a = min(max(sizes[i] + delta, self.min), pair - self.min)
         return a, pair - a
 
-    def _move_guide(self, delta):
-        i, c0, sizes = self._drag
+    def _apply_drag(self, delta):
+        """The two panes at the sizes for a drag by delta (from the sizes when the drag began)."""
+        if self._drag is None:
+            return
+        i, c0, sizes, w0 = self._drag
         a, b = self._new_sizes(delta)
-        start = sum(sizes[:i]) + self.gap * i + a
-        w, h = self.GetClientSize()
-        t = max(2, self.FromDIP(3))
-        mid = start + (self.gap - t) // 2
-        if self._vertical():
-            self._guide.place(0, mid, w, t)
-        else:
-            self._guide.place(mid, 0, t, h)
+        self.weights = list(w0)
+        pair = w0[i] + w0[i + 1]
+        if a + b > 0 and (a, b) != (sizes[i], sizes[i + 1]):
+            self.weights[i] = pair * a / float(a + b)
+            self.weights[i + 1] = pair - self.weights[i]
+        self.relayout()
+        if self.on_change:
+            self.on_change(self.weights)
 
     def _motion(self, e):
         c = self._coord(e)
         if self._drag is not None:
-            self._move_guide(c - self._drag[1])
+            self._delta = c - self._drag[1]
+            if self._live is not None:
+                self._live.move(self._delta)
             return
         i = self._gap_at(c)
         cur = (wx.CURSOR_SIZENS if self._vertical() else wx.CURSOR_SIZEWE) if i is not None else wx.CURSOR_ARROW
@@ -2940,19 +2960,11 @@ class SplitBox(wx.Panel):
 
     @_at_once
     def _finish(self, delta):
-        i, c0, sizes = self._drag
-        a, b = self._new_sizes(delta)
+        self._apply_drag(delta)
         self._drag = None
-        if self._guide is not None:
-            self._guide.Destroy()
-            self._guide = None
-        pair = self.weights[i] + self.weights[i + 1]
-        if a + b > 0 and (a, b) != (sizes[i], sizes[i + 1]):
-            self.weights[i] = pair * a / float(a + b)
-            self.weights[i + 1] = pair - self.weights[i]
-        self.relayout()
-        if self.on_change:
-            self.on_change(self.weights)
+        if self._live is not None:
+            self._live.end()
+            self._live = None
 
     def _up(self, e):
         if self.HasCapture():
@@ -2964,7 +2976,7 @@ class SplitBox(wx.Panel):
 
     def _lost(self, e):
         if self._drag is not None:
-            self._finish(0)
+            self._finish(self._delta)  # kept as last shown
 
     def _leave(self, e):
         if self._drag is None and self._hover is not None:
@@ -3013,9 +3025,10 @@ class StackBox(wx.Panel):
         self.fit_first = 0  # mode "two": this many first tiles fill the window, the others below at that size
         self.mode_key, self.default_mode = "tile_mode", "journal"  # setting of the tile mode
         self.view_h = self.FromDIP(600)
-        self.on_change = None  # callback() after a drag (the column length changed)
+        self.on_change = None  # callback() while and after a drag (the column length changed)
         self._drag = None
-        self._guide = None
+        self._live = None
+        self._delta = 0
         self._hover = None
         for ev, fn in ((wx.EVT_SIZE, lambda e: self.relayout()), (wx.EVT_LEFT_DOWN, self._down),
                        (wx.EVT_LEFT_DCLICK, self._dclick), (wx.EVT_MOTION, self._motion),
@@ -3212,10 +3225,10 @@ class StackBox(wx.Panel):
             e.Skip()
             return
         self._drag = (i, e.GetY(), self.heights())
+        self._delta = 0
         if not self.HasCapture():
             self.CaptureMouse()
-        self._guide = DragGuide(self)
-        self._move_guide(0)
+        self._live = LiveDrag(self, self._apply_drag)
 
     def _dclick(self, e):
         if self._gap_at(e.GetY()) is not None:
@@ -3228,17 +3241,25 @@ class StackBox(wx.Panel):
         top = sum(hs[:i]) + self.gap * i
         v0, v1 = self._visible()
         h = max(self.min, hs[i] + delta)
-        return int(min(h, max(self.min, v1 - top - self.gap)))  # the guide stays in the window
+        return int(min(h, max(self.min, v1 - top - self.gap)))  # the gap stays in the window
 
-    def _move_guide(self, delta):
+    def _apply_drag(self, delta):
+        """The tile at the height for a drag by delta (the others as when the drag began)."""
+        if self._drag is None:
+            return
         i, c0, hs = self._drag
-        top = sum(hs[:i]) + self.gap * i
-        t = max(2, self.FromDIP(3))
-        self._guide.place(0, top + self._new_height(delta) + (self.gap - t) // 2, self.GetClientSize()[0], t)
+        H = float(max(self.view_h, 1))
+        self.frac = {p: hgt / H for p, hgt in zip(self.panes, hs)}
+        self.frac[self.panes[i]] = self._new_height(delta) / H
+        if self.on_change:
+            self.on_change()
+        self.relayout()
 
     def _motion(self, e):
         if self._drag is not None:
-            self._move_guide(e.GetY() - self._drag[1])
+            self._delta = e.GetY() - self._drag[1]
+            if self._live is not None:
+                self._live.move(self._delta)
             return
         i = self._gap_at(e.GetY())
         self.SetCursor(wx.Cursor(wx.CURSOR_SIZENS if i is not None else wx.CURSOR_ARROW))
@@ -3248,18 +3269,11 @@ class StackBox(wx.Panel):
 
     @_at_once
     def _finish(self, delta):
-        i, c0, hs = self._drag
-        h = self._new_height(delta)
+        self._apply_drag(delta)
         self._drag = None
-        if self._guide is not None:
-            self._guide.Destroy()
-            self._guide = None
-        H = float(max(self.view_h, 1))
-        self.frac = {p: hgt / H for p, hgt in zip(self.panes, hs)}
-        self.frac[self.panes[i]] = h / H
-        if self.on_change:
-            self.on_change()
-        self.relayout()
+        if self._live is not None:
+            self._live.end()
+            self._live = None
 
     def _up(self, e):
         if self.HasCapture():
@@ -3271,7 +3285,7 @@ class StackBox(wx.Panel):
 
     def _lost(self, e):
         if self._drag is not None:
-            self._finish(0)
+            self._finish(self._delta)  # kept as last shown
 
     def _leave(self, e):
         if self._drag is None and self._hover is not None:
@@ -6235,7 +6249,7 @@ class FilesPanel(wx.Panel):
         self.nsel = None  # key of the trace or spectrum clicked last
         self._acting = False  # a change made here (the cursor stays) rather than elsewhere
         self._drag = None  # (mouse x on the screen, width) while the right edge is dragged
-        self._guide = None  # the line at the new width while dragging (the width is set when released)
+        self._live = None  # LiveDrag while the right edge is dragged
         self._tree_due = False
         self.folder, self.fitems, self._fsig, self._info = "", [], None, {}
         st = settings()
@@ -6939,7 +6953,8 @@ class FilesPanel(wx.Panel):
             sx = self.ClientToScreen(e.GetPosition()).x
             wd = int(round(self.ToDIP(w0 + sx - x0)))
             self._drag_w = min(max(wd, self.WIDTH_MIN), self.WIDTH_MAX)
-            self._place_guide()
+            if self._live is not None:
+                self._live.move(self._drag_w)
             return
         kind, v = self._hit(e.GetPosition())
         self.SetCursor(wx.Cursor(wx.CURSOR_SIZEWE if kind == "grip" else wx.CURSOR_ARROW))
@@ -7011,13 +7026,11 @@ class FilesPanel(wx.Panel):
             self.hover, self.hover_x, self.hover_part = -1, False, None
             self.Refresh()
 
-    def _place_guide(self):
-        par = self.GetParent()
-        if self._guide is None:
-            self._guide = DragGuide(par)
-        t = max(2, self.FromDIP(3))
-        x, y = self.GetPosition()
-        self._guide.place(x + self._px_width(self._drag_w) - t, y, t, self.GetSize()[1])
+    def _live_width(self, wd):
+        if wd is not None and wd != self.width_dip:
+            self.width_dip = wd
+            if self._apply_width():
+                self.GetParent().Layout()
 
     def _end_drag(self):
         if self._drag is None:
@@ -7025,13 +7038,13 @@ class FilesPanel(wx.Panel):
         self._drag = None
         if self.HasCapture():
             self.ReleaseMouse()
-        if self._guide is not None:
-            self._guide.Destroy()
-            self._guide = None
-        if self._drag_w != self.width_dip:
-            self.width_dip = self._drag_w
-            if self._apply_width():
-                self.GetParent().Layout()
+        live, self._live = self._live, None
+
+        def done():
+            self._live_width(self._drag_w)
+            if live is not None:
+                live.end()
+        change_at_once(self.GetTopLevelParent(), done)
         T._save({"files_width": int(self.width_dip)})
         self.Refresh()
 
@@ -7043,6 +7056,7 @@ class FilesPanel(wx.Panel):
             self._drag = (self.ClientToScreen(e.GetPosition()).x, self.GetSize()[0])
             self._drag_w = self.width_dip
             self.CaptureMouse()
+            self._live = LiveDrag(self, self._live_width)
             self.Refresh()
             return
         self._acting = True
