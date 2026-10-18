@@ -118,10 +118,11 @@ class _MzRow(U.SplitBox):
         w, h = self.GetClientSize()
         hh = getattr(self, "head_h", 0)
         pos = 0
+        rects = []
         for win, size in zip(self.panes, self._sizes()):
-            win.SetSize(pos, hh, max(size, 1), max(h - hh, 1))
+            rects.append((win, (pos, hh, max(size, 1), max(h - hh, 1))))
             pos += size + self.gap
-        self.Refresh()
+        U.place_panes(self, rects)
 
     def _paint(self, e):
         dc = wx.PaintDC(self)

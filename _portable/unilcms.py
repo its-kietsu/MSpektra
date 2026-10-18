@@ -347,12 +347,12 @@ def _fmt_t(v):
     return "" if v is None else "%.3f" % v
 
 
-def draw_badge(gc, win, text, colour, x, y, line_h):
+def draw_badge(gc, win, text, colour, x, y, line_h, font=ui_font):
     """Small rounded label (e.g. "Poor result") in a card header: drawn at x,
     centred on the text line that starts at y and is line_h high. Returns
     its width."""
     col = wx.Colour(colour)
-    gc.SetFont(ui_font(8, 700), col)
+    gc.SetFont(font(8, 700), col)
     tw, th = gc.GetTextExtent(text)
     padx, h = win.FromDIP(7), th + win.FromDIP(3)
     by = y + (line_h - h) / 2.0
@@ -361,6 +361,259 @@ def draw_badge(gc, win, text, colour, x, y, line_h):
     gc.DrawRoundedRectangle(x, by, tw + 2 * padx, h, win.FromDIP(3))  # Windows 11 corners, not a pill
     gc.DrawText(text, x + padx, by + (h - th) / 2.0)
     return tw + 2 * padx
+
+
+_MEM_FONTS = {}
+_WIN_FONTS = {}
+
+
+def kept_font(points, weight=400):
+    """ui_font(points, weight), made once (for window DCs: wx fits it to the DPI of the window when a DC selects
+    it)."""
+    f = _WIN_FONTS.get((points, weight))
+    if f is None:
+        f = _WIN_FONTS[(points, weight)] = ui_font(points, weight)
+    return f
+
+
+def own_buffered_dc(win):
+    """wx.BufferedPaintDC on a buffer of win's own size, kept: the buffer wx.AutoBufferedPaintDC shares between
+    windows is as large as the largest one painted and took about 4 ms each time on a large screen."""
+    w, h = win.GetClientSize()
+    w, h = max(w, 1), max(h, 1)
+    bm = getattr(win, "_paint_buf", None)
+    if bm is None or bm.GetWidth() != w or bm.GetHeight() != h:
+        bm = win._paint_buf = wx.Bitmap(w, h)
+    return wx.BufferedPaintDC(win, bm)
+
+
+_MEM = {"dc": None, "ext": {}}   # a memory DC for measuring text; text sizes measured (font, text)
+
+
+def mem_dc():
+    """A memory DC kept for measuring text."""
+    if _MEM["dc"] is None:
+        _MEM["dc"] = wx.MemoryDC(wx.Bitmap(1, 1))
+    return _MEM["dc"]
+
+
+def mem_fonts(win, dc):
+    """font(points, weight) for drawing or measuring on the memory DC dc as on win: made for the DPI of win (a
+    memory DC has the DPI of the system), kept."""
+    try:
+        sc = win.GetDPI().y / float(dc.GetPPI().y or 96)
+    except Exception:
+        sc = 1.0
+
+    def font(points, weight=400):
+        fk = (points * sc, weight)
+        f = _MEM_FONTS.get(fk)
+        if f is None:
+            f = _MEM_FONTS[fk] = ui_font(points * sc, weight)
+        return f
+    return font
+
+
+class _TextFirst(object):
+    """As unidec_theme.crisp(dc) (shapes with a graphics context, GDI text), the graphics context made only when a
+    shape is drawn (a header with text only does not need one)."""
+
+    def __init__(self, dc):
+        self.__dict__.update(dc=dc, gc=None, _font=None, _col=wx.Colour(0, 0, 0))
+
+    def __getattr__(self, name):
+        gc = self.__dict__["gc"]
+        if gc is None:
+            gc = self.__dict__["gc"] = wx.GraphicsContext.Create(self.__dict__["dc"])
+        return getattr(gc, name)
+
+    def SetFont(self, font, colour=None):
+        self.__dict__.update(_font=font, _col=colour if colour is not None else wx.Colour(0, 0, 0))
+        self.dc.SetFont(font)
+
+    def GetTextExtent(self, text):
+        w, h = self.dc.GetTextExtent(text)
+        return float(w), float(h)
+
+    def DrawText(self, text, x, y, *args):
+        if self.gc is not None:
+            self.gc.Flush()
+        dc = self.dc
+        if self._font is not None:
+            dc.SetFont(self._font)
+        dc.SetBackgroundMode(wx.TRANSPARENT)
+        dc.SetTextForeground(self._col)
+        dc.DrawText(text, int(round(x)), int(round(y)))
+
+    def finish(self):
+        if self.gc is not None:
+            self.gc.Flush()
+
+
+class TextMeasure(object):
+    """SetFont and GetTextExtent of a graphics context, for the sizes only: on a memory DC with fonts made for
+    the DPI of win, sizes measured before kept."""
+
+    def __init__(self, win):
+        self.dc = mem_dc()
+        self.font = mem_fonts(win, self.dc)
+        self._f = None
+
+    def SetFont(self, font, colour=None):
+        self._f = font
+
+    def GetTextExtent(self, text):
+        key = (id(self._f), text)
+        ext = _MEM["ext"].get(key)
+        if ext is None:
+            if len(_MEM["ext"]) > 4000:
+                _MEM["ext"].clear()
+            self.dc.SetFont(self._f)
+            w, h = self.dc.GetTextExtent(text)
+            ext = _MEM["ext"][key] = (float(w), float(h))
+        return ext
+
+
+def card_frame(win, gc, w, h, shadows=((3, 10), (1, 16))):
+    """Shadow, white card and its edge, w x h (plot and table cards)."""
+    r = win.FromDIP(12)
+    gc.SetPen(wx.TRANSPARENT_PEN)
+    for dy, a in shadows:
+        gc.SetBrush(wx.Brush(wx.Colour(14, 28, 48, a)))
+        gc.DrawRoundedRectangle(1, 1 + dy, w - 2, h - 2 - dy, r)
+    gc.SetBrush(wx.Brush(wx.Colour("#FFFFFF")))
+    gc.SetPen(gc.CreatePen(wx.GraphicsPenInfo(wx.Colour(C["line"])).Width(1.0)))
+    gc.DrawRoundedRectangle(0.5, 0.5, w - 1.5, h - 3, r)
+
+
+def table_frame(win, gc, w, h):
+    """The frame of a table card (one shadow)."""
+    card_frame(win, gc, w, h, ((2, 12),))
+
+
+class _HeaderOps(object):
+    """Stands in for the graphics context while a header is laid out: what would be drawn where (text, lines,
+    rounded labels) and how far to the right it reaches; the text measured as on win."""
+
+    def __init__(self, win):
+        self.m = TextMeasure(win)
+        self.ops, self.right = [], 0.0
+
+    def __getattr__(self, name):   # (anything else: drawn again as a whole)
+        raise AttributeError(name)
+
+    def SetFont(self, font, colour=None):
+        self.m.SetFont(font)
+
+    def GetTextExtent(self, text):
+        return self.m.GetTextExtent(text)
+
+    def DrawText(self, text, x, y, *args):
+        self.ops.append(("t", text, int(round(x)), int(round(y))))
+        self.right = max(self.right, x + self.m.GetTextExtent(text)[0])
+
+    def StrokeLine(self, x1, y1, x2, y2):
+        self.ops.append(("l", x1, y1, x2, y2))
+        self.right = max(self.right, x1, x2)
+
+    def DrawRoundedRectangle(self, x, y, w, h, r):
+        self.ops.append(("r", x, y, w, h, r))
+        self.right = max(self.right, x + w)
+
+    def CreatePen(self, *args):
+        return None
+
+    def SetPen(self, *args):
+        pass
+
+    def SetBrush(self, *args):
+        pass
+
+
+def paint_card(win, top, frame, header, key):
+    """Paints a card (a window with BG_STYLE_PAINT): frame(win, gc, w, h) draws its shadow and edge, header(gc, w,
+    font) the text in its first top rows. Below them every row is the same, except the last ones (the round
+    corners): the card is put together from a picture of the frame at a small size (kept while the scale and
+    colours stay) and its first rows with the header (kept while the header stays), so a card made taller,
+    lower or wider is painted again at once: a wider or narrower card keeps the picture of its header while the
+    header is drawn the same (the frame between the header and the right edge has the same columns). The
+    header is drawn on a bitmap with fonts made for the DPI of the window (a memory DC has the DPI of the
+    system)."""
+    w, h = win.GetClientSize()
+    k = win.FromDIP(12) + 4   # the rows and columns of a round corner (with the shadow)
+    if w < 2 * k + 3 or h < top + 1 + k or top < k:   # (too small: drawn as a whole)
+        dc = own_buffered_dc(win)
+        dc.SetBackground(wx.Brush(wx.Colour(C["bg"])))
+        dc.Clear()
+        gc = T.crisp(dc)
+        frame(win, gc, w, h)
+        header(gc, w)
+        return
+    bh = top + 1 + k   # the rows kept: header, one straight row, bottom
+    look = (top, k, frame, win.GetDPIScaleFactor(), C["bg"], C["line"])
+    if getattr(win, "_card_ref_key", None) != look:   # the frame, 2k + 2 wide
+        rw = 2 * k + 2
+        bm = wx.Bitmap(rw, bh)
+        mdc = wx.MemoryDC(bm)
+        mdc.SetBackground(wx.Brush(wx.Colour(C["bg"])))
+        mdc.Clear()
+        gc = T.crisp(mdc)
+        frame(win, gc, rw, bh)
+        del gc
+        mdc.SelectObject(wx.NullBitmap)
+        win._card_ref, win._card_ref_key = bm, look
+    base = (look, key, C["text"], C["muted"], C["accent_text"])
+    lay = getattr(win, "_card_lay", None)   # (bitmap, base, what its header draws where)
+    keep = None
+    if lay is not None and lay[1] == base and lay[0].GetWidth() != w:
+        try:   # the header at this width: drawn the same as on the kept picture?
+            ops = _HeaderOps(win)
+            header(ops, w, ops.m.font)
+            xr = int(ops.right + 1) + win.FromDIP(4)
+            if ops.ops == lay[2] and k + 1 <= xr <= min(w, lay[0].GetWidth()) - k - 1:
+                keep = xr
+        except Exception:
+            keep = None
+    if keep is None and (lay is None or lay[1] != base or lay[0].GetWidth() != w):   # drawn at this width
+        bm = wx.Bitmap(w, bh)
+        mdc = wx.MemoryDC(bm)
+        ref = wx.MemoryDC(win._card_ref)
+        mdc.Blit(0, 0, k + 1, bh, ref, 0, 0)
+        mdc.StretchBlit(k + 1, 0, w - 2 * k - 1, bh, ref, k + 1, 0, 1, bh)
+        mdc.Blit(w - k, 0, k, bh, ref, k + 2, 0)
+        ref.SelectObject(wx.NullBitmap)
+        gc = _TextFirst(mdc)
+        header(gc, w, mem_fonts(win, mdc))
+        gc.finish()
+        del gc
+        mdc.SelectObject(wx.NullBitmap)
+        ops = None
+        try:
+            rec = _HeaderOps(win)
+            header(rec, w, rec.m.font)
+            ops = rec.ops
+        except Exception:
+            pass
+        lay = win._card_lay = (bm, base, ops)
+    from ms_plot_render import copy_rect
+    dc = wx.PaintDC(win)
+    mdc = wx.MemoryDC(lay[0])
+    # (x, width, source dc, source x, source width) across; (y, height, source y, source height) down
+    if keep is None:
+        cols = [(0, w, mdc, 0, w)]
+    else:
+        ref = wx.MemoryDC(win._card_ref)
+        cols = [(0, keep, mdc, 0, keep), (keep, w - k - keep, ref, k + 1, 1), (w - k, k, ref, k + 2, k)]
+    rows = [(0, top, 0, top), (h - k, k, top + 1, k)]
+    if h - k > top:
+        rows.append((top, h - k - top, top, 1))
+    for x, pw, src, sx, sw in cols:
+        for y, ph, sy, sh in rows:
+            if not copy_rect(dc, x, y, pw, ph, src, sx, sy, sw, sh):
+                dc.StretchBlit(x, y, pw, ph, src, sx, sy, sw, sh)
+    if keep is not None:
+        ref.SelectObject(wx.NullBitmap)
+    mdc.SelectObject(wx.NullBitmap)
 
 
 # ==========================================================================
@@ -373,6 +626,8 @@ class PlotCard(wx.Panel):
     Ctrl + drag = zoom box, click = pick, double click = full view, right
     click = context menu supplied by the owner. The wheel scrolls the column
     of tiles; Ctrl + wheel zooms the time or m/z axis."""
+
+    own_refresh = True   # (paints itself again when resized: place_panes)
 
     def __init__(self, parent, title, subtitle="", mode="range"):
         wx.Panel.__init__(self, parent, style=wx.BORDER_NONE)
@@ -460,10 +715,10 @@ class PlotCard(wx.Panel):
             self._update_header()
             self.Refresh()
 
-    def _badge_width(self, gc):
+    def _badge_width(self, gc, font=ui_font):
         if not self.badge:
             return 0
-        gc.SetFont(ui_font(8, 700), wx.Colour(self.badge[1]))
+        gc.SetFont(font(8, 700), wx.Colour(self.badge[1]))
         return self.FromDIP(10) + gc.GetTextExtent(self.badge[0])[0] + 2 * self.FromDIP(7)
 
     def _size(self, e):
@@ -473,31 +728,23 @@ class PlotCard(wx.Panel):
         e.Skip()
 
     def _paint(self, e):
-        dc = wx.AutoBufferedPaintDC(self)
-        dc.SetBackground(wx.Brush(wx.Colour(C["bg"])))
-        dc.Clear()
-        gc = T.crisp(dc)
-        w, h = self.GetClientSize()
-        r = self.FromDIP(12)
-        gc.SetPen(wx.TRANSPARENT_PEN)
-        for dy, a in ((3, 10), (1, 16)):
-            gc.SetBrush(wx.Brush(wx.Colour(14, 28, 48, a)))
-            gc.DrawRoundedRectangle(1, 1 + dy, w - 2, h - 2 - dy, r)
-        gc.SetBrush(wx.Brush(wx.Colour("#FFFFFF")))
-        gc.SetPen(gc.CreatePen(wx.GraphicsPenInfo(wx.Colour(C["line"])).Width(1.0)))
-        gc.DrawRoundedRectangle(0.5, 0.5, w - 1.5, h - 3, r)
-        self._draw_header(gc, w)
+        paint_card(self, self._hh, card_frame, self._draw_header, self._header_key())
 
-    def _header_layout(self, gc, w):
+    def _header_key(self):
+        """What the header shows (text, legend, badge, read-out) and its scale."""
+        return (self.title, self.subtitle, self.badge, tuple(self.legend_items), self.readout,
+                self.readout_fmt is None, self.GetDPIScaleFactor())
+
+    def _header_layout(self, gc, w, font=ui_font):
         """Positions of title, legend and subtitle: one line if they fit,
         otherwise the subtitle (and the legend if needed) on a second line.
         Returns (height, title_y, line2_y, legend_on_line2, sub_on_line2)."""
-        gc.SetFont(ui_font(10, 700), wx.Colour(C["text"]))
+        gc.SetFont(font(10, 700), wx.Colour(C["text"]))
         tw, th = gc.GetTextExtent(self.title or "Xg")
-        tw += self._badge_width(gc)
-        gc.SetFont(ui_font(9, 500), wx.Colour(C["text"]))
+        tw += self._badge_width(gc, font)
+        gc.SetFont(font(9, 500), wx.Colour(C["text"]))
         leg = sum(self.FromDIP(29) + gc.GetTextExtent(lab)[0] for col, lab in self.legend_items)
-        gc.SetFont(ui_font(9, 400), wx.Colour(C["muted"]))
+        gc.SetFont(font(9, 400), wx.Colour(C["muted"]))
         sw = gc.GetTextExtent(self.subtitle)[0] if self.subtitle else 0
         rw = self.FromDIP(170) if self.readout_fmt is not None else 0  # room kept for the read-out
         room = w - self.FromDIP(14) - tw - self.FromDIP(12) - rw - self.FromDIP(12)
@@ -509,18 +756,18 @@ class PlotCard(wx.Panel):
             return top + 2 * line + self.FromDIP(6), top, top + line, False, True
         return top + 2 * line + self.FromDIP(6), top, top + line, True, True
 
-    def _draw_header(self, gc, w):
-        hh, y, y2, leg2, sub2 = self._header_layout(gc, w)
-        gc.SetFont(ui_font(10, 700), wx.Colour(C["text"]))
+    def _draw_header(self, gc, w, font=ui_font):
+        hh, y, y2, leg2, sub2 = self._header_layout(gc, w, font)
+        gc.SetFont(font(10, 700), wx.Colour(C["text"]))
         tw, th = gc.GetTextExtent(self.title)
         x = self.FromDIP(14)
         gc.DrawText(self.title, x, y)
         if self.badge:
             tw += self.FromDIP(10) + draw_badge(gc, self, self.badge[0], self.badge[1], x + tw + self.FromDIP(10), y,
-                                                th)
+                                                th, font)
         rw = 0
         if self.readout:
-            gc.SetFont(ui_font(9, 600), wx.Colour(C["accent_text"]))
+            gc.SetFont(font(9, 600), wx.Colour(C["accent_text"]))
             rw, rh = gc.GetTextExtent(self.readout)
             gc.DrawText(self.readout, w - rw - self.FromDIP(16), y + (th - rh) / 2.0)
             rw += self.FromDIP(24)
@@ -531,7 +778,7 @@ class PlotCard(wx.Panel):
             xx, ly = x, y2
             limit = w - self.FromDIP(12)
         # legend: coloured dashes and names
-        gc.SetFont(ui_font(9, 500), wx.Colour(C["text"]))
+        gc.SetFont(font(9, 500), wx.Colour(C["text"]))
         for col, lab in self.legend_items:
             lw_, lh_ = gc.GetTextExtent(lab)
             need = self.FromDIP(18) + lw_ + self.FromDIP(12)
@@ -544,7 +791,7 @@ class PlotCard(wx.Panel):
             gc.DrawText(lab, xx + self.FromDIP(17), ly + (th - lh_) / 2.0)
             xx += need
         if self.subtitle:
-            gc.SetFont(ui_font(9, 400), wx.Colour(C["muted"]))
+            gc.SetFont(font(9, 400), wx.Colour(C["muted"]))
             sub = self.subtitle
             sy = ly
             if sub2:
@@ -566,9 +813,12 @@ class PlotCard(wx.Panel):
             w = self.GetClientSize()[0]
             if w < 50:
                 return
-            dc = wx.ClientDC(self)
-            gc = T.crisp(dc)
-            hh = int(round(self._header_layout(gc, w)[0]))
+            key = (w, self._header_key())
+            if key == getattr(self, "_hdr_key", None):
+                return   # (the same width and text: the same header; e.g. a tile made taller)
+            self._hdr_key = key
+            m = TextMeasure(self)
+            hh = int(round(self._header_layout(m, w, m.font)[0]))
             if abs(hh - self._hh) > 1:
                 self._hh = hh
                 self.GetSizer().GetItem(0).AssignSpacer(wx.Size(0, hh))
@@ -2595,6 +2845,7 @@ class SidePanel(wx.ScrolledWindow):
 
 class PeakTable(wx.Panel):
     """Card with the integration results."""
+    own_refresh = True   # (paints itself again when resized: place_panes)
     COLS = [("#", 34), ("Trace", 120), ("RT (min)", 98), ("Start", 62), ("End", 62), ("Height", 86), ("Area", 96),
             ("Area %", 62)]
 
@@ -2614,7 +2865,7 @@ class PeakTable(wx.Panel):
         s.Add(self.list, 1, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, self.FromDIP(10))
         self.SetSizer(s)
         self.Bind(wx.EVT_PAINT, self._paint)
-        self.Bind(wx.EVT_SIZE, lambda e: (self.Layout(), self.Refresh(), e.Skip()))
+        self.Bind(wx.EVT_SIZE, lambda e: (self.Layout(), refresh_card(self), e.Skip()))
         self.list.Bind(wx.EVT_LIST_ITEM_SELECTED, lambda e: self.on_select(e.GetIndex()))
         self.Bind(wx.EVT_MOUSEWHEEL, lambda e: forward_wheel(self, e))
         self.list.Bind(wx.EVT_LIST_KEY_DOWN, self._key)
@@ -2673,22 +2924,14 @@ class PeakTable(wx.Panel):
             self.list.EnsureVisible(i)
 
     def _paint(self, e):
-        dc = wx.AutoBufferedPaintDC(self)
-        dc.SetBackground(wx.Brush(wx.Colour(C["bg"])))
-        dc.Clear()
-        gc = T.crisp(dc)
-        w, h = self.GetClientSize()
-        r = self.FromDIP(12)
-        gc.SetPen(wx.TRANSPARENT_PEN)
-        gc.SetBrush(wx.Brush(wx.Colour(14, 28, 48, 12)))
-        gc.DrawRoundedRectangle(1, 3, w - 2, h - 4, r)
-        gc.SetBrush(wx.Brush(wx.Colour("#FFFFFF")))
-        gc.SetPen(gc.CreatePen(wx.GraphicsPenInfo(wx.Colour(C["line"])).Width(1.0)))
-        gc.DrawRoundedRectangle(0.5, 0.5, w - 1.5, h - 3, r)
-        gc.SetFont(ui_font(10, 700), wx.Colour(C["text"]))
+        paint_card(self, self.FromDIP(30), table_frame, self._draw_header,
+                   (self.title, self.info, self.GetDPIScaleFactor()))
+
+    def _draw_header(self, gc, w, font=ui_font):
+        gc.SetFont(font(10, 700), wx.Colour(C["text"]))
         tw, th = gc.GetTextExtent(self.title)
         gc.DrawText(self.title, self.FromDIP(14), self.FromDIP(9))
-        gc.SetFont(ui_font(9, 400), wx.Colour(C["muted"]))
+        gc.SetFont(font(9, 400), wx.Colour(C["muted"]))
         txt = self.info or "No peaks"
         sw, sh = gc.GetTextExtent(txt)
         gc.DrawText(txt, self.FromDIP(14) + tw + self.FromDIP(10), self.FromDIP(9) + (th - sh) / 2.0)
@@ -2767,27 +3010,108 @@ def _at_once(method):
     return run
 
 
+def paint_now(win):
+    """What is waiting to be painted in the window of win (and everything in it) painted now, in one pass."""
+    try:
+        top = win.GetTopLevelParent()
+        if wx.Platform == "__WXMSW__":
+            import ctypes
+            ctypes.windll.user32.RedrawWindow(ctypes.c_void_p(top.GetHandle()), None, None,
+                                              0x0080 | 0x0100)   # RDW_ALLCHILDREN | RDW_UPDATENOW
+        else:
+            top.Update()
+    except (RuntimeError, OSError, AttributeError):
+        pass
+
+
+def refresh_own(win):
+    """Only win's own pixels painted again (gaps between its tiles), not the windows inside it: they repaint
+    themselves when their size changes, and moved ones keep their pixels."""
+    if wx.Platform == "__WXMSW__":
+        try:
+            import ctypes
+            ctypes.windll.user32.InvalidateRect(ctypes.c_void_p(win.GetHandle()), None, True)
+            return
+        except (RuntimeError, OSError, AttributeError):
+            pass
+    win.Refresh()
+
+
+def live_drag_on():
+    from ms_plot_render import _LIVE
+    return _LIVE["on"]
+
+
+def refresh_card(win):
+    """A card resized: painted again; while an edge is dragged its list (a native control) is left to repaint
+    what it needs itself."""
+    if live_drag_on():
+        refresh_own(win)
+    else:
+        win.Refresh()
+
+
+def place_panes(box, rects):
+    """The panes of box at their rectangles [(win, (x, y, w, h))], then box painted again. While an edge is
+    dragged only what changes is painted: the panes given a new size and box's own gaps (moved panes keep their
+    pixels)."""
+    if not live_drag_on():
+        for win, r in rects:
+            win.SetSize(*r)
+        box.Refresh()
+        return
+    deferred = box.BeginRepositioningChildren()   # (moved together, at the end)
+    try:
+        for win, r in rects:
+            old = win.GetSize()
+            win.SetSize(*r)
+            if (r[2], r[3]) != (old.width, old.height) and not getattr(win, "own_refresh", False):
+                win.Refresh()   # (cards and rows paint themselves again when resized)
+    finally:
+        if deferred:
+            box.EndRepositioningChildren()
+    refresh_own(box)
+
+
 class LiveDrag(object):
-    """An edge being dragged resizes at once: apply(arg) runs for the newest mouse position, at most every 15 ms.
-    Plots show their last picture stretched while the mouse moves and are drawn sharp when it rests or is released."""
+    """An edge being dragged resizes at once: apply(arg) runs for the newest mouse position (at most every
+    STEP_S; a later position waits for a timer) and is painted at once (input never waits for the painting).
+    Plots show their last picture stretched while the mouse moves and are drawn sharp when it rests or is
+    released."""
+    STEP_S = 0.006
 
     def __init__(self, win, apply):
         from ms_plot_render import set_live
         self.win, self.apply, self.arg = win, apply, None
         self._step_t = self._rest_t = None
+        self._last = 0.0
+        self._busy = False
         set_live(True)
 
     def move(self, arg):
         self.arg = arg
-        if self._step_t is None:
-            self._step_t = wx.CallLater(15, self._step)
+        if self._busy:
+            return
+        wait = self.STEP_S - (time.perf_counter() - self._last)
+        if wait <= 0:
+            if self._step_t is not None:
+                self._step_t.Stop()
+                self._step_t = None
+            self._step()
+        elif self._step_t is None:
+            self._step_t = wx.CallLater(max(1, int(wait * 1000 + 0.5)), self._step)
 
     def _step(self):
         self._step_t = None
+        self._last = time.perf_counter()
+        self._busy = True
         try:
             self.apply(self.arg)
+            paint_now(self.win)
         except RuntimeError:
             return  # closed
+        finally:
+            self._busy = False
         if self._rest_t is None:
             self._rest_t = wx.CallLater(250, self._sharp)
         else:
@@ -2814,6 +3138,8 @@ class LiveDrag(object):
 class SplitBox(wx.Panel):
     """Panes in a column (or a row) separated by gaps. Drag a gap to resize
     the two panes next to it (they follow the mouse)."""
+
+    own_refresh = True   # (paints itself again when resized: place_panes)
 
     def __init__(self, parent, orient=wx.VERTICAL, gap=10, min_size=60):
         wx.Panel.__init__(self, parent, style=wx.BORDER_NONE)
@@ -2894,13 +3220,14 @@ class SplitBox(wx.Panel):
     def relayout(self):
         w, h = self.GetClientSize()
         pos = 0
+        rects = []
         for win, size in zip(self.panes, self._sizes()):
             if self._vertical():
-                win.SetSize(0, pos, w, max(size, 1))
+                rects.append((win, (0, pos, w, max(size, 1))))
             else:
-                win.SetSize(pos, 0, max(size, 1), h)
+                rects.append((win, (pos, 0, max(size, 1), h)))
             pos += size + self.gap
-        self.Refresh()
+        place_panes(self, rects)
 
     def _coord(self, e):
         return e.GetY() if self._vertical() else e.GetX()
@@ -2961,7 +3288,7 @@ class SplitBox(wx.Panel):
         self.SetCursor(wx.Cursor(cur))
         if i != self._hover:
             self._hover = i
-            self.Refresh()
+            refresh_own(self)   # (the grip is drawn in the gap: the tiles stay)
 
     @_at_once
     def _finish(self, delta):
@@ -2970,6 +3297,7 @@ class SplitBox(wx.Panel):
         if self._live is not None:
             self._live.end()
             self._live = None
+        self.Refresh()   # (while dragging only the parts that changed were painted)
 
     def _up(self, e):
         if self.HasCapture():
@@ -2987,7 +3315,7 @@ class SplitBox(wx.Panel):
         if self._drag is None and self._hover is not None:
             self._hover = None
             self.SetCursor(wx.Cursor(wx.CURSOR_ARROW))
-            self.Refresh()
+            refresh_own(self)
 
     def _paint(self, e):
         dc = wx.PaintDC(self)
@@ -3094,8 +3422,10 @@ class StackBox(wx.Panel):
         except (TypeError, ValueError):
             return 0.5
 
-    def heights(self, H=None):
+    def heights(self, H=None, W=None):
+        """Tile heights for a window H high (view_h) and a column W wide (its width)."""
         H = self.view_h if H is None else H
+        Wc = self.GetClientSize()[0] if W is None else W
         n = len(self.panes)
         if not n:
             return []
@@ -3116,7 +3446,7 @@ class StackBox(wx.Panel):
                 each = int(max(self.min, (H - self.gap * (k - 1) - fixed) / float(len(free))))
                 for i in free:
                     out[i] = each
-            W = max(self.GetClientSize()[0], self.FromDIP(300))
+            W = max(Wc, self.FromDIP(300))
             for i in range(k, n):
                 if out[i] is None:
                     try:
@@ -3128,7 +3458,7 @@ class StackBox(wx.Panel):
         if self.shape is not None and self.mode() == "journal":
             # journal proportions: each tile as high as a copied image of it
             # would be for its width (the view scrolls); tables get a fixed share
-            W = max(self.GetClientSize()[0], self.FromDIP(300))
+            W = max(Wc, self.FromDIP(300))
             sc = self.scale()
             low = plot_floor(self, H)  # on a small screen a plot is never lower than this
             for i, p in enumerate(self.panes):
@@ -3169,17 +3499,18 @@ class StackBox(wx.Panel):
                     out[i] = max(out[i], low)
         return out
 
-    def total(self, H=None):
-        hs = self.heights(H)
+    def total(self, H=None, W=None):
+        hs = self.heights(H, W)
         return sum(hs) + self.gap * max(0, len(hs) - 1)
 
     def relayout(self):
         w = self.GetClientSize()[0]
         y = 0
+        rects = []
         for win, hgt in zip(self.panes, self.heights()):
-            win.SetSize(0, y, w, max(hgt, 1))
+            rects.append((win, (0, y, w, max(hgt, 1))))
             y += hgt + self.gap
-        self.Refresh()
+        place_panes(self, rects)
 
     @_at_once
     def fit_all(self):
@@ -3271,7 +3602,7 @@ class StackBox(wx.Panel):
         self.SetCursor(wx.Cursor(wx.CURSOR_SIZENS if i is not None else wx.CURSOR_ARROW))
         if i != self._hover:
             self._hover = i
-            self.Refresh()
+            refresh_own(self)   # (the grip is drawn in the gap: the tiles stay)
 
     @_at_once
     def _finish(self, delta):
@@ -3280,6 +3611,7 @@ class StackBox(wx.Panel):
         if self._live is not None:
             self._live.end()
             self._live = None
+        self.Refresh()   # (while dragging only the parts that changed were painted)
 
     def _up(self, e):
         if self.HasCapture():
@@ -3297,7 +3629,7 @@ class StackBox(wx.Panel):
         if self._drag is None and self._hover is not None:
             self._hover = None
             self.SetCursor(wx.Cursor(wx.CURSOR_ARROW))
-            self.Refresh()
+            refresh_own(self)
 
     def _paint(self, e):
         dc = wx.PaintDC(self)
@@ -3341,6 +3673,9 @@ class RowScroller(wx.ScrolledWindow):
     def refit(self):
         if self.box is None or self._busy:
             return
+        if live_drag_on():
+            self._refit_once()
+            return
         self._busy = True
         try:
             w, h = self.GetClientSize()
@@ -3358,6 +3693,30 @@ class RowScroller(wx.ScrolledWindow):
             x, y = self.CalcScrolledPosition(0, 0)
             self.box.SetSize(x, y, w2, H)
             self.box.relayout()
+        finally:
+            self._busy = False
+
+
+    def _refit_once(self):
+        """As refit, with the column sized once (an edge being dragged): its length worked out for the new width
+        first. The same sizes and places as refit."""
+        self._busy = True
+        try:
+            box = self.box
+            w, h = self.GetClientSize()
+            box.view_h = max(h, 1)
+            H = max(h, box.total(h, w))
+            self.SetVirtualSize(w, H)
+            w2, h2 = self.GetClientSize()  # the scroll bar may have taken some width
+            if (w2, h2) != (w, h):
+                box.view_h = max(h2, 1)
+                H = max(h2, box.total(h2, w2))
+                self.SetVirtualSize(w2, H)
+            x, y = self.CalcScrolledPosition(0, 0)
+            if tuple(box.GetRect()) != (x, y, w2, H):
+                box.SetSize(x, y, w2, H)   # (laid out by its size event)
+            else:
+                box.relayout()
         finally:
             self._busy = False
 
@@ -6294,7 +6653,11 @@ class FilesPanel(wx.Panel):
             ok = st is not None and st.IsShownOnScreen()
         except RuntimeError:
             ok = False
+        from ms_plot_render import _LIVE
+        if not ok and _LIVE["on"] and getattr(self, "_strip_drag", None) == _LIVE["n"]:
+            ok, st = True, None   # (none found since this edge drag began: none while it lasts)
         if not ok:
+            self._strip_drag = _LIVE["n"] if _LIVE["on"] else None
             st = None
             todo = list(self.frame.GetChildren())
             while todo and st is None:
@@ -6647,10 +7010,11 @@ class FilesPanel(wx.Panel):
 
     # drawing
     def _paint(self, e):
-        dc = wx.AutoBufferedPaintDC(self)
+        dc = own_buffered_dc(self)
         dc.SetBackground(wx.Brush(wx.Colour(self.BG)))
         dc.Clear()
         gc = T.crisp(dc)
+        ui_font = kept_font
         w, h = self.GetClientSize()
         k = self.FromDIP(10) / 10.0
         items, end = self._items() if not self.collapsed else ([], 0)
@@ -7038,7 +7402,32 @@ class FilesPanel(wx.Panel):
         if wd is not None and wd != self.width_dip:
             self.width_dip = wd
             if self._apply_width():
-                self.GetParent().Layout()
+                if live_drag_on():
+                    self._place_beside()
+                else:
+                    self.GetParent().Layout()
+
+    def _place_beside(self):
+        """While the edge is dragged: the views beside the panel moved and sized at once (as the sizer of the
+        window would place them; it lays them out when the drag ends)."""
+        body = self.GetParent()
+        sz = body.GetSizer()
+        items = [it for it in sz.GetChildren() if it.IsShown()] if sz is not None else []
+        rest = items[1:]
+        if (len(items) != 2 or items[0].GetWindow() is not self or rest[0].GetWindow() is None
+                or rest[0].GetProportion() == 0 or any(it.GetBorder() for it in items)
+                or sz.GetOrientation() != wx.HORIZONTAL):
+            body.Layout()   # (not the usual panel and view beside it)
+            return
+        bw, bh = body.GetClientSize()
+        fw = self.GetSize()[0]
+        deferred = body.BeginRepositioningChildren()   # (moved together, at the end)
+        try:
+            self.SetSize(0, 0, fw, bh)
+            rest[0].GetWindow().SetSize(fw, 0, max(bw - fw, 1), bh)   # the view shown (a file's views or Compare)
+        finally:
+            if deferred:
+                body.EndRepositioningChildren()
 
     def _end_drag(self):
         if self._drag is None:
@@ -7052,6 +7441,8 @@ class FilesPanel(wx.Panel):
             self._live_width(self._drag_w)
             if live is not None:
                 live.end()
+            self.GetParent().Layout()   # (while dragging the views beside were placed directly)
+            self.GetParent().Refresh()   # (and only the parts that changed were painted)
         change_at_once(self.GetTopLevelParent(), done)
         T._save({"files_width": int(self.width_dip)})
         self.Refresh()

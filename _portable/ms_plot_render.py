@@ -66,14 +66,17 @@ class SpectrumSticks(LineCollection):
 
 
 _CANVAS = None
-_LIVE = {"on": False, "pending": None}   # a tile edge dragged: plots resized since, drawn again by flush_live
+# a tile edge dragged (n: which drag): plots resized since, drawn again by flush_live
+_LIVE = {"on": False, "pending": None, "n": 0}
 
 
 def set_live(on):
     """While a tile or pane edge is dragged (on), a plot given a new size shows its last picture stretched to it
     (drawing every plot at every mouse move would lag); off: those plots get their new size and are drawn."""
     _LIVE["on"] = bool(on)
-    if not on:
+    if on:
+        _LIVE["n"] += 1
+    else:
         flush_live()
 
 
@@ -91,6 +94,28 @@ def flush_live():
                 c._real_size(wx.SizeEvent(c.GetSize()))
         except RuntimeError:
             pass   # closed
+
+
+def copy_rect(dc, x, y, w, h, src, sx, sy, sw, sh):
+    """Windows: the opaque picture of the DC src (rectangle sx, sy, sw, sh) copied onto dc at x, y, w, h (stretched
+    when the sizes differ) by GDI; wx would blend a picture with an alpha channel by it, about four times slower.
+    False elsewhere or when it fails (then use wx)."""
+    import wx
+    if wx.Platform != "__WXMSW__":
+        return False
+    try:
+        import ctypes
+        g = ctypes.windll.gdi32
+        hdc, hsrc = ctypes.c_void_p(dc.GetHandle()), ctypes.c_void_p(src.GetHandle())
+        if (w, h) == (sw, sh):
+            return bool(g.BitBlt(hdc, int(x), int(y), int(w), int(h), hsrc, int(sx), int(sy), 0x00CC0020))  # SRCCOPY
+        old = g.SetStretchBltMode(hdc, 3)   # COLORONCOLOR
+        ok = g.StretchBlt(hdc, int(x), int(y), int(w), int(h), hsrc, int(sx), int(sy), int(sw), int(sh), 0x00CC0020)
+        if old:
+            g.SetStretchBltMode(hdc, old)
+        return bool(ok)
+    except Exception:
+        return False
 
 
 def canvas_class():
@@ -112,6 +137,24 @@ def canvas_class():
             def _real_size(self, event):
                 super()._on_size(event)
 
+            def gui_repaint(self, drawDC=None):
+                super().gui_repaint(drawDC=drawDC)
+                try:   # a picture a pixel narrower or lower than the window: the rest in the colour of the figure
+                    bm = self.bitmap
+                    cw, ch = self.GetClientSize()
+                    bw, bh = bm.GetWidth(), bm.GetHeight()
+                    if (cw > bw or ch > bh) and self.IsShownOnScreen():
+                        dc = drawDC or wx.ClientDC(self)
+                        r, g, b, a = self.figure.get_facecolor()
+                        dc.SetPen(wx.TRANSPARENT_PEN)
+                        dc.SetBrush(wx.Brush(wx.Colour(int(r * 255 + 0.5), int(g * 255 + 0.5), int(b * 255 + 0.5))))
+                        if cw > bw:
+                            dc.DrawRectangle(bw, 0, cw - bw, ch)
+                        if ch > bh:
+                            dc.DrawRectangle(0, bh, min(bw, cw), ch - bh)
+                except (RuntimeError, AttributeError):
+                    pass
+
             def _on_size(self, event):
                 if _LIVE["on"] and getattr(self, "_isDrawn", False) and getattr(self, "bitmap", None) is not None:
                     _LIVE["pending"].add(self)
@@ -127,7 +170,8 @@ def canvas_class():
                 w, h = self.GetClientSize()
                 bm = self.bitmap
                 mdc = wx.MemoryDC(bm)
-                dc.StretchBlit(0, 0, w, h, mdc, 0, 0, bm.GetWidth(), bm.GetHeight())
+                if not copy_rect(dc, 0, 0, w, h, mdc, 0, 0, bm.GetWidth(), bm.GetHeight()):
+                    dc.StretchBlit(0, 0, w, h, mdc, 0, 0, bm.GetWidth(), bm.GetHeight())
                 mdc.SelectObject(wx.NullBitmap)
         _CANVAS = VisibleCanvas
     return _CANVAS

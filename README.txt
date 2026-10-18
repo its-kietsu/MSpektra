@@ -50,6 +50,7 @@ Hybrid maximum entropy and better display scaling.
   lines, as in DataAnalysis.
 * Windows fit and scale correctly on displays with different scaling and
   over Remote Desktop; new windows open on the display in use.
+* Resizing tiles, panes and the file list by dragging is smoother.
 * A reopened analysis shows each deconvolution result with its own title.
 
 4.38 (17.10.2026)

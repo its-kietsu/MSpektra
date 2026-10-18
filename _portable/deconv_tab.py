@@ -157,6 +157,7 @@ def suggest_ranges(spec, hr, sign=1, carrier=None):
 
 class TableCard(wx.Panel):
     """White card with a title, an information line and a list."""
+    own_refresh = True   # (paints itself again when resized: unilcms.place_panes)
 
     def __init__(self, parent, title, cols, on_select=None, on_activate=None, empty="", multi=False):
         wx.Panel.__init__(self, parent, style=wx.BORDER_NONE)
@@ -175,7 +176,7 @@ class TableCard(wx.Panel):
         s.Add(self.list, 1, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, self.FromDIP(10))
         self.SetSizer(s)
         self.Bind(wx.EVT_PAINT, self._paint)
-        self.Bind(wx.EVT_SIZE, lambda e: (self.Layout(), self.Refresh(), e.Skip()))
+        self.Bind(wx.EVT_SIZE, lambda e: (self.Layout(), U.refresh_card(self), e.Skip()))
         self.list.Bind(wx.EVT_LIST_ITEM_SELECTED, lambda e: self.on_select and self.on_select(e.GetIndex()))
         self.list.Bind(wx.EVT_LIST_ITEM_ACTIVATED, lambda e: self.on_activate and self.on_activate(e.GetIndex()))
         self.list.Bind(wx.EVT_CONTEXT_MENU, self._menu)
@@ -250,26 +251,18 @@ class TableCard(wx.Panel):
         m.Destroy()
 
     def _paint(self, e):
-        dc = wx.AutoBufferedPaintDC(self)
-        dc.SetBackground(wx.Brush(wx.Colour(C["bg"])))
-        dc.Clear()
-        gc = T.crisp(dc)
-        w, h = self.GetClientSize()
-        r = self.FromDIP(12)
-        gc.SetPen(wx.TRANSPARENT_PEN)
-        gc.SetBrush(wx.Brush(wx.Colour(14, 28, 48, 12)))
-        gc.DrawRoundedRectangle(1, 3, w - 2, h - 4, r)
-        gc.SetBrush(wx.Brush(wx.Colour("#FFFFFF")))
-        gc.SetPen(gc.CreatePen(wx.GraphicsPenInfo(wx.Colour(C["line"])).Width(1.0)))
-        gc.DrawRoundedRectangle(0.5, 0.5, w - 1.5, h - 3, r)
-        gc.SetFont(ui_font(10, 700), wx.Colour(C["text"]))
+        U.paint_card(self, self.FromDIP(30), U.table_frame, self._draw_header,
+                     (self.title, self.info, self.empty, self.badge, self.GetDPIScaleFactor()))
+
+    def _draw_header(self, gc, w, font=ui_font):
+        gc.SetFont(font(10, 700), wx.Colour(C["text"]))
         tw, th = gc.GetTextExtent(self.title)
         gc.DrawText(self.title, self.FromDIP(14), self.FromDIP(9))
         if self.badge:
             bw = U.draw_badge(gc, self, self.badge[0], self.badge[1], self.FromDIP(14) + tw + self.FromDIP(10),
-                              self.FromDIP(9), th)
+                              self.FromDIP(9), th, font)
             tw += self.FromDIP(10) + bw
-        gc.SetFont(ui_font(9, 400), wx.Colour(C["muted"]))
+        gc.SetFont(font(9, 400), wx.Colour(C["muted"]))
         txt = self.info or self.empty
         room = w - tw - self.FromDIP(40)
         if gc.GetTextExtent(txt)[0] > room:
