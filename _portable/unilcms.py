@@ -175,6 +175,7 @@ class Form(wx.Panel):
         self.SetSizer(outer)
         self._first = True
         self.gap_row = self.FromDIP(7)
+        T.keep_dip(self, "label_w", "note_w", "gap_row")
 
     def section(self, title, colour=None):
         s = wx.BoxSizer(wx.HORIZONTAL)
@@ -2158,6 +2159,7 @@ class Segmented(wx.Control):
         dc = wx.ClientDC(self)
         dc.SetFont(self.GetFont())
         self.widths = [dc.GetTextExtent(l)[0] + self.FromDIP(28) for l in labels]
+        T.keep_dip(self, "widths", then=self.Refresh)
         sz = wx.Size(sum(self.widths) + self.FromDIP(8), self.FromDIP(34))
         self.SetMinSize(sz)
         self.SetInitialSize(sz)
@@ -2241,6 +2243,7 @@ class ToolButton(wx.Control):
         dc.SetFont(self.GetFont())
         tw = dc.GetTextExtent(label)[0] if label else 0
         self.full_w = self.FromDIP(16) + (self.FromDIP(6) + tw if label else 0) + self.FromDIP(16)
+        T.keep_dip(self, "full_w")
         self.text = label
         sz = wx.Size(self.full_w, self.FromDIP(32))
         self.SetMinSize(sz)
@@ -2454,6 +2457,7 @@ class SidePanel(wx.ScrolledWindow):
         self.fit_screen()
         self._first = True
         self.pad = self.FromDIP(14)
+        T.keep_dip(self, "pad")
 
     def fit_screen(self):
         """Width for the window size: narrower on a small screen (the right
@@ -2817,6 +2821,7 @@ class SplitBox(wx.Panel):
         self.orient = orient
         self.gap = self.FromDIP(gap)
         self.min = self.FromDIP(min_size)
+        T.keep_dip(self, "gap", "min", "view_h", then=lambda: self.relayout())
         self.panes, self.weights = [], []  # the panes shown (closed ones left out)
         self.all_panes, self.all_weights = [], []
         self.closed = set()
@@ -3017,6 +3022,7 @@ class StackBox(wx.Panel):
         self.SetBackgroundColour(C["bg"])
         self.gap = self.FromDIP(gap)
         self.min = self.FromDIP(min_size)
+        T.keep_dip(self, "gap", "min", "view_h", then=lambda: self.relayout())
         self.panes, self.weights = [], []  # the panes shown (closed ones left out)
         self.all_panes, self.all_weights = [], []
         self.closed = set()
@@ -3317,6 +3323,7 @@ class RowScroller(wx.ScrolledWindow):
         self.SetBackgroundColour(C["bg"])
         self.SetScrollRate(0, self.FromDIP(24))
         self.min_row = self.FromDIP(min_row)
+        T.keep_dip(self, "min_row", then=lambda: (self.SetScrollRate(0, self.FromDIP(24)), self.refit()))
         self.box = None
         self._busy = False
         self.Bind(wx.EVT_SIZE, self._size)
@@ -6887,7 +6894,8 @@ class FilesPanel(wx.Panel):
         try:
             line1 = dec.tree_text(ent)[0]
         except Exception:
-            line1 = ent.res.get("method", "Result")
+            from ms_brand import method_name
+            line1 = method_name(ent.res) or "Result"
         x = er.x + er.width + self.FromDIP(4)
         end = rr.x + rr.width - self.FromDIP(22 if hot else 4)  # the x appears under the mouse only
         poor = False
@@ -7585,6 +7593,7 @@ class PostrunFrame(wx.Frame):
     def __init__(self, path=None):
         wx.Frame.__init__(self, None, title=self.TITLE)
         self._udp_scaled = True  # sizes here are DPI independent already
+        self._home = self._user_display()
         self.docs, self.active = [], None
         self._load_queue = []
         self._load_scheduled = False
@@ -7981,13 +7990,32 @@ class PostrunFrame(wx.Frame):
         except Exception:
             pass
 
+    def _user_display(self):
+        """Work area of the display the user works on: that of the window in front (the start screen whose tile
+        was clicked, or the other analysis window), else the one under the mouse. The new window is moved there
+        before its contents are made, so they are made at the scale of that display: Windows puts a new window
+        without a parent on the main display (a laptop at 200 %), and moving it to the other display (a monitor
+        at 100 %) afterwards left sizes of the old scale."""
+        area = None
+        try:
+            act = wx.GetActiveWindow()
+            top = wx.GetTopLevelParent(act) if act is not None else None
+            if top is not None and top is not self and top.IsShown() and not top.IsIconized():
+                area = T.display_area(top, own_first=True)
+        except (RuntimeError, AttributeError):
+            area = None
+        if area is None:
+            n = wx.Display.GetFromPoint(wx.GetMousePosition())
+            area = wx.Display(n if 0 <= n < wx.Display.GetCount() else 0).GetClientArea()
+        self.SetPosition(wx.Point(area.x + area.width // 8, area.y + area.height // 8))
+        return area
+
     def _size_to_display(self):
-        area = T.display_area(self)
+        area = getattr(self, "_home", None) or T.display_area(self)
         w = min(self.FromDIP(1480), int(area.width * 0.94))
         h = min(self.FromDIP(940), int(area.height * 0.94))
-        self.SetSize(wx.Size(w, h))
+        self.SetSize(wx.Rect(area.x + (area.width - w) // 2, area.y + (area.height - h) // 2, w, h))
         self.SetMinSize(wx.Size(min(self.FromDIP(1000), area.width), min(self.FromDIP(680), area.height)))
-        self.Centre()
         # opens maximised (the size above is the one it gets when restored);
         # "start_maximized": false in the settings file turns this off
         if settings().get("start_maximized", True) or area.width < self.FromDIP(1200) or \

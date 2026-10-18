@@ -162,12 +162,19 @@ typedef struct {
                                    * s0^2 + y_i / g); 2 = one constant sigma (the 2.7 model); 3 = as 0 plus a term
                                    * proportional to the intensity for the peak shape mismatch (for comparisons) */
     double chi2_target;           /* chi squared per signal point aimed at by the alpha search, 0 = 1.0 */
+    /* read by ms_maxent_ex only (ms_maxent reads the struct up to chi2_target and runs method 0) */
+    int    method;                /* 0 = maximum entropy; 1 = hybrid maximum entropy (species from a UniDec pass,
+                                   * a tail kernel when the data show one, one allocation step; off in resolved
+                                   * isotope runs) */
 } ms_maxent_params;
 
 typedef struct ms_maxent_result ms_maxent_result;
 
 MS_API int ms_maxent(const double* mz, const double* it, long n, const ms_maxent_params* p,
                      ms_maxent_result** out, ms_progress_fn cb, void* user);
+/* The same with the size of the caller's struct (sizeof(ms_maxent_params)); fields beyond p_size read as 0. */
+MS_API int ms_maxent_ex(const double* mz, const double* it, long n, const ms_maxent_params* p, long p_size,
+                        ms_maxent_result** out, ms_progress_fn cb, void* user);
 MS_API void ms_maxent_free(ms_maxent_result* r);
 
 /* Zero charge mass spectrum (mass, intensity), the fit on the m/z grid, the
@@ -279,6 +286,9 @@ MS_API long ms_unidec_zdist(const ms_unidec_result* r, const double** z, const d
 MS_API long ms_unidec_peaks(const ms_unidec_result* r, const double** mass, const double** height, const double** area,
                             const double** score, const double** apex, const int** n_iso);
 MS_API double ms_unidec_r2(const ms_unidec_result* r);
+/* RESEARCH: mass x charge grid in 0.1 % ln-mass bins of a run with "species_grid 1" (the MaxEnt hybrid) */
+MS_API long ms_unidec_species_grid(const ms_unidec_result* r, double* lb0, int* nz, int* z0, const double** grid,
+                                   long* nmass, const double** mass, const double** inten);
 MS_API double ms_unidec_uniscore(const ms_unidec_result* r);
 MS_API const char* ms_unidec_notes(const ms_unidec_result* r);
 MS_API const char* ms_unidec_folder(const ms_unidec_result* r);

@@ -176,6 +176,101 @@ def _sqlite_ro(path):
         return sqlite3.connect(path)
 
 
+def segment_spans(times, ids, calibration=()):
+    """Acquisition segments of the method as time spans (min): [{"id", "start", "end", "calibration"}], a boundary
+    halfway between the last spectrum of a segment and the first of the next (the whole run: from the first to the
+    last spectrum). [] with fewer than two segments (nothing to show)."""
+    t = np.asarray(times, float)
+    k = np.asarray(ids)
+    if len(t) == 0 or len(t) != len(k):
+        return []
+    first = {}
+    for sid in set(k.tolist()):
+        m = k == sid
+        first[sid] = (float(t[m].min()), float(t[m].max()))
+    order = sorted(first, key=lambda sid: first[sid][0])
+    if len(order) < 2:
+        return []
+    out = []
+    for n, sid in enumerate(order):
+        a = first[sid][0] if n == 0 else (first[order[n - 1]][1] + first[sid][0]) / 2.0
+        b = first[sid][1] if n == len(order) - 1 else (first[sid][1] + first[order[n + 1]][0]) / 2.0
+        out.append({"id": int(sid), "start": a, "end": b, "calibration": sid in set(calibration)})
+    return out
+
+
+def _tsf_segments(con):
+    """The segments of an analysis.tsf / analysis.tdf (Segments table: Id, FirstFrame, LastFrame,
+    IsCalibrationSegment), from the times of all its frames; [] when the file has none."""
+    try:
+        segs = con.execute("SELECT Id, FirstFrame, LastFrame, IsCalibrationSegment FROM Segments").fetchall()
+        times = dict(con.execute("SELECT Id, Time FROM Frames").fetchall())
+    except sqlite3.Error:
+        return []
+    t, k = [], []
+    for sid, f0, f1, _ in segs:
+        for fid in range(int(f0), int(f1) + 1):
+            if fid in times:
+                t.append(times[fid] / 60.0)
+                k.append(sid)
+    return segment_spans(t, k, [r[0] for r in segs if r[3]])
+
+
+def bruker_segments(path):
+    """The acquisition segments of a Bruker .d folder, read without writing to it: analysis.tsf / analysis.tdf
+    (Segments table), else the baf2sql cache analysis.sqlite of an analysis.baf (Spectra.Segment); [] otherwise."""
+    d = find_d_folder(path) if path else None
+    if not d:
+        return []
+    for name in ("analysis.tsf", "analysis.tdf"):
+        f = os.path.join(d, name)
+        if os.path.isfile(f):
+            try:
+                con = _sqlite_ro(f)
+                try:
+                    return _tsf_segments(con)
+                finally:
+                    con.close()
+            except sqlite3.Error:
+                return []
+    f = os.path.join(d, "analysis.sqlite")
+    if os.path.isfile(f):
+        try:
+            con = _sqlite_ro(f)
+            try:
+                seg = con.execute("SELECT Rt, Segment FROM Spectra WHERE Segment IS NOT NULL").fetchall()
+            finally:
+                con.close()
+            return segment_spans([r[0] / 60.0 for r in seg], [r[1] for r in seg])
+        except sqlite3.Error:
+            return []
+    return []
+
+
+def da_calibration_scans(path):
+    """(first, last) scan numbers of the spectrum DataAnalysis calibrated the file on (calibration.sqlite,
+    MzCalibrationSpectrumDescription such as "+MS, 0.7min, #36-44: Scan"), or None."""
+    import re
+    d = find_d_folder(path) if path else None
+    f = os.path.join(d, "calibration.sqlite") if d else None
+    if not f or not os.path.isfile(f):
+        return None
+    try:
+        con = _sqlite_ro(f)
+        con.text_factory = bytes
+        try:
+            rows = con.execute("SELECT Value FROM CalibrationInfo WHERE KeyName = 'MzCalibrationSpectrumDescription'").fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+    for (v,) in rows:
+        m = re.search(r"#(\d+)\s*-\s*(\d+)", v.decode("utf-8", "replace") if isinstance(v, bytes) else str(v))
+        if m:
+            return int(m.group(1)), int(m.group(2))
+    return None
+
+
 def _recal_note(d):
     """Who recalibrated the file and when (calibration.sqlite, written by
     DataAnalysis), e.g. "DataAnalysis, 15.09.2026". Of several calibration
@@ -564,6 +659,11 @@ class BrukerD(object):
             "SELECT s.Id, s.Rt, s.SumIntensity, s.MaxIntensity, s.ProfileMzId, s.ProfileIntensityId, s.LineMzId, "
             "s.LineIntensityId, s.MzAcqRangeLower, s.MzAcqRangeUpper, ak.Polarity, ak.MsLevel, ak.ScanMode "
             "FROM Spectra s LEFT JOIN AcquisitionKeys ak ON s.AcquisitionKey = ak.Id ORDER BY s.Rt, s.Id").fetchall()
+        try:  # the method's acquisition segments (calibrant, sample)
+            seg = con.execute("SELECT Rt, Segment FROM Spectra WHERE Segment IS NOT NULL").fetchall()
+            self.segments = segment_spans([r[0] / 60.0 for r in seg], [r[1] for r in seg])
+        except sqlite3.Error:
+            self.segments = []
         con.close()
         if not rows:
             raise ValueError("No spectra in " + d)
@@ -873,6 +973,7 @@ class BrukerTSF(BrukerD):
             self.props = dict(con.execute("SELECT Key, Value FROM GlobalMetadata").fetchall())
             rows = con.execute("SELECT Id, Time, Polarity, MsMsType, SummedIntensities, MaxIntensity FROM Frames "
                                "ORDER BY Time, Id").fetchall()
+            self.segments = _tsf_segments(con)
         finally:
             con.close()
         if not rows:
@@ -1050,6 +1151,7 @@ class BrukerTDF(BrukerTSF):
             self.props = dict(con.execute("SELECT Key, Value FROM GlobalMetadata").fetchall())
             rows = con.execute("SELECT Id, Time, Polarity, MsMsType, SummedIntensities, MaxIntensity, NumScans "
                                "FROM Frames ORDER BY Time, Id").fetchall()
+            self.segments = _tsf_segments(con)
         finally:
             con.close()
         if not rows:

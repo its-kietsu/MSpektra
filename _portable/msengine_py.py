@@ -88,6 +88,10 @@ def lib():
         L.ms_scan.restype = c_int
         L.ms_maxent.argtypes = [PD, PD, c_long, POINTER(MaxentParams), POINTER(c_void_p), PROGRESS, c_void_p]
         L.ms_maxent.restype = c_int
+        if hasattr(L, "ms_maxent_ex"):  # the struct with its size (the field "method": hybrid maximum entropy)
+            L.ms_maxent_ex.argtypes = [PD, PD, c_long, POINTER(MaxentParamsEx), c_long, POINTER(c_void_p), PROGRESS,
+                                       c_void_p]
+            L.ms_maxent_ex.restype = c_int
         L.ms_maxent_free.argtypes = [c_void_p]
         for f in ("ms_maxent_mass", "ms_maxent_fit", "ms_maxent_zdist"):
             getattr(L, f).argtypes = [c_void_p, POINTER(PD), POINTER(PD)]
@@ -174,6 +178,12 @@ class MaxentParams(ctypes.Structure):
                 ("baseline", c_int), ("baseline_width", c_double),
                 # since 2.8 (0 = automatic): envelope nodes across the mass range, noise model, chi squared target
                 ("envelope_nodes", c_int), ("noise_model", c_int), ("chi2_target", c_double)]
+
+
+class MaxentParamsEx(MaxentParams):
+    """The struct of ms_maxent_ex: MaxentParams (the struct of ms_maxent and msmaxent.dll, unchanged), then the
+    method: 0 = maximum entropy, 1 = hybrid maximum entropy."""
+    _fields_ = [("method", c_int)]
 
 
 # ============================================================================

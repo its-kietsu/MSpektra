@@ -13,6 +13,10 @@ spectrum follow the active result, the newest or the one clicked last.
 The settings are kept for the next time.
   Bayesian deconvolution  Bayesian charge state deconvolution (Marty et
                           al., Anal. Chem. 2015, 87, 4370)
+  Hybrid maximum entropy  maximum entropy with the species of a first
+                          Bayesian pass, a tail in the peak shape when the
+                          data show one, and the signal shared among the
+                          species (msengine method 1; name: ms_brand)
   Maximum entropy         charge state deconvolution by maximum entropy
                           (ms_deconv.py, written for MSpektra)
   IsoDec                  monoisotopic masses from isotope resolved data
@@ -36,9 +40,29 @@ import unidec_theme as T
 from unidec_theme import C, ui_font
 import unilcms as U
 import ms_deconv as D
+from ms_brand import HYBRID_MAXENT, HYBRID_TAG, method_name
 
-METHODS = ["Bayesian deconvolution", "Maximum entropy", "IsoDec (isotope resolved)"]
-METHOD_TAGS = ["unidec", "maxent", "isodec"]
+# the methods by their number, as the settings, method presets and saved analyses keep it ("method"): never by
+# their place in the list (METHOD_ORDER), so settings saved before a method was added open the same method
+UNIDEC, MAXENT, ISODEC, HYBRID = 0, 1, 2, 3
+METHODS = ["Bayesian deconvolution", "Maximum entropy", "IsoDec (isotope resolved)", HYBRID_MAXENT]
+METHOD_TAGS = ["unidec", "maxent", "isodec", HYBRID_TAG]  # the tag of its results (and of their file names)
+METHOD_ORDER = (UNIDEC, HYBRID, MAXENT, ISODEC)  # the method list of the window (IsoDec: HRMS only)
+
+
+def _method_of(cfg):
+    """The method number of stored settings (UNIDEC when missing or unknown)."""
+    try:
+        k = int((cfg or {}).get("method", UNIDEC) or 0)
+    except (TypeError, ValueError):
+        return UNIDEC
+    return k if 0 <= k < len(METHODS) else UNIDEC
+
+
+def _family(k):
+    """The method whose settings a method uses (hybrid maximum entropy: those of maximum entropy)."""
+    return MAXENT if k == HYBRID else k
+
 PRESETS = [
     ("Peptides and small proteins, 0.5 to 20 kDa", dict(z=(1, 30), mass=(500, 20000), step=0.5, width=0, win=5, thr=5)),
     ("Proteins, denatured, 5 to 80 kDa", dict(z=(5, 60), mass=(5000, 80000), step=1, width=0, win=20, thr=5)),
@@ -47,9 +71,9 @@ PRESETS = [
     ("Native proteins and complexes, 10 kDa to 1 MDa", dict(z=(5, 100), mass=(10000, 1000000), step=10, width=0,
                                                             win=500, thr=5)),
     ("Isotope resolved, peptides (HRMS)", dict(z=(1, 10), mass=(1000, 6000), step=0.01, width=0, win=0.4, thr=2,
-                                               method=1, iso=1, hr_only=True)),
+                                               method=MAXENT, iso=1, hr_only=True)),
     ("Monoisotopic masses (IsoDec, HRMS)", dict(z=(1, 30), mass=(100, 50000), step=0.01, width=0, win=0.5, thr=1,
-                                                method=2, hr_only=True)),
+                                                method=ISODEC, hr_only=True)),
     ("Custom", None),
 ]
 DEFAULT_PRESET = 1
@@ -264,7 +288,6 @@ def _mass_fmt(m, step):
     return "%.1f" % m
 
 
-UNIDEC, MAXENT, ISODEC = 0, 1, 2
 # charge carriers: mass added per charge, with its sign (m/z = (M + z a) / z)
 CARRIERS_POS = [("H\u207a (protonation)", 1.007276467), ("Na\u207a", 22.989218), ("K\u207a", 38.963158),
                 ("NH\u2084\u207a", 18.033823), ("Custom mass", None)]
@@ -501,7 +524,8 @@ class DeconvDialog(wx.Dialog):
                 fm.row("Minimum intensity", self.min_int, self.min_unit)
                 self.note_data = fm.note("")
             elif sec == "method":
-                self.method = fm.choice([m for k, m in enumerate(METHODS) if self.hr or k < 2], 200)
+                self.method_ids = [k for k in METHOD_ORDER if self.hr or k != ISODEC]
+                self.method = fm.choice([METHODS[k] for k in self.method_ids], 200)
                 fm.row("Method", self.method)
             elif sec == "ranges":
                 self.preset = fm.choice([p[0] for p in self.presets], 320)
@@ -552,8 +576,7 @@ class DeconvDialog(wx.Dialog):
         try:
             for k in RANGE_KEYS:
                 getattr(self, k).SetValue(str(cfg.get(k, "")))
-            if 0 <= cfg.get("method", 0) < self.method.GetCount():
-                self.method.SetSelection(cfg.get("method", 0))
+            self.select_method(_method_of(cfg))
             self.preset.SetSelection(max(0, min(cfg.get("preset", DEFAULT_PRESET), len(self.presets) - 1)))
         finally:
             self._setting = False
@@ -584,6 +607,15 @@ class DeconvDialog(wx.Dialog):
         self.method_changed(fit=False)
         self._ready = True
         self._fit()
+
+    def method_id(self):
+        """The number (UNIDEC, MAXENT, ...) of the method chosen."""
+        i = self.method.GetSelection()
+        return self.method_ids[i] if 0 <= i < len(self.method_ids) else self.method_ids[0]
+
+    def select_method(self, k):
+        if k in self.method_ids:
+            self.method.SetSelection(self.method_ids.index(k))
 
     def _keys(self, e):
         if e.GetKeyCode() == wx.WXK_ESCAPE:
@@ -646,8 +678,8 @@ class DeconvDialog(wx.Dialog):
             self.ctrl["width"].SetValue("%g" % p["width"])
             self.ctrl["win"].SetValue("%g" % p["win"])
             self.ctrl["thr"].SetValue("%g" % p["thr"])
-            if "method" in p and p["method"] < self.method.GetCount():
-                self.method.SetSelection(p["method"])
+            if "method" in p:
+                self.select_method(p["method"])
             if "iso" in self.ctrl:
                 self.ctrl["iso"].SetSelection(p.get("iso", 0))
         finally:
@@ -655,7 +687,7 @@ class DeconvDialog(wx.Dialog):
         self.method_changed()
 
     def method_changed(self, fit=True):
-        k = self.method.GetSelection()
+        k = _family(self.method_id())
         for key, sec, lab, kind, dflt, unit, meths, hr_only, tip in SETTINGS:
             if key not in self.rows:
                 continue
@@ -682,10 +714,10 @@ class DeconvDialog(wx.Dialog):
             self.status("Mass step set to 0.01 Da for resolved isotopes")
 
     def method_defaults(self):
-        k = self.method.GetSelection()
+        k = self.method_id()
         d = _default_cfg(self.hr)
         for key, sec, lab, kind, dflt, unit, meths, hr_only, tip in SETTINGS:
-            if key not in self.ctrl or meths is None or k not in meths:
+            if key not in self.ctrl or meths is None or _family(k) not in meths:
                 continue
             c = self.ctrl[key]
             if kind == "text":
@@ -794,7 +826,7 @@ class DeconvDialog(wx.Dialog):
             self.status("No clear charge state series found")
             return
         z0, z1 = int(g["z"][0]), int(g["z"][1])
-        if z1 <= z0 and self.method.GetSelection() == UNIDEC:
+        if z1 <= z0 and self.method_id() == UNIDEC:
             z1 = z0 + 1  # UniDec's engine needs two charge states at least
         self._setting = True
         try:
@@ -830,7 +862,7 @@ class DeconvDialog(wx.Dialog):
                 c[key] = self.ctrl[key].GetSelection()
             elif kind == "check":
                 c[key] = self.ctrl[key].GetValue()
-        c.update(method=self.method.GetSelection(), preset=self.preset.GetSelection(), pol=self.pol.GetSelection(),
+        c.update(method=self.method_id(), preset=self.preset.GetSelection(), pol=self.pol.GetSelection(),
                  suggest_open=False, min_int_unit=self.min_unit.GetSelection())
         if "adduct" in self.ctrl and self._sign is not None:
             self._carrier_sel[self._sign] = self.ctrl["adduct"].GetSelection()
@@ -1941,14 +1973,14 @@ class DeconvPanel(object):
             dlg.Destroy()
         self.cfg = cfg
         T._save({self.key: cfg})
-        self.run(d, p, cfg["method"])
+        self.run(d, p, _method_of(cfg))
 
     # ----------------------------------------------------------------- run
     def _file_base(self, res=None):
         res = self.result if res is None else res
         if res and res.get("saved"):
             return os.path.basename(res["saved"])  # as its files (unique: _2, _3, ... after the first)
-        tag = res.get("tag", "deconv") if res else METHOD_TAGS[self.cfg.get("method", 0)]
+        tag = res.get("tag", "deconv") if res else METHOD_TAGS[_method_of(self.cfg)]
         name = (res or {}).get("name") or (self.inputs[0]["name"] if self.inputs else "spectrum")
         return "%s_%s" % (name, tag)
 
@@ -2138,7 +2170,7 @@ class DeconvPanel(object):
         if dropped:
             msg += "; the oldest result row was removed (%d are kept)" % MAX_RESULTS
         self.status(msg)
-        self._set_note("%s · %d masses · %.1f s" % (res["method"], len(res["peaks"]), res["seconds"]))
+        self._set_note("%s · %d masses · %.1f s" % (method_name(res), len(res["peaks"]), res["seconds"]))
 
     # ---------------------------------------------------------------- plots
     def _cols(self, iso, resolved=False, scores=False, added=False):
@@ -2207,7 +2239,7 @@ class DeconvPanel(object):
         what = res.get("input", "")
         if len(self.tab.cols) <= 1 and ": " in what:
             what = what.split(": ", 1)[1]  # one scan event: its name says nothing
-        parts = [res.get("method", ""), what]
+        parts = [method_name(res), what]
         mr = res.get("params", {}).get("mass_range")
         if mr:
             parts.append("%g to %g Da" % tuple(mr))
@@ -2245,7 +2277,8 @@ class DeconvPanel(object):
         second line, tooltip). First line: method and masses; second line:
         spectrum (time range) and mass range."""
         res = ent.res
-        name = {"Maximum entropy": "Max. entropy"}.get(res.get("method", ""), res.get("method", "") or "Result")
+        name = (method_name(res) or "Result").replace("Maximum entropy", "Max. entropy").replace(
+            "maximum entropy", "max. entropy")
         n = len(res.get("peaks") or [])
         line1 = "%s, %d mass%s" % (name, n, "es" if n != 1 else "")
         what = res.get("input", "")
@@ -2274,7 +2307,7 @@ class DeconvPanel(object):
         iso = res.get("tag") == "isodec"
         self.table.set_columns(self._cols(iso, _grouped(res), _has_scores(res),
                                           any(q.get("added") for q in res.get("peaks") or [])))
-        self.table.set_rows(ent.rows, "%d masses · %s" % (len(ent.rows), res.get("method", "")))
+        self.table.set_rows(ent.rows, "%d masses · %s" % (len(ent.rows), method_name(res)))
         details = getattr(self.tab, "hrms_details", None)
         if details is not None:
             details.refresh_result(ent)
@@ -2315,7 +2348,7 @@ class DeconvPanel(object):
             cz.ax.set_yticks([])
             cz.ax.text(0.5, 0.5, "see the table" if iso else "no charge data", transform=cz.ax.transAxes,
                        ha="center", va="center", fontsize=8.5, color=U.MUTED)
-        cz.set_title("Charge states", "%s, tallest peak at each charge state" % res.get("method", ""))
+        cz.set_title("Charge states", "%s, tallest peak at each charge state" % method_name(res))
         cz.draw()
         # zero charge mass spectrum
         cm = ent.card_mass

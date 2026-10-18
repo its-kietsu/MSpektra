@@ -20,6 +20,20 @@ _NAMES = [(re.compile(p), r) for p, r in (
 )]
 
 
+# the hybrid maximum entropy method: its name in the program (in one place). Its results keep the tag below, so
+# results saved before a new name show the new one (method_name)
+HYBRID_MAXENT = "Hybrid maximum entropy"
+HYBRID_TAG = "maxent_hybrid"
+
+
+def method_name(res):
+    """The method of a result as the windows and reports show it."""
+    res = res or {}
+    if res.get("tag") == HYBRID_TAG:
+        return HYBRID_MAXENT
+    return res.get("method") or ""
+
+
 def display(text):
     """The text with the engine named as in the program's windows."""
     if not isinstance(text, str):

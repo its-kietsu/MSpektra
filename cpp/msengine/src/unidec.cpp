@@ -1230,6 +1230,11 @@ struct ms_unidec_result {
     double r2 = 0, uniscore = 0;
     std::string notes, folder;
     double q_score = 0; int q_level = 2; std::string q_text;   // reliability (ms_unidec_quality)
+    // RESEARCH (parameter species_grid 1, for the MaxEnt hybrid): the mass x charge grid summed into bins of
+    // 0.1 % in ln mass (sg_nb x sg_nz, row major, bin b starts at ln mass sg_lb0 + 0.001 b) and the mass
+    // spectrum as the engine gave it
+    std::vector<double> sg, sg_mx, sg_my;
+    double sg_lb0 = 0; int sg_nb = 0, sg_nz = 0, sg_z0 = 0;
 };
 
 namespace {
@@ -1732,6 +1737,25 @@ void run_unidec(const double* mz, const double* it, long n0, std::string folder,
             dscores.push_back({ms::udengine::printed6(eo.peakx[k], false), ms::udengine::printed6(eo.peaky[k], false),
                                ms::udengine::printed6(eo.dscores[k], false)});
     if (write_files) write_engine_outputs(c.outfname, eo, mx, my, dscores, ec);
+    if (p.inum("species_grid", 0) && !mx.empty() && massgrid.size() == mx.size() * (size_t)c.numz) {
+        const size_t nmp = mx.size();
+        size_t i0 = 0, i1 = nmp;   // the requested mass range (the engine pads its axis)
+        while (i0 < nmp && mx[i0] < c.masslb) i0++;
+        while (i1 > i0 && mx[i1 - 1] > c.massub) i1--;
+        if (i1 > i0 && mx[i0] > 0) {
+            out.sg_lb0 = std::log(mx[i0]);
+            out.sg_nb = (int)std::floor((std::log(mx[i1 - 1]) - out.sg_lb0) / 0.001) + 1;
+            out.sg_nz = c.numz; out.sg_z0 = c.startz;
+            out.sg.assign((size_t)out.sg_nb * out.sg_nz, 0.0);
+            for (size_t i = i0; i < i1; i++) {
+                int b = (int)std::floor((std::log(mx[i]) - out.sg_lb0) / 0.001);
+                b = std::min(std::max(b, 0), out.sg_nb - 1);
+                for (int k = 0; k < out.sg_nz; k++) out.sg[(size_t)b * out.sg_nz + k] += massgrid[i * (size_t)c.numz + k];
+            }
+            out.sg_mx.assign(mx.begin() + i0, mx.begin() + i1);
+            out.sg_my.assign(my.begin() + i0, my.begin() + i1);
+        }
+    }
     // ---- pick_peaks (tools.peakdetect, then the normalisation of setup_peaks)
     size_t nm_pts = mx.size();
     std::vector<XY> raw_peaks = ud_peakdetect(mx.data(), my.data(), (long)nm_pts, c.peakwindow / c.massbins, c.peakthresh, c.normthresh != 0);
@@ -1938,6 +1962,14 @@ MS_API long ms_unidec_peaks(const ms_unidec_result* r, const double** mass, cons
     return (long)r->pk_mass.size();
 }
 MS_API double ms_unidec_r2(const ms_unidec_result* r) { return r ? r->r2 : 0.0; }
+// RESEARCH: the species grid of a run with "species_grid 1" (see ms_unidec_result); returns the number of bins
+MS_API long ms_unidec_species_grid(const ms_unidec_result* r, double* lb0, int* nz, int* z0, const double** grid,
+                                   long* nmass, const double** mass, const double** inten) {
+    if (!r || r->sg_nb <= 0) return 0;
+    *lb0 = r->sg_lb0; *nz = r->sg_nz; *z0 = r->sg_z0; *grid = r->sg.data();
+    *nmass = (long)r->sg_mx.size(); *mass = r->sg_mx.data(); *inten = r->sg_my.data();
+    return r->sg_nb;
+}
 MS_API double ms_unidec_quality(const ms_unidec_result* r, int* level, const char** text) {
     if (level) *level = r ? r->q_level : 2;
     if (text) *text = r ? r->q_text.c_str() : "";

@@ -268,6 +268,38 @@ def _patch_display_size():
     wx.GetDisplaySize = GetDisplaySize
 
 
+def keep_dip(win, *names, then=None):
+    """Sizes in pixels that win keeps in attributes (worked out with FromDIP when it was made: gaps, widths,
+    margins) scaled again when the window moves to a display of another scale or a remote session reconnects
+    at another scale, so they keep their size in DIP; wx scales fonts, minimum sizes and sizer borders itself.
+    then(): called afterwards (to measure or lay out again)."""
+    import wx
+
+    def on(e):
+        e.Skip()
+        try:
+            old, new = e.GetOldDPI().y, e.GetNewDPI().y
+        except Exception:
+            return
+        if old <= 0 or new <= 0 or old == new:
+            return
+        r = new / float(old)
+
+        def sc(v):
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                return v
+            return int(round(v * r)) if isinstance(v, int) else v * r
+        for a in names:
+            v = getattr(win, a, None)
+            if isinstance(v, (list, tuple)):
+                setattr(win, a, type(v)(sc(x) for x in v))
+            elif v is not None:
+                setattr(win, a, sc(v))
+        if then is not None:
+            wx.CallAfter(lambda: bool(win) and then())
+    win.Bind(wx.EVT_DPI_CHANGED, on)
+
+
 def _scale(win):
     try:
         return float(win.GetDPIScaleFactor()) if _ST["dpi_aware"] else 1.0
@@ -1163,14 +1195,17 @@ def _paint_cards(frame):
             r = plot.GetRect()
         except RuntimeError:
             continue
-        x, y = r.x - c["pad"], r.y - c["header"]
-        w, h = r.width + 2 * c["pad"], r.height + c["header"] + c["pad"]
+        # sizes read now, not kept from when the cards were made: wx scaled the spacers when the window moved
+        # to a display of another scale, and the titles were drawn half above the cards
+        hdr, pad = panel.FromDIP(30), panel.FromDIP(6)
+        x, y = r.x - pad, r.y - hdr
+        w, h = r.width + 2 * pad, r.height + hdr + pad
         gc.SetPen(wx.Pen(wx.Colour(C["line"]), 1))
         gc.SetBrush(wx.Brush(wx.Colour(C["panel"])))
         gc.DrawRoundedRectangle(x + 0.5, y + 0.5, w - 1, h - 1, panel.FromDIP(8))
         gc.SetFont(font, wx.Colour(C["text"]))
         tw, th = gc.GetTextExtent(title)
-        gc.DrawText(title, x + panel.FromDIP(12), y + (c["header"] - th) / 2.0 + panel.FromDIP(2))
+        gc.DrawText(title, x + panel.FromDIP(12), y + (hdr - th) / 2.0 + panel.FromDIP(2))
 
 
 def _install_resize_plots():
@@ -1185,7 +1220,7 @@ def _install_resize_plots():
         try:
             panel = self.plotpanel
             cw = panel.GetClientSize()[0]
-            w = int((cw - 3 * c["gap"]) / 2 - 2 * c["pad"])
+            w = int((cw - 3 * panel.FromDIP(12)) / 2 - 2 * panel.FromDIP(6))
             if w < 50:
                 return
             try:
@@ -1486,7 +1521,7 @@ def _install_last_folder():
 # 7. launcher (light frosted glass)
 # --------------------------------------------------------------------------
 APP_NAME = "MSpektra"
-APP_VERSION = "4.38"  # +0.01 small change, +0.1 large change, +1.0 big change
+APP_VERSION = "4.5"  # +0.01 small change, +0.1 large change, +1.0 big change
 WORKSPACES = [
     ("LCMS Analysis", "LC-MS and HPLC files", "lcms"),
     ("HRMS Analysis", "Bruker, Agilent, Waters, Thermo and mzML files", "hrms"),
@@ -1624,15 +1659,29 @@ def _glass_class():
             self._logo_bmp = {}
             self._rects = []
             self._hover = self._down = self._focus = -1
-            self.k = self.FromDIP(1000) / 1000.0
+            self.k = self.FromDIP(1000) / 1000.0  # pixels per DIP; read again at each paint (_fit)
+            self.fz = 1.0  # text and shapes made smaller in a small window (_fit)
             for ev, fn in ((wx.EVT_PAINT, self._on_paint), (wx.EVT_MOTION, self._on_motion),
                            (wx.EVT_LEAVE_WINDOW, self._on_leave), (wx.EVT_LEFT_DOWN, self._on_down),
                            (wx.EVT_LEFT_DCLICK, self._on_down), (wx.EVT_LEFT_UP, self._on_up),
-                           (wx.EVT_SIZE, lambda e: self.Refresh()), (wx.EVT_KEY_DOWN, self._on_key),
+                           (wx.EVT_SIZE, lambda e: self.Refresh()),
+                           (wx.EVT_DPI_CHANGED, lambda e: (e.Skip(), self.Refresh())),
+                           (wx.EVT_KEY_DOWN, self._on_key),
                            (wx.EVT_RIGHT_UP, lambda e: self._more_menu(e.GetPosition()))):
                 self.Bind(ev, fn)
             self.show_more = False  # classic tools: right click on the background only
-            self.SetMinSize(self.FromDIP(wx.Size(980, 500)))
+            # the content fits any window from this size up (_fit); the window opens at SIZE_DIP
+            self.SetMinSize(self.FromDIP(wx.Size(480, 270)))
+
+        SIZE_DIP = (980, 500)
+
+        def open_size(self, frame):
+            """The start screen at its usual size (fit_to_screen keeps it inside the screen when shown)."""
+            want = self.FromDIP(wx.Size(*self.SIZE_DIP))
+            cur = self.GetSize()
+            if cur.width < want.width or cur.height < want.height:
+                frame.SetClientSize(frame.GetClientSize() + wx.Size(max(0, want.width - cur.width),
+                                                                    max(0, want.height - cur.height)))
 
         # ---------------------------------------------------------- input
         def _hit(self, pos):
@@ -1720,14 +1769,6 @@ def _glass_class():
             evt = wx.CommandEvent(wx.EVT_BUTTON.typeId, self.tools[i][2])
             evt.SetEventObject(self)
             wx.CallAfter(self.GetEventHandler().ProcessEvent, evt)
-
-        def _grow(self, h):
-            self.SetMinSize(wx.Size(self.GetMinSize().width, h))
-            top = self.GetTopLevelParent()
-            top.Fit()
-            top.Centre()
-            fit_to_screen(top, grow=False)
-            self.Refresh()
 
         # ---------------------------------------------------------- helpers
         def _rr(self, gc, x, y, w, h, r):
@@ -1902,30 +1943,63 @@ def _glass_class():
             finally:
                 gc.finish()
 
+        def _fit(self, gc, W, H):
+            """(k, f, ox, oy, cw, tile h): the layout in the window. k: pixels per DIP of the display the
+            window is on now (read at each paint: the window may have moved to a display of another scale,
+            or a remote session reconnected at another scale), f: the whole start screen made smaller when
+            the window is too small for it (a small screen or a small remote desktop window); on a large
+            window the content keeps its width and sits in the middle."""
+            base = self.FromDIP(1000) / 1000.0
+            n = len(self.tools)
+            cols = max(1, min(3, n))
+            rows = (n + cols - 1) // cols
+            f = 1.0
+            for _ in range(3):
+                k = base * f
+                M = 40 * k
+                cw = min(W, 1240 * base)   # content width at most 1240 DIP
+                tw_ = (cw - 2 * M - (cols - 1) * 20 * k) / cols
+                gc.SetFont(ui_font(14 * f, 700), wx.Colour(C["text"]))
+                title_h = max(gc.GetTextExtent(t[0])[1] for t in self.tools) if self.tools else 20 * k
+                gc.SetFont(ui_font(9.5 * f, 400), wx.Colour(C["muted"]))
+                lh = gc.GetTextExtent("Xg")[1]
+                nl = max([len(self._wrap(gc, t[1].replace("\n", " "), tw_ - 44 * k, 3)) for t in self.tools] or [1])
+                th_ = max(170 * k, 22 * k + 52 * k + 16 * k + title_h + 6 * k + nl * lh * 1.18 + 20 * k)
+                need_h = M + round(64 * k) + 40 * k + rows * (th_ + 20 * k) - 20 * k + M
+                need_w = 980 * k
+                g = min(1.0, H / max(need_h, 1.0), W / max(need_w, 1.0))
+                if g >= 0.995 or f <= 0.5:
+                    break
+                f = max(0.5, f * g)
+            ox = (W - cw) / 2.0
+            oy = max(0.0, (H - need_h) * 0.4)
+            return k, f, ox, oy, cw, th_, cols, rows
+
         def _paint(self, gc):
-            k = self.k
             W, H = self.GetClientSize()
+            k, f, ox, oy, cw, th_, cols, rows = self._fit(gc, W, H)
+            self.k, self.fz = k, f
             self._backdrop(gc, W, H)
 
             M = 40 * k
             # header: app badge, name, version
             bs = round(64 * k)
-            bx, by = round(M), round(M)
+            bx, by = round(ox + M), round(oy + M)
             self._badge(gc, bx, by, bs, "accent")
             m = round(bs * 0.18)
             self._glyph(gc, "app", bx + m, by + m, bs - 2 * m, wx.Colour(255, 255, 255))
             tx = bx + bs + 20 * k
-            gc.SetFont(ui_font(24, 800), wx.Colour(C["text"]))
+            gc.SetFont(ui_font(24 * f, 800), wx.Colour(C["text"]))
             tw, th = gc.GetTextExtent(APP_NAME)
             gc.DrawText(APP_NAME, tx, by - 2 * k)
-            gc.SetFont(ui_font(11, 600), wx.Colour(C["faint"]))
+            gc.SetFont(ui_font(11 * f, 600), wx.Colour(C["faint"]))
             ver = APP_VERSION
             vw, vh = gc.GetTextExtent(ver)
             px, py = tx + tw + 12 * k, by - 2 * k + th * 0.5 - vh / 2.0 - 3 * k
             gc.SetBrush(wx.Brush(wx.Colour(23, 65, 143, 16)))
             gc.SetPen(gc.CreatePen(wx.GraphicsPenInfo(wx.Colour(23, 65, 143, 30)).Width(1)))
             self._rr(gc, px, py, vw + 16 * k, vh + 6 * k, 4 * k)
-            gc.SetFont(ui_font(11, 600), wx.Colour(C["accent_text"]))
+            gc.SetFont(ui_font(11 * f, 600), wx.Colour(C["accent_text"]))
             gc.DrawText(ver, px + 8 * k, py + 3 * k)
 
             # three workspace tiles
@@ -1933,33 +2007,21 @@ def _glass_class():
             y = by + bs + 40 * k
             gap = 20 * k
             n = len(self.tools)
-            cols = max(1, min(3, n))
-            tw_ = (W - 2 * M - (cols - 1) * gap) / cols
-            # tile height from its content (title, up to 3 lines of text)
-            gc.SetFont(ui_font(14, 700), wx.Colour(C["text"]))
-            title_h = max(gc.GetTextExtent(t[0])[1] for t in self.tools) if self.tools else 20 * k
-            gc.SetFont(ui_font(9.5, 400), wx.Colour(C["muted"]))
-            lh = gc.GetTextExtent("Xg")[1]
-            nl = max([len(self._wrap(gc, t[1].replace("\n", " "), tw_ - 44 * k, 3)) for t in self.tools] or [1])
-            th_ = max(170 * k, 22 * k + 52 * k + 16 * k + title_h + 6 * k + nl * lh * 1.18 + 20 * k)
-            need = y + ((n + cols - 1) // cols) * (th_ + gap) + 60 * k
-            if need > H + 1 and not getattr(self, "_grown", False):
-                self._grown = True
-                wx.CallAfter(self._grow, int(need))
+            tw_ = (cw - 2 * M - (cols - 1) * gap) / cols
             for i in range(n):
-                cx = M + (i % cols) * (tw_ + gap)
+                cx = ox + M + (i % cols) * (tw_ + gap)
                 cy = y + (i // cols) * (th_ + gap)
                 self._tile(gc, i, cx, cy, tw_, th_)
-            y += ((n + cols - 1) // cols) * (th_ + gap)
+            y += rows * (th_ + gap)
 
             # "More tools" link (hidden: the classic tools are in the right click menu)
             if self.more and self.show_more:
                 idx = len(self.tools)
                 hov = self._hover == idx or self._focus == idx
-                gc.SetFont(ui_font(9.5, 600), wx.Colour(C["accent_text"] if hov else C["muted"]))
+                gc.SetFont(ui_font(9.5 * f, 600), wx.Colour(C["accent_text"] if hov else C["muted"]))
                 label = "More tools"
                 lw, lh = gc.GetTextExtent(label)
-                lx, ly = M + 2 * k, y + 2 * k
+                lx, ly = ox + M + 2 * k, y + 2 * k
                 gc.DrawText(label, lx, ly)
                 cxv, cyv, sv = lx + lw + 9 * k, ly + lh / 2.0, 3.5 * k
                 gc.SetPen(gc.CreatePen(wx.GraphicsPenInfo(wx.Colour(C["accent_text"] if hov else C["muted"]))
@@ -1969,13 +2031,6 @@ def _glass_class():
                 if hov:
                     gc.StrokeLine(lx, ly + lh + 1 * k, lx + lw, ly + lh + 1 * k)
                 self._rects.append((lx - 4 * k, ly - 4 * k, lw + 26 * k, lh + 8 * k, idx))
-
-            gc.SetFont(ui_font(8.5, 500), wx.Colour(C["faint"]))
-            cite = "MSpektra"
-            lines = self._wrap(gc, cite, W * 0.60 - M, 2)
-            ch = gc.GetTextExtent("Xg")[1]
-            for j, ln in enumerate(lines):
-                gc.DrawText(ln, M + 2 * k, H - M * 0.6 - ch * (len(lines) - j) * 1.1)
 
         def _tile(self, gc, i, x, y, w, h):
             k = self.k
@@ -1990,7 +2045,7 @@ def _glass_class():
             self._glyph(gc, title, px + m, py + m, s - 2 * m,
                         wx.Colour("#1F2A55") if title == "Deconvolute" else wx.Colour(255, 255, 255))
             ty = py + s + 16 * k
-            gc.SetFont(ui_font(14, 700), wx.Colour(C["text"]))
+            gc.SetFont(ui_font(14 * self.fz, 700), wx.Colour(C["text"]))
             ttw, tth = gc.GetTextExtent(title)
             gc.DrawText(title, px, ty)
             if state == 1:
@@ -1999,7 +2054,7 @@ def _glass_class():
                                        .Cap(wx.CAP_ROUND).Join(wx.JOIN_ROUND)))
                 gc.StrokeLines([wx.Point2D(ax - 5 * k, ay - 6 * k), wx.Point2D(ax + 1 * k, ay),
                                 wx.Point2D(ax - 5 * k, ay + 6 * k)])
-            gc.SetFont(ui_font(9.5, 400), wx.Colour(C["muted"]))
+            gc.SetFont(ui_font(9.5 * self.fz, 400), wx.Colour(C["muted"]))
             maxw = w - 44 * k
             lines = self._wrap(gc, desc.replace("\n", " "), maxw, 3)
             lh = gc.GetTextExtent("Xg")[1]
@@ -2066,6 +2121,7 @@ def restyle_launcher(frame):
     frame.SetTitle(APP_NAME)
     set_app_icon(frame)
     fs.Fit(frame)
+    canvas.open_size(frame)
     frame.Layout()
     frame.Centre()
     canvas.SetFocus()
@@ -2403,6 +2459,7 @@ def start_screen(ensure_unidec=None, root=None, spawn=None):
     frame.SetSizer(fs)
     set_app_icon(frame)
     fs.Fit(frame)
+    canvas.open_size(frame)
     frame.Centre()
     try:  # before Show: the taskbar button has the icon of this MSpektra.exe from the start
         import unidec_ui_addons
@@ -2621,7 +2678,21 @@ def install_unidec():
             func()
         except Exception as e:
             _log(name, "NOT enabled:", e)
-    _log("modern interface enabled (DPI aware: %s, scale %.2f)" % (_ST["dpi_aware"], _ST["system_scale"]))
+    _log("modern interface enabled (%s, scale %.2f)" % (dpi_mode(), _ST["system_scale"]))
+
+
+def dpi_mode():
+    """How the process handles display scaling, as Windows sees it (the flag of enable_dpi_awareness is not
+    set when another library made the process DPI aware first, e.g. Matplotlib's wx back end)."""
+    try:
+        import ctypes
+        u = ctypes.windll.user32
+        u.GetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+        u.GetAwarenessFromDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+        a = u.GetAwarenessFromDpiAwarenessContext(u.GetThreadDpiAwarenessContext())
+        return {0: "DPI unaware", 1: "system DPI aware", 2: "per monitor DPI aware"}.get(a, "DPI awareness %s" % a)
+    except Exception:
+        return "DPI aware: %s" % _ST["dpi_aware"]
 
 
 def install(settings_path=None):

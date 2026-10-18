@@ -71,6 +71,7 @@
 #include <numeric>
 #include <cmath>
 #include <cstring>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
@@ -94,12 +95,12 @@ namespace {
 inline int omp_threads() { return ms::threads(); }
 
 // time spent in the parts of a run (MS_PROFILE set: printed to stderr at its end)
-enum { T_BUILD, T_FORWARD, T_ADJOINT, T_OBJECTIVE, T_LBFGS, T_NORMAL, T_ENVFIT, T_EXP, T_DIR, T_PAIR, T_OUTPUT, T_TOTAL, T_N };
+enum { T_BUILD, T_FORWARD, T_ADJOINT, T_OBJECTIVE, T_LBFGS, T_NORMAL, T_ENVFIT, T_EXP, T_DIR, T_PAIR, T_OUTPUT, T_SOLVER, T_MMMAP, T_MMVAL, T_TOTAL, T_N };
 double prof_t[T_N];
 long prof_n[T_N];  // calls
 const char* prof_name[T_N] = {"model build", "forward", "adjoint", "objective (all)", "lbfgs (all)",
                               "node normal", "envelope fit", "exp (objective)", "lbfgs direction",
-                              "lbfgs pair", "output", "total"};
+                              "lbfgs pair", "output", "solver (research)", "mm map", "mm value", "total"};
 struct Timed {
     int k;
     std::chrono::steady_clock::time_point s;
@@ -412,10 +413,55 @@ void dilate(std::vector<char>& m, long iters) {
 
 // ============================================================ Gaussian blur
 // scipy.ndimage.gaussian_filter1d(v, sigma, mode="constant", truncate=4.0)
+// GAP: scaled complementary error function exp(b^2) erfc(b) without overflow
+double gap_erfcx(double b) {
+    if (b < 5.0) return std::exp(b * b) * std::erfc(b);
+    const double b2 = b * b;   // asymptotic series
+    return 1.0 / (b * std::sqrt(M_PI)) * (1.0 - 0.5 / b2 + 0.75 / (b2 * b2) - 1.875 / (b2 * b2 * b2));
+}
+
 struct Blur {
     int radius = 0;
     std::vector<double> k;   // k[t], t = 0..radius (symmetric)
+    // GAP (MS_GAP_TAIL): an asymmetric kernel, out[i] = sum_t ka[t + rl] v[i - t] for t = -rl..rr (the forward
+    // product: a mass at row i0 reaches rows i0 - rl .. i0 + rr); radius = max(rl, rr) for the halos
+    bool asym = false;
+    int rl = 0, rr = 0;
+    std::vector<double> ka;
+    // Gaussian core (sigma, grid points) convolved with a one sided exponential towards higher rows (tau, grid
+    // points): the exponentially modified Gaussian, its core centre at the mass's position, sum 1
+    void init_emg(double sigma, double tau, double truncate = 4.0) {
+        if (!(tau > 0.02 * sigma)) { init(sigma, truncate); return; }
+        asym = true;
+        rl = (int)(truncate * sigma + 0.5);
+        rr = (int)(truncate * sigma + tau * std::log(1e4) + 0.5);
+        radius = std::max(rl, rr);
+        ka.assign(rl + rr + 1, 0.0);
+        double sum = 0;
+        for (int t = -rl; t <= rr; t++) {
+            const double b = (sigma / tau - t / sigma) / std::sqrt(2.0);
+            const double v = std::exp(-0.5 * (t / sigma) * (t / sigma)) * gap_erfcx(b);
+            ka[t + rl] = v; sum += v;
+        }
+        for (auto& v : ka) v /= sum;
+    }
+    // transposed product (the adjoint): out[j] = sum_t ka[t + rl] v[j + t]
+    void apply_part_T(const double* v, size_t n, size_t i0, size_t i1, double* out) const {
+        if (!asym) { apply_part(v, n, i0, i1, out); return; }
+        for (size_t j = i0; j < i1; j++) {
+            double s = 0;
+            for (int t = -rl; t <= rr; t++) {
+                const long q = (long)j + t;
+                if (q >= 0 && q < (long)n) s += ka[t + rl] * v[q];
+            }
+            out[j - i0] = s;
+        }
+    }
+    void apply_T(const double* v, double* out, size_t n) const {
+        parallel_range(n, [&](size_t a, size_t b) { apply_part_T(v, n, a, b, out + a); });
+    }
     void init(double sigma, double truncate = 4.0) {
+        asym = false;
         radius = (int)(truncate * sigma + 0.5);
         std::vector<double> phi(2 * radius + 1);
         double s2 = sigma * sigma;
@@ -426,6 +472,17 @@ struct Blur {
     }
     // out[i - i0] = blurred v at i for i in [i0, i1); v has n points, zero outside
     void apply_part(const double* v, size_t n, size_t i0, size_t i1, double* out) const {
+        if (asym) {
+            for (size_t i = i0; i < i1; i++) {
+                double s = 0;
+                for (int t = -rl; t <= rr; t++) {
+                    const long q = (long)i - t;
+                    if (q >= 0 && q < (long)n) s += ka[t + rl] * v[q];
+                }
+                out[i - i0] = s;
+            }
+            return;
+        }
         int r = radius;
         for (size_t i = i0; i < i1; i++) {
             double s = v[i] * k[0];
@@ -465,6 +522,8 @@ struct Model {
     std::vector<int> act;        // active mass -> mass index
     double sig = 1;
     Blur blur;
+    Blur blur_out;          // GAP (MS_GAP_TAIL): the output's peak shape (the kernel's Gaussian core)
+    bool out_core = false;
     struct Entry { int32_t i; float wh; };   // lower grid point, weight of the upper one (< 0: across a gap)
     // PERF: the entries by charge (charge k: active masses e_lo[k] .. e_hi[k] - 1 at entc[cbase[k] ..]), read
     // charge by charge in order (normal equations, output); before, by mass (a cache line for each entry read)
@@ -986,8 +1045,8 @@ struct Model {
         prof_n[T_ADJOINT]++;
         if (tmp2.size() != n) tmp2.assign(n, 0.0);
         parallel_range(n, [&](size_t a, size_t b) {
-            blur.apply_part(r1, n, a, b, tmp.data() + a);
-            blur.apply_part(r2, n, a, b, tmp2.data() + a);
+            blur.apply_part_T(r1, n, a, b, tmp.data() + a);
+            blur.apply_part_T(r2, n, a, b, tmp2.data() + a);
         });
         const double* __restrict g1 = tmp.data();
         const double* __restrict g2 = tmp2.data();
@@ -1033,7 +1092,7 @@ struct Model {
     // ... and post(j, out[j]) for every mass, in the same pass
     template <class Post> void adjoint_f(const double* r, double* out, Post&& post) {
         Timed tm(T_ADJOINT);
-        blur.apply(r, tmp.data(), n);
+        blur.apply_T(r, tmp.data(), n);
         const double* __restrict g = tmp.data();
         // a mass adds its terms by charge
         pblocks(b_r0.size(), [&](size_t b) {
@@ -1083,7 +1142,7 @@ struct Model {
                 rk[e.i + 1] += wh * f[j];
             }
         });
-        for (int k = 0; k < K; k++) blur.apply(raw.data() + (size_t)k * n, out.data() + (size_t)k * n, n);
+        for (int k = 0; k < K; k++) (out_core ? blur_out : blur).apply(raw.data() + (size_t)k * n, out.data() + (size_t)k * n, n);
     }
 
     // Normal equations of the envelope fit: the column of node q and charge k
@@ -1528,7 +1587,9 @@ std::vector<double> envelope_fit(std::vector<double> G, const std::vector<double
 // chi2 / 2 - alpha x entropy, in u = ln f; w are the weights 1 / sigma_i^2
 struct Objective {
     Model* model; const std::vector<double>* y; const std::vector<double>* w; double alpha, dflt, log_dflt;
+    const double* ldv = nullptr;   // RESEARCH: ln of a default model per mass (MS_HY_DEFAULT)
     std::vector<double> f, r, adj, fit;
+    const std::vector<double>* cvec = nullptr;   // RESEARCH (MS_SOLVER lbfgsmm): A'(w y); then adj keeps A'(w r)
     size_t evals = 0;
     double operator()(const std::vector<double>& u, std::vector<double>& grad) {
         Timed tm(T_OBJECTIVE);
@@ -1540,6 +1601,9 @@ struct Objective {
         double ent;
         {   // f = exp(u) and the entropy in one pass
             Timed te(T_EXP);
+            if (const double* lv = ldv) {   // RESEARCH (MS_HY_DEFAULT): a default model per mass
+                ent = psum(na, [&](size_t j) { const double fj = fexp(uu[j]); ff[j] = fj; const double mj = std::exp(lv[j]); return fj - mj - fj * (uu[j] - lv[j]); });
+            } else
             // (PERF: the sum of psum, block by block in index order; exp two at a time)
             psums(na, 1, &ent, [&](size_t i0, size_t i1, double* acc) {
                 fexp_n(uu, ff, i0, i1);
@@ -1557,6 +1621,13 @@ struct Objective {
         grad.resize(na);
         double* gg = grad.data(); const double al = alpha;
         // the gradient as the adjoint gives each mass its sum
+        if (ldv) {
+            model->adjoint_f(r.data(), nullptr, [&](size_t j, double s) { gg[j] = ff[j] * (s + al * (uu[j] - ldv[j])); });
+        } else
+        if (cvec) {
+            double* aa = adj.data();
+            model->adjoint_f(r.data(), nullptr, [&](size_t j, double s) { gg[j] = ff[j] * (s + al * (uu[j] - ld)); aa[j] = s; });
+        } else
         model->adjoint_f(r.data(), nullptr, [&](size_t j, double s) { gg[j] = ff[j] * (s + al * (uu[j] - ld)); });
         evals++;
         return chi2 - alpha * ent;
@@ -1715,6 +1786,11 @@ void lbfgs_b(Objective& obj, std::vector<double>& x, double lo, double hi, int m
     std::vector<float> s_buf, y_buf;
     int restarts = 0;
     auto set_diag = [&]() {
+        if (obj.cvec) {   // RESEARCH: the majoriser's curvature, 1 / (f (H f + alpha)) in u
+            const double* cc = obj.cvec->data(); const double al = obj.alpha;
+            pfor(n, [&](size_t a, size_t b) { for (size_t j = a; j < b; j++) hd[j] = 1.0 / std::max(obj.f[j] * (std::max(obj.adj[j] + cc[j], 0.0) + al), 1e-300); });
+            return;
+        }
         pfor(n, [&](size_t a, size_t b) { for (size_t j = a; j < b; j++) hd[j] = 1.0 / std::max(obj.f[j], 1e-300); });
     };
     auto first_direction = [&]() {
@@ -1966,6 +2042,8 @@ void lbfgs_b(Objective& obj, std::vector<double>& x, double lo, double hi, int m
         if (getenv("MS_DEBUG") && it == maxiter - 1) fprintf(stderr, "  lbfgs maxiter f %.6g\n", fx);
     }
 }
+
+#include "maxent_solver.inc"
 
 }  // namespace
 // ============================================================ spectrum preparation
@@ -2468,9 +2546,189 @@ static void small_eigen(std::vector<double> A, int n, std::vector<double>& ev, s
 }
 
 // ============================================================ driver
+// ============================================================ GAP: peak shape with a tail, from the data
+// (MS_GAP_TAIL=auto). The tallest isolated peaks of the spectrum on a ln(m/z) grid of six points per peak width
+// (cell averages), each normalised at its apex and averaged over -2 .. +3 peak widths; three models fitted by least
+// squares: a Gaussian, an exponentially modified Gaussian (tail towards high m/z) and two Gaussians of one width (a
+// neighbour, e.g. an unresolved variant). The tail is used when the EMG is better than the Gaussian by a BIC
+// difference above 10 ("very strong" evidence, Kass and Raftery 1995) and better than the two Gaussians by the same margin;
+// returns tau / sigma, 0 for a Gaussian.
+namespace gapfit {
+double emg_shape(double t, double s, double tau) {
+    double b = (s / std::max(tau, 1e-3) - t / s) / std::sqrt(2.0);
+    b = std::max(b, -25.0);
+    return std::exp(-0.5 * (t / s) * (t / s)) * gap_erfcx(b);
+}
+// box constrained Levenberg Marquardt with a forward difference Jacobian; returns the cost 0.5 |r|^2
+template <class F> double lm_box(F&& res, std::vector<double>& x, const std::vector<double>& lo, const std::vector<double>& hi, int m) {
+    const int k = (int)x.size();
+    auto clampv = [&](std::vector<double>& v) { for (int i = 0; i < k; i++) v[i] = std::min(hi[i], std::max(lo[i], v[i])); };
+    clampv(x);
+    std::vector<double> r(m), r2(m), J((size_t)m * k), xt(k);
+    auto cost = [&](const std::vector<double>& v, std::vector<double>& rr) { res(v.data(), rr.data()); double c = 0; for (double q : rr) c += q * q; return 0.5 * c; };
+    double c = cost(x, r), lam = 1e-3;
+    for (int it = 0; it < 300; it++) {
+        for (int j = 0; j < k; j++) {
+            xt = x; double h = 1e-6 * std::max(1.0, std::fabs(x[j]));
+            if (xt[j] + h > hi[j]) h = -h;
+            xt[j] += h; res(xt.data(), r2.data());
+            for (int i = 0; i < m; i++) J[(size_t)i * k + j] = (r2[i] - r[i]) / h;
+        }
+        std::vector<double> A((size_t)k * k, 0.0), g(k, 0.0);
+        for (int i = 0; i < m; i++)
+            for (int a = 0; a < k; a++) {
+                g[a] += J[(size_t)i * k + a] * r[i];
+                for (int b = 0; b < k; b++) A[(size_t)a * k + b] += J[(size_t)i * k + a] * J[(size_t)i * k + b];
+            }
+        bool improved = false;
+        for (int tries = 0; tries < 12 && !improved; tries++) {
+            std::vector<double> M = A, d(k);
+            for (int a = 0; a < k; a++) M[(size_t)a * k + a] += lam * std::max(A[(size_t)a * k + a], 1e-12);
+            for (int a = 0; a < k; a++) d[a] = -g[a];
+            for (int col = 0; col < k; col++) {   // Gaussian elimination, partial pivoting
+                int pv = col;
+                for (int rr = col + 1; rr < k; rr++) if (std::fabs(M[(size_t)rr * k + col]) > std::fabs(M[(size_t)pv * k + col])) pv = rr;
+                if (pv != col) { for (int q = 0; q < k; q++) std::swap(M[(size_t)col * k + q], M[(size_t)pv * k + q]); std::swap(d[col], d[pv]); }
+                const double piv = M[(size_t)col * k + col];
+                if (std::fabs(piv) < 1e-300) continue;
+                for (int rr = col + 1; rr < k; rr++) {
+                    const double f = M[(size_t)rr * k + col] / piv;
+                    for (int q = col; q < k; q++) M[(size_t)rr * k + q] -= f * M[(size_t)col * k + q];
+                    d[rr] -= f * d[col];
+                }
+            }
+            for (int col = k - 1; col >= 0; col--) {
+                double s = d[col];
+                for (int q = col + 1; q < k; q++) s -= M[(size_t)col * k + q] * d[q];
+                d[col] = std::fabs(M[(size_t)col * k + col]) > 1e-300 ? s / M[(size_t)col * k + col] : 0.0;
+            }
+            for (int a = 0; a < k; a++) xt[a] = x[a] + d[a];
+            clampv(xt);
+            const double cn = cost(xt, r2);
+            if (cn < c) {
+                const double rel = (c - cn) / std::max(c, 1e-300);
+                x = xt; r = r2; c = cn; lam = std::max(lam / 3.0, 1e-12); improved = true;
+                if (rel < 1e-12) return c;
+            } else lam *= 4.0;
+        }
+        if (!improved) break;
+    }
+    return c;
+}
+}  // namespace gapfit
+
+double gap_estimate_tail(const double* x, const double* y, size_t n, double res_power, bool debug) {
+    if (n < 20 || !(res_power > 0)) return 0.0;
+    const double du = 1.0 / res_power / 6.0;
+    std::vector<double> lx(n), cum(n, 0.0);
+    for (size_t i = 0; i < n; i++) lx[i] = std::log(std::max(x[i], 1e-9));
+    for (size_t i = 1; i < n; i++) cum[i] = cum[i - 1] + 0.5 * (y[i] + y[i - 1]) * (lx[i] - lx[i - 1]);
+    std::vector<double> g = arange(lx.front(), lx.back(), du);
+    const size_t ng = g.size();
+    if (ng < 40) return 0.0;
+    std::vector<double> yg(ng), ys(ng);
+    for (size_t i = 0; i < ng; i++)
+        yg[i] = (interp_clamp(g[i] + du / 2, lx.data(), cum.data(), n) - interp_clamp(g[i] - du / 2, lx.data(), cum.data(), n)) / du;
+    for (size_t i = 0; i < ng; i++) ys[i] = 0.5 * yg[i] + 0.25 * (i > 0 ? yg[i - 1] : 0.0) + 0.25 * (i + 1 < ng ? yg[i + 1] : 0.0);
+    const int L = 12, Rt = 18, W = L + Rt + 1;
+    const double top = *std::max_element(yg.begin(), yg.end());
+    if (!(top > 0)) return 0.0;
+    std::vector<size_t> order(ng);
+    std::iota(order.begin(), order.end(), 0);
+    std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return yg[a] > yg[b]; });
+    std::vector<long> used;
+    std::vector<double> prof(W, 0.0);
+    int npk = 0;
+    for (size_t t = 0; t < std::min<size_t>(20000, ng) && npk < 9; t++) {
+        const long i = (long)order[t];
+        if (yg[i] < 0.05 * top) break;
+        if (i < L || i + Rt >= (long)ng) continue;
+        bool near = false;
+        for (long u : used) if (std::labs(i - u) < L + Rt) { near = true; break; }
+        if (near) continue;
+        bool apex = true;
+        for (long q = i - L; q <= i + Rt; q++) if (yg[q] > yg[i]) { apex = false; break; }
+        if (!apex) continue;
+        used.push_back(i);
+        bool iso = true;   // no other local maximum (smoothed profile) of 10 % of the peak inside the window
+        for (long q = i - L + 1; q < i + Rt; q++) {
+            if (std::labs(q - i) <= 2) continue;
+            if (ys[q] >= ys[q - 1] && ys[q] > ys[q + 1] && ys[q] >= 0.1 * ys[i]) { iso = false; break; }
+        }
+        if (!iso) continue;
+        for (int q = 0; q < W; q++) prof[q] += yg[i - L + q] / yg[i];
+        npk++;
+    }
+    if (npk < 2) { if (debug) fprintf(stderr, "  tail estimate: %d isolated peaks, Gaussian\n", npk); return 0.0; }
+    for (auto& v : prof) v /= npk;
+    std::vector<double> tt(W);
+    for (int q = 0; q < W; q++) tt[q] = q - L;
+    auto rg = [&](const double* q, double* r) { for (int i = 0; i < W; i++) r[i] = q[0] * std::exp(-0.5 * std::pow((tt[i] - q[1]) / q[2], 2)) + q[3] - prof[i]; };
+    std::vector<double> xg = {1, 0, 2.5, 0};
+    const double cg = gapfit::lm_box(rg, xg, {0, -4, 0.5, -0.2}, {3, 4, 10, 0.5}, W);
+    std::vector<double> fe(W);
+    auto re = [&](const double* q, double* r) {
+        double mx = 0;
+        for (int i = 0; i < W; i++) { fe[i] = gapfit::emg_shape(tt[i] - q[1], q[2], q[4]); mx = std::max(mx, fe[i]); }
+        for (int i = 0; i < W; i++) r[i] = q[0] * fe[i] / std::max(mx, 1e-300) + q[3] - prof[i];
+    };
+    double ce = 1e300; std::vector<double> xe;
+    for (double t0 : {0.5, 2.0, 5.0}) {
+        std::vector<double> v = {1, -0.5, 2, 0, t0};
+        const double c = gapfit::lm_box(re, v, {0, -6, 0.5, -0.2, 0.05}, {3, 4, 10, 0.5, 30}, W);
+        if (c < ce) { ce = c; xe = v; }
+    }
+    auto rgg = [&](const double* q, double* r) {
+        for (int i = 0; i < W; i++) r[i] = q[0] * std::exp(-0.5 * std::pow((tt[i] - q[1]) / q[2], 2)) + q[4] * std::exp(-0.5 * std::pow((tt[i] - q[1] - q[5]) / q[2], 2)) + q[3] - prof[i];
+    };
+    double cgg = 1e300;
+    for (double d0 : {3.0, 6.0, 10.0}) {
+        std::vector<double> v = {1, 0, 2, 0, 0.3, d0};
+        cgg = std::min(cgg, gapfit::lm_box(rgg, v, {0, -4, 0.5, -0.2, 0, 1.5}, {3, 4, 10, 0.5, 3, 18}, W));
+    }
+    const double N = W;
+    auto bic = [&](double c, int k) { return N * std::log(std::max(2.0 * c / N, 1e-300)) + k * std::log(N); };
+    const double bg = bic(cg, 4), be = bic(ce, 5), bgg = bic(cgg, 6);
+    // very strong evidence against both alternatives, and a tail no longer than the peak width (tau <= FWHM of the
+    // core): a longer one is unresolved chemical heterogeneity (adducts, glycoforms), not a peak shape
+    const bool use = bg - be > 10.0 && bgg - be > 10.0 && xe[4] / xe[2] <= 2.3548;
+    const double ratio = xe[4] / xe[2];
+    if (debug) fprintf(stderr, "  tail estimate: %d isolated peaks, tau/sigma %.3f, BIC G-EMG %.1f, 2G-EMG %.1f: %s\n", npk, ratio, bg - be, bgg - be, use ? "tail" : "Gaussian");
+    return use ? ratio : 0.0;
+}
+
+// ============================================================ the hybrid method (ms_maxent_params.method 1)
+// hyenv(name): an MS_HY_* / MS_GAP_TAIL switch of the hybrid method. With method 1 in the run's parameters, the
+// switches of the hybrid method as frozen on 17.10.2026 (UniDec species nodes at the MaxEnt step, node mode 6, one
+// allocation step with a background of 1 noise sd, the data-driven tail kernel); the environment is not read. In a
+// run that fits resolved isotopes they all read as off: those results are the released engine's.
+// RESEARCH, with method 0: an explicit environment variable; otherwise MS_FINAL=1 (the same table) or
+// MS_FINAL=notail (the same without the tail kernel); MS_HY_ENVONLY (part of MS_FINAL): off in resolved runs.
+thread_local bool g_hy_resolved = false;
+thread_local int g_hy_method = 0;   // ms_maxent_params.method of the run on this thread
+const char* hy_table(const char* name, bool notail) {
+    static const char* const tab[][2] = {
+        {"MS_HY_UNIDEC", "0"}, {"MS_HY_NODEMODE", "6"}, {"MS_HY_FLUX", "1"}, {"MS_HY_FLUXB", "1"}, {"MS_GAP_TAIL", "auto"},
+    };
+    for (const auto& kv : tab)
+        if (std::strcmp(kv[0], name) == 0) return (notail && std::strcmp(name, "MS_GAP_TAIL") == 0) ? nullptr : kv[1];
+    return nullptr;
+}
+const char* hyenv(const char* name) {
+    if (g_hy_method == 1) return g_hy_resolved ? nullptr : hy_table(name, false);
+    const char* fin = getenv("MS_FINAL");
+    const bool envonly = getenv("MS_HY_ENVONLY") != nullptr || (fin && *fin);
+    if (envonly && g_hy_resolved) return nullptr;
+    if (const char* v = getenv(name)) return v;
+    if (!fin || !*fin) return nullptr;
+    return hy_table(name, std::string(fin) == "notail");
+}
+
 void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_params& p, ms_maxent_result& out,
                 ms_progress_fn cb, void* user) {
     using namespace ms::e2;
+    g_hy_resolved = false;   // (set once the isotope mode is known)
+    g_hy_method = p.method == 1 ? 1 : 0;
     const bool debug = getenv("MS_DEBUG") != nullptr;
     struct PrintTimes {  // (made first: printed after the total below is added)
         PrintTimes() { for (double& t : prof_t) t = 0; for (long& c : prof_n) c = 0; }
@@ -2601,6 +2859,41 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
             outv[i] = (interp_clamp(centres[i] + width / 2, xs.data(), cum.data(), n) - interp_clamp(centres[i] - width / 2, xs.data(), cum.data(), n)) / width;
     };
     // envelope nodes: automatic from the mass range (one per factor 1.5 in mass, at most 12), limited by the cost of the envelope fit
+    auto gap_tail = [&]() {
+    g_hy_resolved = iso_mode == "resolved";   // (the hybrid method: off in resolved runs)
+    // GAP (MS_GAP_TAIL=r, development): the peak shape is a Gaussian core with an exponential tail towards high
+    // m/z, tau = r sigma; the kernel keeps the full width at half maximum of the Gaussian it replaces (the
+    // width measured on the data includes the tail), the output is drawn with the core alone
+    if (const char* gt = hyenv("MS_GAP_TAIL")) {
+        double r = atof(gt);
+        if (std::string(gt) == "auto") {
+            const double rp = estimate_resolution(spec.x.data(), spec.y.data(), spec.x.size());
+            r = gap_estimate_tail(spec.x.data(), spec.y.data(), spec.x.size(), rp, getenv("MS_GAP_DEBUG") != nullptr);
+        }
+        if (r > 0.02) {
+            const double fw = model.sig * 2.3548;   // grid points
+            // FWHM of the EMG with sigma 1 and tau r, numerically
+            auto emg_fwhm = [&](double sg, double tau) {
+                double mx = 0; std::vector<double> v; const double h = 0.01 * sg;
+                for (double t = -6 * sg; t <= 6 * sg + 12 * tau; t += h) {
+                    const double b = (sg / tau - t / sg) / std::sqrt(2.0);
+                    v.push_back(std::exp(-0.5 * (t / sg) * (t / sg)) * gap_erfcx(b)); mx = std::max(mx, v.back());
+                }
+                size_t a0 = 0, b0 = v.size() - 1;
+                while (a0 < v.size() && v[a0] < 0.5 * mx) a0++;
+                while (b0 > 0 && v[b0] < 0.5 * mx) b0--;
+                return (double)(b0 - a0) * h;
+            };
+            const double f1 = emg_fwhm(1.0, r);
+            const double sc = fw / f1;           // sigma of the core, grid points
+            model.blur.init_emg(sc, r * sc);
+            model.blur_out.init(sc);
+            model.out_core = true;
+            if (getenv("MS_DEBUG") || getenv("MS_GAP_DEBUG"))
+                fprintf(stderr, "  tail kernel: FWHM %.2f points, core sigma %.2f, tau %.2f, reach %d / %d\n", fw, sc, r * sc, model.blur.rl, model.blur.rr);
+        }
+    }
+    };
     auto node_count = [&](size_t ng) {
         int Qn = p.envelope_nodes;
         if (Qn <= 0) {
@@ -2666,6 +2959,7 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
         for (size_t i = 0; i < coord.size(); i++) grid[i] = std::exp(coord[i]);
         d = du;
         model.build(coord, du, masses, charges, a, rel, true, budget, node_count(coord.size()));
+        gap_tail();
         fwhm = rel * median(grid);
     } else {
         fwhm = p.peak_width > 0 ? p.peak_width : 0.0;
@@ -2693,6 +2987,7 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
         cell_average(x, spec.y, coord, d, y);
         if (!removed.empty()) cell_average(x, removed, coord, d, ymask);
         model.build(coord, d, masses, charges, a, fwhm, false, budget, node_count(coord.size()));
+        gap_tail();
         char b[128];
         snprintf(b, sizeof b, "peak width %.3g m/z", fwhm);
         note_shape = b;
@@ -2801,6 +3096,30 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
     size_t na = model.na;
     double log_dflt = std::log(dflt);
     std::vector<double> u(na, log_dflt), f(na), G, bvec;
+    if (const double eps = opt_num("MS_PERTURB", 0.0)) for (auto& v : u) v += eps;   // RESEARCH: sensitivity to the start (noise control)
+    // RESEARCH (MS_HY_DEFAULT=file of "mass value" lines, e.g. a UniDec mass spectrum): the default model of the
+    // entropy per mass, m(M) = dflt x (MS_HY_DFLOOR + MS_HY_DGAIN x p(M) / max p), p interpolated (0 outside)
+    std::vector<double> ldef;
+    if (const char* df = hyenv("MS_HY_DEFAULT")) {
+        std::vector<double> dm, dv;
+        if (FILE* fp = fopen(df, "r")) {
+            double a1, b1;
+            while (fscanf(fp, "%lf %lf", &a1, &b1) == 2) { dm.push_back(a1); dv.push_back(std::max(0.0, b1)); }
+            fclose(fp);
+        }
+        if (dm.size() >= 2) {
+            const double fl = hyenv("MS_HY_DFLOOR") ? atof(hyenv("MS_HY_DFLOOR")) : 1.0;
+            const double gn = hyenv("MS_HY_DGAIN") ? atof(hyenv("MS_HY_DGAIN")) : 100.0;
+            const double pmx = std::max(*std::max_element(dv.begin(), dv.end()), 1e-300);
+            ldef.resize(na);
+            for (size_t j = 0; j < na; j++) {
+                const double pv = interp0(masses[model.act[j]], dm.data(), dv.data(), dm.size()) / pmx;
+                ldef[j] = std::log(dflt * std::max(1e-12, fl + gn * pv));
+                u[j] = ldef[j];
+            }
+            if (debug) fprintf(stderr, "  default model from %s (%zu points), floor %g gain %g\n", df, dm.size(), fl, gn);
+        }
+    }
     // starting envelope: equal weights for the charges whose window holds
     // signal, per node (a least squares fit at this point would be sparse and
     // the masses would settle on a single charge each: ghosts at M x z'/z)
@@ -2830,11 +3149,11 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
         for (size_t j = 0; j < na; j++) pmax = std::max(pmax, std::fabs(pull[j]));
         alpha = pmax > 0 ? pmax / 20.0 : 1.0;
     }
-    double lo_u = log_dflt - 40.0, hi_u = std::log(total) + 2.0;
+    double lo_u = log_dflt - 40.0 + (ldef.empty() ? 0.0 : std::min(0.0, *std::min_element(ldef.begin(), ldef.end()) - log_dflt)), hi_u = std::log(total) + 2.0;
     std::vector<std::pair<double, double>> history;
     std::vector<double> f_prev;
     Objective obj;
-    obj.model = &model; obj.y = &y; obj.w = &w; obj.dflt = dflt; obj.log_dflt = log_dflt;
+    obj.model = &model; obj.y = &y; obj.w = &w; obj.dflt = dflt; obj.log_dflt = log_dflt; obj.ldv = ldef.empty() ? nullptr : ldef.data();
     auto chi2_signal = [&]() {
         double rs = 0;
         for (size_t i = 0; i < ng; i++) if (signal[i]) { double r = fitv[i] - y[i]; rs += w[i] * r * r; }
@@ -2842,7 +3161,162 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
     };
     // one envelope refit: weighted NNLS at the nodes, then one common scale moved into f
     std::vector<double> seed_used;   // EXPERIMENT (MS_ME_SEEDNODES): nodes placed at seeds by the last species_nodes()
+    std::vector<double> hy_nodes;   // RESEARCH: species masses from a UniDec pass (MS_HY_NODES)
+    std::vector<double> hy_used;    // (mode 3) species nodes placed by the last species_nodes()
+    std::vector<double> hy_confirm;   // (mode 4) UniDec species that confirm a first-pass maximum (MS_HY_CONFIRM)
+    if (const char* hv = hyenv("MS_HY_CONFIRM")) {
+        std::string sv(hv);
+        size_t pos = 0;
+        while (pos < sv.size()) {
+            size_t e = sv.find(',', pos);
+            if (e == std::string::npos) e = sv.size();
+            const double m = atof(sv.substr(pos, e - pos).c_str());
+            if (m > 0) hy_confirm.push_back(m);
+            pos = e + 1;
+        }
+    }
+    const double hy_unexpl = hyenv("MS_HY_UNEXPL") ? atof(hyenv("MS_HY_UNEXPL")) : 0.5;
+    const int hy_nodemode = hyenv("MS_HY_NODEMODE") ? atoi(hyenv("MS_HY_NODEMODE")) : 0;
+    // nodes in all (with the two ends): MS_HY_NODECAP, or the engine's own cap (the cost of the envelope fit, 12 at most)
+    auto hy_qcap = [&]() {
+        const int cap = hyenv("MS_HY_NODECAP") ? atoi(hyenv("MS_HY_NODECAP")) : 0;
+        if (cap > 0) return std::max(2, cap);
+        const int qcost = (int)std::floor(std::sqrt(3e9 / std::max<double>(y.size(), 1.0)) / std::max(K, 1));
+        return std::max(2, std::min(12, qcost));
+    };
+    if (const char* hv = hyenv("MS_HY_NODES")) {
+        std::string sv(hv);
+        size_t pos = 0;
+        while (pos < sv.size()) {
+            size_t e = sv.find(',', pos);
+            if (e == std::string::npos) e = sv.size();
+            const double m = atof(sv.substr(pos, e - pos).c_str());
+            if (m > masses.front() && m < masses.back()) hy_nodes.push_back(m);
+            pos = e + 1;
+        }
+    }
+    // RESEARCH (MS_HY_UNIDEC=step): the UniDec pass in this library (Integrate transform, UniDec's automatic peak
+    // width, the same m/z, mass and charge ranges; mass step `step`, 0: the MaxEnt step). Its species: local maxima
+    // of the mass x charge grid summed into 0.1 % bins of ln mass (3 bin mean), >= MS_HY_THR (0.005) of the
+    // largest, 2 % apart, whose charge profile (the bin and its neighbours) holds >= 60 % of its intensity in one
+    // run of >= 3 neighbouring charges (each >= 5 % of its largest); the mass is the apex of the engine's mass
+    // spectrum summed over +-0.025 % within +-0.3 % of the bin. Gives hy_nodes, their UniDec charge profiles
+    // (hy_uenv) and the confirming species (>= MS_HY_CONFIRM_THR, 0.02; modes 4 and 5).
+    std::vector<std::pair<double, std::vector<double>>> hy_uenv;
+    std::vector<double> hy_half;   // half-mass nodes (kept in mode 9: they exist for the harmonic rule)
+    double hy_front_s = -1;
+    const int hy_run = hyenv("MS_HY_RUN") ? std::max(1, atoi(hyenv("MS_HY_RUN"))) : 2;   // neighbouring charges a species shows
+    std::vector<double> hy_mx, hy_my;   // the UniDec mass spectrum (warm start)
+    if (const char* hu = hyenv("MS_HY_UNIDEC")) {
+        const auto t0 = std::chrono::steady_clock::now();
+        double fs = atof(hu);
+        if (!(fs > 0)) fs = step;
+        {   // UniDec stores masses as 32 bit floats: at least two float steps at the upper mass (0.01, 0.02, 0.05 ...)
+            const double ulp = std::ldexp(1.0, (int)std::floor(std::log2(masses.back())) - 23);
+            const double nice[] = {0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0};
+            if (fs < 2.0 * ulp) for (double v : nice) if (v >= 2.0 * ulp) { fs = v; break; }
+        }
+        char pt[1200];
+        snprintf(pt, sizeof pt, "z_lo %d\nz_hi %d\nmass_lo %.17g\nmass_hi %.17g\nmass_step %.17g\npeak_width 0\npeak_window 10\npeak_threshold 0.1\n"
+                 "adduct_mass %.17g\nmz_lo %.17g\nmz_hi %.17g\nmin_intensity 0\npoolflag 0\nbinning auto\nspecies_grid 1\nthreads %d\n",
+                 charges.front(), charges.back(), masses.front(), masses.back(), fs, a, p.mz_lo, p.mz_hi, 0);
+        // (min_intensity, baseline: none, as the MaxEnt run here; the m/z range is the same). threads 0 = all logical
+        // processors (research/hybrid passed a stray 0.0 here, read as threads 0; kept so the results are the same)
+        ms_unidec_result* ur = nullptr;
+        if (ms_unidec(mz, it, n0, "", ".", "hybrid", pt, &ur, nullptr, nullptr) == 0 && ur) {
+            double lb0 = 0; int nzg = 0, zg0 = 0; long nmass = 0;
+            const double *gp = nullptr, *mxp = nullptr, *myp = nullptr;
+            const long nb = ms_unidec_species_grid(ur, &lb0, &nzg, &zg0, &gp, &nmass, &mxp, &myp);
+            if (const char* dp = hyenv("MS_HY_DUMP")) {   // (development: the grid and the mass spectrum)
+                if (FILE* fd = fopen(dp, "w")) {
+                    fprintf(fd, "%ld %d %d %.17g %ld\n", nb, nzg, zg0, lb0, nmass);
+                    for (long b = 0; b < nb * nzg; b++) fprintf(fd, "%.6g\n", gp[b]);
+                    for (long i = 0; i < nmass; i++) fprintf(fd, "%.10g %.6g\n", mxp[i], myp[i]);
+                    fclose(fd);
+                }
+            }
+            if (nb > 3 && nzg == K && zg0 == charges.front()) {
+                std::vector<double> tot(nb, 0.0), ts(nb, 0.0);
+                for (long b = 0; b < nb; b++) for (int k = 0; k < K; k++) tot[b] += gp[(size_t)b * K + k];
+                for (long b = 0; b < nb; b++) {
+                    double s = 0; int c = 0;
+                    for (long d2 = b - 1; d2 <= b + 1; d2++) if (d2 >= 0 && d2 < nb) { s += tot[d2]; c++; }
+                    ts[b] = s / 3.0;   // (np.convolve "same" with zeros outside)
+                    (void)c;
+                }
+                const double tmx = *std::max_element(ts.begin(), ts.end());
+                const double thr_n = hyenv("MS_HY_THR") ? atof(hyenv("MS_HY_THR")) : 0.005;
+                const double thr_c = hyenv("MS_HY_CONFIRM_THR") ? atof(hyenv("MS_HY_CONFIRM_THR")) : 0.02;
+                std::vector<long> idx;
+                for (long b = 1; b + 1 < nb; b++) if (ts[b] > ts[b - 1] && ts[b] >= ts[b + 1] && ts[b] >= std::min(thr_n, thr_c) * tmx) idx.push_back(b);
+                std::sort(idx.begin(), idx.end(), [&](long i1, long i2) { return ts[i1] > ts[i2]; });
+                std::vector<std::pair<double, double>> got;   // (mass, rel)
+                for (long b : idx) {
+                    double M = std::exp(lb0 + 0.001 * b + 0.0005);
+                    // (the proximity test on the bin's mass, as the prototype does it)
+                    if (std::any_of(got.begin(), got.end(), [&](const std::pair<double, double>& g) { return std::fabs(std::log(M / g.first)) < 0.02; })) continue;
+                    std::vector<double> prof(K, 0.0);
+                    for (long d2 = b - 1; d2 <= b + 1; d2++) if (d2 >= 0 && d2 < nb) for (int k = 0; k < K; k++) prof[k] += gp[(size_t)d2 * K + k];
+                    const double ps = std::accumulate(prof.begin(), prof.end(), 0.0), pm = *std::max_element(prof.begin(), prof.end());
+                    double best = 0, cs = 0; int cur = 0;
+                    for (int k = 0; k < K; k++) {
+                        if (prof[k] >= 0.05 * pm) { cur++; cs += prof[k]; } else { cur = 0; cs = 0; }
+                        if (cur >= hy_run) best = std::max(best, cs);
+                    }
+                    if (!(ps > 0) || best < 0.6 * ps) continue;
+                    // refine on the engine's mass spectrum
+                    const double* xb = std::lower_bound(mxp, mxp + nmass, M * 0.997);
+                    const double* xe = std::upper_bound(mxp, mxp + nmass, M * 1.003);
+                    const long i0 = xb - mxp, i1 = xe - mxp;
+                    if (i1 - i0 > 3) {
+                        double dm = (mxp[i1 - 1] - mxp[i0]) / std::max(1L, i1 - i0 - 1);
+                        const long w = std::max(1L, (long)std::llround(0.00025 * M / std::max(dm, 1e-9)));
+                        double bestv = -1, bestm = M;
+                        for (long i = i0; i < i1; i++) {
+                            double s = 0;
+                            for (long j = std::max(i0, i - w); j <= std::min(i1 - 1, i + w); j++) s += myp[j];
+                            if (s > bestv) { bestv = s; bestm = mxp[i]; }
+                        }
+                        M = bestm;
+                    }
+                    got.push_back({M, ts[b] / tmx});
+                    if (ts[b] >= thr_n * tmx && M > masses.front() && M < masses.back()) { hy_nodes.push_back(M); hy_uenv.push_back({M, prof}); }
+                    if (ts[b] >= thr_c * tmx) hy_confirm.push_back(M);
+                }
+            }
+            if (nmass > 1) { hy_mx.assign(mxp, mxp + nmass); hy_my.assign(myp, myp + nmass); }
+            ms_unidec_free(ur);
+        }
+        // MS_HY_HALF (default on): a node also at half the mass of each species (after the species): a half-mass alias
+        // then has its own envelope, which the harmonic rule clears where the data cannot tell it from the species,
+        // instead of an envelope interpolated from the end of the range that the rule cannot reach
+        if (!hy_nodes.empty() && (!hyenv("MS_HY_HALF") || atoi(hyenv("MS_HY_HALF")) != 0)) {
+            const std::vector<double> sp = hy_nodes;
+            for (double M : sp) {
+                const double h = M / 2;
+                if (!(h > masses.front() && h < masses.back()) ||
+                    std::any_of(hy_nodes.begin(), hy_nodes.end(), [&](double q) { return std::fabs(std::log(h / q)) < 0.02; })) continue;
+                // only where the data cannot tell: every charge z at which M / 2 falls in the m/z window has 2 z
+                // within the charge range (else the charges beyond decide, and no extra node is needed)
+                const double wlo = use_log ? std::exp(coord.front()) : coord.front(), whi = use_log ? std::exp(coord.back()) : coord.back();
+                bool any = false, tell = false;
+                for (int z : charges) {
+                    const double pos = (h + z * a) / z;
+                    if (pos < wlo || pos > whi) continue;
+                    any = true;
+                    if (2 * z > charges.back()) tell = true;
+                }
+                if (any && !tell) { hy_nodes.push_back(h); hy_half.push_back(h); }
+            }
+        }
+        hy_front_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        if (debug) { fprintf(stderr, "  UniDec pass %.1f s, species:", hy_front_s); for (double m : hy_nodes) fprintf(stderr, " %.1f", m); fprintf(stderr, "\n"); }
+    }
+    // RESEARCH (MS_HY_ENVFILE=file, lines "mass c_zlo ... c_zhi"): the charge envelope of every mass from a dense
+    // table (a UniDec mass x charge grid), fixed: no refit, no new nodes
+    bool hy_envfixed = false;
     auto refit_envelope = [&]() {
+        if (hy_envfixed) return;
         model.node_normal(f.data(), y.data(), w.data(), G, bvec);
         g_env_node_mass = &model.node_mass;
         const std::vector<double> prev = model.envelope();
@@ -3012,7 +3486,41 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
                 if (!near) { nodes.push_back(c.second); if (is_seed) seed_used.push_back(c.second); }
             }
         };
-        add_nodes(cand, false);
+        hy_used.clear();
+        // RESEARCH (MS_HY_NODES="m1,m2,..."): species found by a UniDec pass get nodes first; MS_HY_NODEMODE 1: and
+        // no node at the first pass's own candidates (only these, the ends and the seeds); 2: these and the ends only
+        // mode 4 (consensus): the first pass's maxima that UniDec also finds (a UniDec species within 2 %) first, in
+        // their order; then UniDec's species not yet covered (from the unexplained signal, as in mode 3); then seeds
+        if (!hy_nodes.empty() && (hy_nodemode == 4 || hy_nodemode == 5 || hy_nodemode == 7)) {
+            std::vector<std::pair<double, double>> sup;
+            const std::vector<double>& conf = hy_confirm.empty() ? hy_nodes : hy_confirm;
+            for (auto& c : cand)
+                if (std::any_of(conf.begin(), conf.end(), [&](double m) { return std::fabs(std::log(c.second / m)) < 0.02; })) sup.push_back(c);
+            qmax = hy_qcap();
+            add_nodes(sup, false);
+            std::vector<std::pair<double, double>> hc;
+            for (double m : hy_nodes) hc.push_back({1.0, m});
+            const size_t n0 = nodes.size();
+            qmax = std::max(qmax, (int)nodes.size() + std::min<int>(2, (int)hc.size()));   // room for up to two more
+            add_nodes(hc, false);
+            for (size_t q = n0; q < nodes.size(); q++) hy_used.push_back(nodes[q]);
+        } else if (!hy_nodes.empty()) {
+            std::vector<std::pair<double, double>> hc;
+            for (double m : hy_nodes)
+                // mode 9: a UniDec species keeps its node only where the first pass (which had a node there) also
+                // found a species (a first-pass maximum within 2 %): MaxEnt arbitrates UniDec's proposals
+                if (hy_nodemode != 9 || std::find(hy_half.begin(), hy_half.end(), m) != hy_half.end() ||
+                    std::any_of(cand.begin(), cand.end(), [&](const std::pair<double, double>& c) { return std::fabs(std::log(c.second / m)) < 0.02; }))
+                    hc.push_back({1.0, m});
+            qmax = hy_qcap();
+            const size_t n0 = nodes.size();
+            add_nodes(hc, false);
+            // mode 3 (after a first pass on the usual nodes): a species node whose signal the first pass left
+            // unexplained starts from that signal, as a seed (seed_envelopes); otherwise from the first-pass envelope
+            if (hy_nodemode == 3) for (size_t q = n0; q < nodes.size(); q++) hy_used.push_back(nodes[q]);
+        }
+        if (hy_nodes.empty() || hy_nodemode == 0 || hy_nodemode == 8) add_nodes(cand, false);   // (modes 1-3: not the first pass's maxima)
+        if (!hy_nodes.empty() && hy_nodemode == 2) seedc.clear();
         if (!seedc.empty()) qmax = std::max(qmax, (int)nodes.size() + std::min<int>(2, (int)seedc.size()));   // room for up to two seeds
         add_nodes(seedc, true);
         std::sort(nodes.begin(), nodes.end());
@@ -3023,20 +3531,26 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
     // the neighbours' charges would put the seed's intensity where its peaks are not, and the refit, which only
     // sees the intensity the masses already carry, could not move it)
     auto seed_envelopes = [&]() {
-        if (seed_used.empty()) return;
+        if (seed_used.empty() && hy_used.empty()) return;
         std::vector<double> E = model.envelope();
         const long rad = std::max(1L, (long)(2 * model.sig));
         for (int q = 0; q < model.Q; q++) {
             const double M = model.node_mass[q];
-            if (std::none_of(seed_used.begin(), seed_used.end(), [&](double sm) { return std::fabs(sm - M) < 1e-6 * M; })) continue;
-            std::vector<double> sc(K, 0.0);
+            const bool is_hy = std::any_of(hy_used.begin(), hy_used.end(), [&](double sm) { return std::fabs(sm - M) < 1e-6 * M; });
+            if (!is_hy && std::none_of(seed_used.begin(), seed_used.end(), [&](double sm) { return std::fabs(sm - M) < 1e-6 * M; })) continue;
+            std::vector<double> sc(K, 0.0), sd(K, 0.0);
             for (int k = 0; k < K; k++) {
                 const double z = charges[k];
                 double pos = (M + z * a) / z;
                 if (use_log) pos = std::log(std::max(pos, 1e-9));
                 long i0 = (long)(std::upper_bound(coord.begin(), coord.end(), pos) - coord.begin()) - 1;
                 if (i0 < 0 || i0 >= (long)ng) continue;
-                for (long i = std::max(0L, i0 - rad); i <= std::min((long)ng - 1, i0 + rad); i++) sc[k] = std::max(sc[k], y[i] - fitv[i]);
+                for (long i = std::max(0L, i0 - rad); i <= std::min((long)ng - 1, i0 + rad); i++) { sc[k] = std::max(sc[k], y[i] - fitv[i]); sd[k] = std::max(sd[k], y[i]); }
+            }
+            if (is_hy) {   // the unexplained part of the node's ladder: at least half of the data's
+                double a1 = 0, a2 = 0;
+                for (int k = 0; k + 1 < K; k++) { a1 += std::min(std::max(0.0, sc[k]), std::max(0.0, sc[k + 1])); a2 += std::min(sd[k], sd[k + 1]); }
+                if (!(a1 >= hy_unexpl * a2)) continue;
             }
             double tot = 0;
             std::vector<double> sm(K, 0.0);
@@ -3100,7 +3614,13 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
     if (memsys && !hybrid && !getenv("MS_MEMSYS_NOWIN")) model.make_windows();
     auto memsys_run = [&]() {
         Timed tmm(T_LBFGS);   // (profile: the whole path)
-        const int ND = getenv("MS_MEMSYS_ND") ? std::max(2, std::min(8, atoi(getenv("MS_MEMSYS_ND")))) : 5;   // directions (5: the masses of 4.33 within 0.5 mDa more often than with 4)
+        // RESEARCH (MS_MEMSYS_DIRS=mm): directions f grad S, f grad C, the majorise-minimise step at the current alpha
+        // and the last step (a memory-gradient subspace with the MM step, Chouzenoux et al.'s 3MG idea): 4 forward
+        // products and 1 adjoint a step instead of 6 + 3
+        const bool mmdirs = getenv("MS_MEMSYS_DIRS") && std::string(getenv("MS_MEMSYS_DIRS")) == "mm";
+        const int ND = mmdirs ? 4 : getenv("MS_MEMSYS_ND") ? std::max(2, std::min(8, atoi(getenv("MS_MEMSYS_ND")))) : 5;   // directions (5: the masses of 4.33 within 0.5 mDa more often than with 4)
+        std::vector<double> mm_c, mm_om, f_last;   // A'(w y) for the weights and envelope now, Wright omega starts, f before the last step
+        bool mm_c_ok = false;
         const double rfac = getenv("MS_MEMSYS_R") ? atof(getenv("MS_MEMSYS_R")) : 10.0;
         const int env_every = getenv("MS_MEMSYS_ENV") ? std::max(1, atoi(getenv("MS_MEMSYS_ENV"))) : 5;
         const int max_it = getenv("MS_MEMSYS_IT") ? atoi(getenv("MS_MEMSYS_IT")) : 300;   // (a cap: passes end when settled)
@@ -3160,6 +3680,7 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
                     set_weights();
                     C_prev = -1;   // C changed with them
                     fit_ok = false;
+                    mm_c_ok = false; f_last.clear();
                 }
                 // C and its gradient at f
                 if (!fit_ok) model.forward(f.data(), fitv.data());
@@ -3186,7 +3707,7 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
                 psums(na, 3, raw, [&](size_t i0, size_t i1, double* acc) {
                     double a = 0, b = 0, c = 0;
                     for (size_t j = i0; j < i1; j++) {
-                        const double s = -(u[j] - log_dflt), g = gC[j];
+                        const double s = -(u[j] - (ldef.empty() ? log_dflt : ldef[j])), g = gC[j];
                         gS[j] = s;
                         e[0][j] = f[j] * s;
                         e[1][j] = f[j] * g;
@@ -3199,8 +3720,29 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
                 // (the directions keep their own lengths: the small matrices are scaled instead, below)
                 // (PERF: the products two at a time where their inputs are ready: the same values)
                 model.forward2(e[0].data(), Ae[0].data(), e[1].data(), Ae[1].data());
+                if (mmdirs) {
+                    if (!mm_c_ok) {
+                        std::vector<double> wy(ng);
+                        for (size_t i = 0; i < ng; i++) wy[i] = w[i] * y[i];
+                        mm_c.assign(na, 0.0);
+                        model.adjoint_f(wy.data(), mm_c.data());
+                        mm_c_ok = true;
+                        if (mm_om.size() != na) mm_om.assign(na, -1.0);
+                    }
+                    // h = A'W A f = gC / 2 + c; the MM point at alpha_eff (Q = chi2 / 2 + alpha KL: alpha_eff is its alpha)
+                    const double al = std::max(alpha_eff, 1e-300), la = std::log(al), lo_ = lo_u, hi_ = hi_u;
+                    pfor(na, [&](size_t a0, size_t b0) {
+                        for (size_t j = a0; j < b0; j++) {
+                            const double hj = std::max(0.5 * gC[j] + mm_c[j], 0.0);
+                            const double v = mm_point(hj, u[j], mm_c[j], al, log_dflt, la, lo_, hi_, mm_om[j]);
+                            e[2][j] = fexp(v) - f[j];
+                            e[3][j] = f_last.size() == na ? f[j] - f_last[j] : 0.0;
+                        }
+                    });
+                    model.forward2(e[2].data(), Ae[2].data(), e[3].data(), Ae[3].data());
+                }
                 // the curvature of C on them: f A'W A e
-                for (int k = 2; k < ND; k += 2) {   // direction k: the curvature on direction k - 2
+                for (int k = 2; k < ND && !mmdirs; k += 2) {   // direction k: the curvature on direction k - 2
                     const bool two = k + 1 < ND;
                     pfor(ng, [&](size_t a0, size_t b0) {
                         for (size_t i = a0; i < b0; i++) back[i] = 2.0 * w[i] * Ae[k - 2][i];
@@ -3356,6 +3898,7 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
                 for (int a = 0; a < ND; a++) x[a] *= dsc[a];   // on the directions as they are in memory
                 for (double& v : x) if (!std::isfinite(v)) v = 0;   // never a step that is not a number
                 if (reject) { f_keep = f; fit_keep = fitv; C_keep = C0; have_keep = true; }
+                if (mmdirs) f_last = f;
                 double clipped = 0;   // masses held at a limit (then the fit is not the old fit plus the step's)
                 psums(na, 1, &clipped, [&](size_t i0, size_t i1, double* acc) {
                     double cnt = 0;
@@ -3459,7 +4002,7 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
                                    noise.s0, nm.s0, noise.ginv, nm.ginv, noise.eps, nm.eps, dbg.c_str());
                 noise = nm;
             }
-            if (p.envelope_nodes <= 0) {
+            if (p.envelope_nodes <= 0 && !hy_envfixed) {
                 std::vector<double> nodes = species_nodes();
                 if (nodes != model.node_mass && nodes.size() >= 2) { model.set_nodes(nodes, masses); seed_envelopes(); }
             }
@@ -3479,7 +4022,7 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
     const int classic_cg = getenv("MS_ME_CLASSIC_CG") ? atoi(getenv("MS_ME_CLASSIC_CG")) : 100;
     double last_G = 0, last_c2 = 0;
     auto evidence_omega = [&]() {
-        const double S = psum(na, [&](size_t j) { const double fj = f[j]; return fj - dflt - fj * (std::log(std::max(fj, 1e-300)) - log_dflt); });
+        const double S = psum(na, [&](size_t j) { const double fj = f[j]; const double lm = ldef.empty() ? log_dflt : ldef[j]; return fj - std::exp(lm) - fj * (std::log(std::max(fj, 1e-300)) - lm); });
         double chi2 = 0, Nd = 0;
         {
             double acc[2];
@@ -3529,14 +4072,172 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
                            S, chi2, Nd, G, it, std::sqrt(rr / rr0), c2, om);
         return om;
     };
+    // RESEARCH (MS_SOLVER=name): the solver of the pass-1 sweeps (lbfgs: as before); MS_SOLVER_CMP=a,b,..: at every
+    // sweep the reference L-BFGS and then each listed solver from the same start (same alpha, envelope, weights),
+    // printed; the run continues with the reference result
+    const std::string solver_name = getenv("MS_SOLVER") ? getenv("MS_SOLVER") : "lbfgs";
+    const char* cmp_env = getenv("MS_SOLVER_CMP");
+    const long solver_budget = getenv("MS_SOLVER_BUDGET") ? atol(getenv("MS_SOLVER_BUDGET")) : 200;
+    const double solver_rtol = getenv("MS_SOLVER_RTOL") ? atof(getenv("MS_SOLVER_RTOL")) : 0.0;
+    const int solver_from = getenv("MS_SOLVER_FROM") ? atoi(getenv("MS_SOLVER_FROM")) : 1;   // the first round of the solver (before: L-BFGS)
+    const auto run_t0 = std::chrono::steady_clock::now();
+    auto p1_solve = [&](int sweep, int round) {
+        if (cmp_env) {
+            std::vector<double> u0 = u;
+            double Q0;
+            {
+                Inner P(obj, lo_u, hi_u);
+                std::vector<double> ft, fit_;
+                const long fs = prof_n[T_FORWARD], as = prof_n[T_ADJOINT];
+                Q0 = P.value(u0, ft, fit_);
+                prof_n[T_FORWARD] = fs; prof_n[T_ADJOINT] = as;
+            }
+            SolveStats ref = run_solver("lbfgs", obj, u, lo_u, hi_u, iterations, 1L << 40, -1e300);
+            fprintf(stderr, "CMP r%d s%d alpha %.6g %-8s Q0 %.12g Q %.12g gap %.5g prod %ld time %.2f chi2 %.8g\n", round + 1, sweep + 1, obj.alpha,
+                    "lbfgs", Q0, ref.Q, ref.gap, ref.prod, ref.sec, ref.chi2);
+            std::string list = cmp_env;
+            size_t a0 = 0;
+            while (a0 < list.size()) {
+                size_t b0 = list.find(',', a0);
+                if (b0 == std::string::npos) b0 = list.size();
+                const std::string nm = list.substr(a0, b0 - a0);
+                a0 = b0 + 1;
+                if (nm.empty()) continue;
+                std::vector<double> u1 = u0;
+                SolveStats st = run_solver(nm, obj, u1, lo_u, hi_u, iterations, std::max(3 * ref.prod, 60L), ref.Q);
+                fprintf(stderr, "CMP r%d s%d alpha %.6g %-8s Q0 %.12g Q %.12g gap %.5g prod %ld to_ref %ld iters %d time %.2f dQ %.4g chi2 %.8g\n", round + 1,
+                        sweep + 1, obj.alpha, nm.c_str(), Q0, st.Q, st.gap, st.prod, st.prod_target, st.iters, st.sec, st.Q - ref.Q, st.chi2);
+                if (st.Qat[0] != 0)
+                    fprintf(stderr, "CMPQ r%d s%d %s rel(Q - Qlbfgs) at 20/40/60/80/100/150 products: %.3g %.3g %.3g %.3g %.3g %.3g (Q0 - Qlbfgs %.3g)\n",
+                            round + 1, sweep + 1, nm.c_str(), (st.Qat[0] - ref.Q) / ref.Q, (st.Qat[1] - ref.Q) / ref.Q, (st.Qat[2] - ref.Q) / ref.Q,
+                            (st.Qat[3] - ref.Q) / ref.Q, (st.Qat[4] - ref.Q) / ref.Q, (st.Qat[5] - ref.Q) / ref.Q, (Q0 - ref.Q) / ref.Q);
+            }
+        } else if (solver_name != "lbfgs" && round + 1 >= solver_from) {
+            SolveStats st = run_solver(solver_name, obj, u, lo_u, hi_u, iterations, solver_budget, -1e300, solver_rtol);
+            if (debug) fprintf(stderr, "  solver %s r%d s%d: Q %.12g gap %.5g prod %ld iters %d\n", solver_name.c_str(), round + 1, sweep + 1, st.Q, st.gap, st.prod, st.iters);
+        } else {
+            lbfgs_b(obj, u, lo_u, hi_u, iterations);
+        }
+    };
+    auto p_end = [&](const char* what) {
+        if (getenv("MS_PROFILE"))
+            fprintf(stderr, "%s: %.2f s, forward %ld adjoint %ld, objective evaluations %zu\n", what,
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - run_t0).count(), prof_n[T_FORWARD], prof_n[T_ADJOINT], obj.evals);
+    };
+    if (!hy_nodes.empty() && p.envelope_nodes <= 0 && hy_nodemode != 3 && hy_nodemode != 4) {
+        std::vector<double> nodes = {masses.front(), masses.back()};
+        seed_used.clear();
+        for (double m : hy_nodes) {
+            bool near = false;
+            for (double q : nodes) if (std::fabs(std::log(m / q)) < 0.02) { near = true; break; }
+            if (!near && (int)nodes.size() < hy_qcap()) { nodes.push_back(m); seed_used.push_back(m); }
+        }
+        // modes 6 and 7: the first pass also keeps the usual log spaced nodes (those not within 2 % of a species)
+        if (hy_nodemode == 6 || hy_nodemode == 7 || hy_nodemode == 8 || hy_nodemode == 9)
+            for (double q : model.node_mass)
+                if (std::none_of(nodes.begin(), nodes.end(), [&](double m) { return std::fabs(std::log(m / q)) < 0.02; })) nodes.push_back(q);
+        // MS_HY_STARTFLAT: the species nodes start from the envelope there (the flat start), not from the data
+        if (hyenv("MS_HY_STARTFLAT")) seed_used.clear();
+        std::sort(nodes.begin(), nodes.end());
+        model.set_nodes(nodes, masses);
+        // MS_HY_NODEENV=file ("mass c_zlo .. c_zhi" per UniDec species): those nodes start from UniDec's charge
+        // distribution of the species (its assignment of shared charge states), the others from the data
+        std::vector<std::pair<double, std::vector<double>>> uenv;
+        if (hyenv("MS_HY_UENV")) uenv = hy_uenv;   // (MS_HY_UNIDEC: the profiles of the pass in this library)
+        else if (const char* ne = hyenv("MS_HY_NODEENV")) {
+            if (FILE* fp = fopen(ne, "r")) {
+                double v; std::vector<double> row;
+                while (fscanf(fp, "%lf", &v) == 1) {
+                    row.push_back(v);
+                    if ((int)row.size() == K + 1) { uenv.push_back({row[0], std::vector<double>(row.begin() + 1, row.end())}); row.clear(); }
+                }
+                fclose(fp);
+            }
+        }
+        std::vector<double> from_ud;
+        for (auto& ue : uenv) {
+            double s = 0; for (double v : ue.second) s += v;
+            if (s > 0 && std::any_of(seed_used.begin(), seed_used.end(), [&](double m) { return std::fabs(m - ue.first) < 1e-6 * m; })) from_ud.push_back(ue.first);
+        }
+        std::vector<double> keep_seed;
+        for (double m : seed_used) if (std::none_of(from_ud.begin(), from_ud.end(), [&](double u2) { return std::fabs(m - u2) < 1e-6 * m; })) keep_seed.push_back(m);
+        seed_used = keep_seed;
+        seed_envelopes();   // (fitv is zero here: the envelope of each species node from the data at its charges)
+        if (!from_ud.empty()) {
+            std::vector<double> E = model.envelope();
+            for (int q = 0; q < model.Q; q++) {
+                const double M = model.node_mass[q];
+                for (auto& ue : uenv) {
+                    if (std::fabs(M - ue.first) >= 1e-6 * M) continue;
+                    double rs = 0, s = 0;
+                    for (int k = 0; k < K; k++) { rs += E[(size_t)q * K + k]; s += ue.second[k]; }
+                    if (!(s > 0)) break;
+                    for (int k = 0; k < K; k++) E[(size_t)q * K + k] = (rs > 0 ? rs : 1.0) * ue.second[k] / s;
+                    break;
+                }
+            }
+            model.set_envelope(E);
+        }
+        seed_used.clear();
+        if (debug) { fprintf(stderr, "  hybrid start nodes:"); for (double m : nodes) fprintf(stderr, " %.1f", m); fprintf(stderr, "\n"); }
+    }
+    if (const char* ef = hyenv("MS_HY_ENVFILE")) {
+        std::vector<double> nm_, tab;
+        if (FILE* fp = fopen(ef, "r")) {
+            double v;
+            std::vector<double> row;
+            while (fscanf(fp, "%lf", &v) == 1) {
+                row.push_back(v);
+                if ((int)row.size() == K + 1) { nm_.push_back(row[0]); tab.insert(tab.end(), row.begin() + 1, row.end()); row.clear(); }
+            }
+            fclose(fp);
+        }
+        if (nm_.size() >= 2) {
+            // the table's ends must be the mass range's ends (the nodes cover every mass)
+            nm_.front() = std::min(nm_.front(), masses.front()); nm_.back() = std::max(nm_.back(), masses.back());
+            const int Qn = (int)nm_.size();
+            model.Q = Qn; model.node_mass = nm_;
+            for (size_t j = 0; j < na; j++) { int q; double t; model.node_of(masses[model.act[j]], q, t); model.nq[j] = (uint16_t)q; model.nt[j] = (float)t; }
+            model.set_envelope(tab);
+            hy_envfixed = true;
+            if (debug) fprintf(stderr, "  envelope field from %s: %d nodes\n", ef, Qn);
+        }
+    }
     show(0);
-    if (memsys && !hybrid) memsys_run();
+    // RESEARCH (MS_HY_WARM=1): the start from the UniDec mass spectrum (each mass its UniDec intensity, smoothed
+    // over +-0.025 %, scaled by least squares to the data through the starting model, floored at the default)
+    if (hyenv("MS_HY_WARM") && hy_mx.size() > 1) {
+        std::vector<double> cum(hy_mx.size() + 1, 0.0);
+        for (size_t i = 0; i < hy_mx.size(); i++) cum[i + 1] = cum[i] + std::max(0.0, hy_my[i]);
+        std::vector<double> fs(na), fm(ng);
+        for (size_t j = 0; j < na; j++) {
+            const double M = masses[model.act[j]];
+            const size_t lo2 = std::lower_bound(hy_mx.begin(), hy_mx.end(), M * (1 - 0.00025)) - hy_mx.begin();
+            const size_t hi2 = std::upper_bound(hy_mx.begin(), hy_mx.end(), M * (1 + 0.00025)) - hy_mx.begin();
+            fs[j] = hi2 > lo2 ? (cum[hi2] - cum[lo2]) / (double)(hi2 - lo2) : 0.0;
+        }
+        model.forward(fs.data(), fm.data());
+        double num = 0, den = 0;
+        for (size_t i = 0; i < ng; i++) { num += w[i] * fm[i] * y[i]; den += w[i] * fm[i] * fm[i]; }
+        const double sc = den > 0 ? num / den : 0.0;
+        if (sc > 0) for (size_t j = 0; j < na; j++) { f[j] = std::max(dflt, sc * fs[j]); u[j] = std::log(f[j]); }
+        if (debug) fprintf(stderr, "  warm start from the UniDec mass spectrum, scale %.3g\n", sc);
+    }
+    // RESEARCH (MS_HY_SKIP1=1, with the hybrid solver): no first pass (the species and their nodes come from the
+    // UniDec pass, the noise is measured on the data once): the final pass by the path at once
+    const bool hy_skip1 = hyenv("MS_HY_SKIP1") != nullptr && memsys && hybrid;
+    if (hy_skip1) {
+        if (!getenv("MS_MEMSYS_NOWIN")) model.make_windows();
+        pass = max_passes - 1;
+        memsys_start = pass;
+        memsys_run();
+    } else if (memsys && !hybrid) memsys_run();
     else for (int k = 0; k < rounds; k++) {
         alpha = std::exp(la);
         obj.alpha = alpha;
         if (have_fit) set_weights();
         for (int sweep = 0; sweep < 2; sweep++) {
-            lbfgs_b(obj, u, lo_u, hi_u, iterations);
+            p1_solve(sweep, k);
             pfor(na, [&](size_t a0, size_t b0) { for (size_t j = a0; j < b0; j++) u[j] = std::min(hi_u, std::max(lo_u, u[j])); fexp_n(u.data(), f.data(), a0, b0); });
             refit_envelope();
         }
@@ -3601,9 +4302,10 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
             for (double yb : {0.0, 0.003, 0.01, 0.03, 0.1, 0.3, 1.0}) dmax = std::max(dmax, std::fabs(0.5 * std::log(nm.var(yb) / noise.var(yb))));
             if (debug) fprintf(stderr, "  noise re-estimation: s0 %.3g -> %.3g, 1/g %.3g -> %.3g, eps %.3g -> %.3g (max change %.2f)\n%s",
                                noise.s0, nm.s0, noise.ginv, nm.ginv, noise.eps, nm.eps, dmax, dbg.c_str());
+            p_end("PASS1 END");
             pass++;
             bool renoded = false;
-            if (p.envelope_nodes <= 0) {
+            if (p.envelope_nodes <= 0 && !hy_envfixed) {
                 std::vector<double> nodes = species_nodes();
                 if (nodes != model.node_mass && nodes.size() >= 2) {
                     model.set_nodes(nodes, masses);
@@ -3682,8 +4384,106 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
         }
         la = search.next();
     }
+    p_end("PASS2 END");
     Timed tout(T_OUTPUT);
     pfor(na, [&](size_t a0, size_t b0) { fexp_n(u.data(), f.data(), a0, b0); });
+    // RESEARCH (MS_HY_FLUX=n): n multiplicative (Richardson-Lucy / EM) steps from the MaxEnt solution: every grid
+    // point's measured signal is shared among the masses and charges in proportion to their part of the model, so
+    // each species gets the signal it explains (areas no longer depend on how well the peak shape fits).
+    // MS_HY_FLUXB=b: a background b x (noise sd) in the denominator (signal the model does not explain stays
+    // unassigned)
+    if (const char* hf = hyenv("MS_HY_FLUX")) {
+        const int nit = std::max(0, atoi(hf));
+        const double bb = hyenv("MS_HY_FLUXB") ? atof(hyenv("MS_HY_FLUXB")) : 0.0;
+        const double fluxc = hyenv("MS_HY_FLUXC") ? atof(hyenv("MS_HY_FLUXC")) : 0.0;
+        const double fluxr = hyenv("MS_HY_FLUXR") ? atof(hyenv("MS_HY_FLUXR")) : 0.0;
+        std::vector<double> one(ng, 1.0), den(na), num(na), ratio(ng), fm(ng);
+        // MS_HY_FLUXSR=s (support restricted): a mass takes its share only from the grid points its own peak
+        // covers, the kernel's points of at least s x its largest value (the core; s = 0.5: the top half). The
+        // model each point's signal is divided by stays the full one, so a point outside every mass's core keeps
+        // its signal unassigned and the far flanks of a kernel (where a mismatched peak shape leaves unexplained
+        // signal) no longer raise the masses whose kernel only reaches them
+        const double fluxsr = hyenv("MS_HY_FLUXSR") ? atof(hyenv("MS_HY_FLUXSR")) : 0.0;
+        const Blur blur_full = model.blur;
+        Blur blur_core = model.blur;
+        if (fluxsr > 0) {
+            if (blur_core.asym) {
+                const double km = *std::max_element(blur_core.ka.begin(), blur_core.ka.end());
+                for (auto& v : blur_core.ka) if (v < fluxsr * km) v = 0.0;
+            } else {
+                int r = 0;
+                while (r + 1 <= blur_core.radius && blur_core.k[r + 1] >= fluxsr * blur_core.k[0]) r++;
+                blur_core.radius = r;
+                blur_core.k.resize(r + 1);
+            }
+            model.blur = blur_core;
+        }
+        model.adjoint_f(one.data(), den.data());
+        model.blur = blur_full;
+        for (int itf = 0; itf < nit; itf++) {
+            model.forward(f.data(), fm.data());
+            for (size_t i = 0; i < ng; i++) {
+                const double b = bb > 0 ? bb * std::sqrt(noise.var(std::max(0.0, y[i]))) : 0.0;
+                const double mdl = fm[i] + b;
+                ratio[i] = mdl > 1e-300 ? std::max(0.0, y[i]) / mdl : 0.0;
+                if (fluxr > 0) ratio[i] = std::min(ratio[i], fluxr);   // a point raises the model at most fluxr times
+                if (fluxc > 0 && fm[i] > 1e-300) {   // clip: a point gives the model at most its value plus fluxc sd
+                    const double cap = fm[i] + fluxc * std::sqrt(noise.var(std::max(0.0, y[i])));
+                    ratio[i] = std::min(std::max(0.0, y[i]), cap) / fm[i];
+                }
+            }
+            if (fluxsr > 0) model.blur = blur_core;
+            model.adjoint_f(ratio.data(), num.data());
+            model.blur = blur_full;
+            if (hyenv("MS_HY_FLUXS")) {
+                // per species (MS_HY_FLUXS): one factor for each run of masses whose intensity (smoothed over
+                // 0.05 % of the mass) stays above 1e-3 of the largest: the species keeps the shape MaxEnt gave it and
+                // gets the measured signal it explains; masses outside these runs stay as they are
+                const long h = std::max(2L, (long)(0.0005 * 0.5 * (masses.front() + masses.back()) / step));
+                std::vector<double> I(na), cum(na + 1, 0.0), S(na);
+                for (size_t j = 0; j < na; j++) { I[j] = f[j] * den[j]; cum[j + 1] = cum[j] + I[j]; }
+                double smx = 0;
+                for (size_t j = 0; j < na; j++) {
+                    const size_t a0 = j > (size_t)h ? j - h : 0, b0 = std::min(na, j + h + 1);
+                    S[j] = (cum[b0] - cum[a0]) / (double)(b0 - a0); smx = std::max(smx, S[j]);
+                }
+                const double fsthr = hyenv("MS_HY_FLUXS_T") ? atof(hyenv("MS_HY_FLUXS_T")) : 1e-3;
+                size_t j = 0;
+                while (j < na) {
+                    if (!(S[j] >= fsthr * smx)) { j++; continue; }
+                    size_t e = j;
+                    while (e < na && S[e] >= fsthr * smx && (e == j || model.act[e] - model.act[e - 1] <= 2 * h)) e++;
+                    double nn = 0, dd = 0;
+                    for (size_t q = j; q < e; q++) { nn += f[q] * num[q]; dd += f[q] * den[q]; }
+                    const double sc = dd > 1e-300 ? nn / dd : 1.0;
+                    for (size_t q = j; q < e; q++) { f[q] *= sc; u[q] = std::log(std::max(f[q], std::exp(lo_u))); }
+                    j = e;
+                }
+                continue;
+            }
+            // MS_HY_FLUXG=t: only the masses of the species MaxEnt reports (intensity smoothed over 0.05 % of the mass
+            // at least t of the largest) take part; weaker structure stays as MaxEnt found it
+            std::vector<char> take(na, 1);
+            if (const char* fg = hyenv("MS_HY_FLUXG")) {
+                const double tg = atof(fg);
+                const long h = std::max(2L, (long)(0.0005 * 0.5 * (masses.front() + masses.back()) / step));
+                std::vector<double> cum(na + 1, 0.0), S(na);
+                for (size_t j = 0; j < na; j++) cum[j + 1] = cum[j] + f[j] * den[j];
+                double smx = 0;
+                for (size_t j = 0; j < na; j++) {
+                    const size_t a0 = j > (size_t)h ? j - h : 0, b0 = std::min(na, j + h + 1);
+                    S[j] = (cum[b0] - cum[a0]) / (double)(b0 - a0); smx = std::max(smx, S[j]);
+                }
+                for (size_t j = 0; j < na; j++) take[j] = S[j] >= tg * smx;
+            }
+            for (size_t j = 0; j < na; j++) {
+                if (den[j] > 1e-300 && take[j]) f[j] *= num[j] / den[j];
+                f[j] = std::max(f[j], std::exp(lo_u));
+                u[j] = std::log(f[j]);
+            }
+        }
+        if (debug) fprintf(stderr, "  flux allocation: %d steps, background %.3g sd\n", nit, bb);
+    }
     model.forward(f.data(), fitv.data());
     const double chi2_final = chi2_signal();
     // ---- _to_mass_axis
@@ -3795,6 +4595,10 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
                  charges.front(), charges.back(), masses.front(), masses.back(), step, note_shape.c_str(),
                  chi2_final, (int)history.size(), history.size() > 1 ? "s" : "", tgt.c_str(), nz.c_str(), env.c_str());
         out.notes = b;
+        if (hy_front_s >= 0 && g_hy_method == 0) {   // (RESEARCH: the switches from the environment)
+            snprintf(b, sizeof b, "; hybrid: UniDec pass %.1f s, %zu species", hy_front_s, hy_nodes.size());
+            out.notes += b;
+        }
         if (!summary.empty()) out.notes += "; " + summary;
     }
     out.chi2 = chi2_final;
@@ -3836,15 +4640,27 @@ void run_maxent(const double* mz, const double* it, long n0, const ms_maxent_par
 
 extern "C" {
 
-MS_API int ms_maxent(const double* mz, const double* it, long n, const ms_maxent_params* p,
-                     ms_maxent_result** out, ms_progress_fn cb, void* user) {
+MS_API int ms_maxent_ex(const double* mz, const double* it, long n, const ms_maxent_params* p, long p_size,
+                        ms_maxent_result** out, ms_progress_fn cb, void* user) {
     if (out) *out = nullptr;
     return ms::guarded([&] {
-        if (!mz || !it || n < 0 || !p || !out) throw std::invalid_argument("ms_maxent: bad arguments");
+        if (!mz || !it || n < 0 || !p || !out || p_size < (long)offsetof(ms_maxent_params, method))
+            throw std::invalid_argument("ms_maxent: bad arguments");
+        // the caller's struct as far as it goes; fields it does not have are 0
+        ms_maxent_params q;
+        std::memset(&q, 0, sizeof q);
+        std::memcpy(&q, p, std::min<size_t>((size_t)p_size, sizeof q));
+        if (q.method != 0 && q.method != 1) throw std::invalid_argument("ms_maxent: unknown method");
         std::unique_ptr<ms_maxent_result> r(new ms_maxent_result);
-        run_maxent(mz, it, n, *p, *r, cb, user);
+        run_maxent(mz, it, n, q, *r, cb, user);
         *out = r.release();
     });
+}
+
+// the parameters as before the field "method" (maximum entropy)
+MS_API int ms_maxent(const double* mz, const double* it, long n, const ms_maxent_params* p,
+                     ms_maxent_result** out, ms_progress_fn cb, void* user) {
+    return ms_maxent_ex(mz, it, n, p, (long)offsetof(ms_maxent_params, method), out, cb, user);
 }
 
 MS_API void ms_maxent_free(ms_maxent_result* r) { delete r; }

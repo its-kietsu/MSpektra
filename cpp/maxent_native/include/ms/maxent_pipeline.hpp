@@ -9,3 +9,6 @@ struct Params {
     int baseline; double baseline_width; int envelope_nodes,noise_model; double chi2_target;
 };
 static_assert(sizeof(Params)==152,"Installed engine parameter ABI changed");
+// msengine's ms_maxent_ex struct: Params, then the method (0 = maximum entropy, 1 = hybrid maximum entropy)
+struct ParamsEx { Params p; int method; };
+static_assert(sizeof(ParamsEx)==160,"Installed engine parameter ABI changed");

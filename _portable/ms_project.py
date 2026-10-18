@@ -46,7 +46,19 @@ def set_views(page,state):
         w.all_weights=list(st['weights']);w.closed={w.all_panes[i] for i in st['closed'] if 0<=i<len(w.all_panes)}
         if hasattr(w,'frac'):w.frac={w.all_panes[i]:v for i,v in st['frac'].items() if 0<=i<len(w.all_panes)}
         (w._visible if isinstance(w,U.SplitBox) else w._update_visible)();w.relayout()
-    for w,st in zip(cards,state.get('cards',[])):
+    # each saved card state goes to the card with the same title and subtitle (result rows can be made in another
+    # order when an analysis is opened: by position a result got another result's title and zoom); the cards
+    # without such a card get the states left over, in order
+    saved=list(state.get('cards',[]));used=set();pairs=[]
+    for w in cards:
+        key=(getattr(w,'title',''),getattr(w,'subtitle',''))
+        j=next((j for j,st in enumerate(saved) if j not in used and (st.get('title',''),st.get('subtitle',''))==key),None)
+        if j is not None:used.add(j)
+        pairs.append([w,j])
+    rest=iter([j for j in range(len(saved)) if j not in used])
+    for p in pairs:
+        if p[1] is None:p[1]=next(rest,None)
+    for w,st in [(w,saved[j]) for w,j in pairs if j is not None]:
         w.ylock=st['lock'];w.y_fixed=st['fixed'];w.full=st['full']
         w.title=st['title'];w.subtitle=st['subtitle']
         w.ax.set_xlim(st['x']);w.ax.set_ylim(st['y']);w.canvas.draw_idle()

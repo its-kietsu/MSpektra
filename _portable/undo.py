@@ -1448,7 +1448,8 @@ def dec_set(pn, st, save=True):
 
 def _res_name(ent):
     r = ent.res or {}
-    meth = (r.get("method") or r.get("tag") or "deconvolution").split(" (")[0]
+    from ms_brand import method_name
+    meth = (method_name(r) or r.get("tag") or "deconvolution").split(" (")[0]
     return "%s, %s" % (meth, r.get("input", "")) if r.get("input") else meth
 
 

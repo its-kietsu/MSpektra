@@ -184,6 +184,8 @@ class HRMSTab(U.MSTab):
     def set_data(self, data):
         U.MSTab.set_data(self, data)
         self.cal.data_opened(data)
+        if data is not None and (self.cal.found or self.cal.segment):
+            self.plot_chroms(keep_view=True)  # the calibrant on the chromatogram (known only now)
 
     def chrom_extras(self, ax, scale_of, v):
         out = U.MSTab.chrom_extras(self, ax, scale_of, v)
@@ -196,6 +198,13 @@ class HRMSTab(U.MSTab):
         if cal.cal is not None and cal.range and _cal_of(self.data, v.key) is not None and \
                 v.key in cal.events_of(cal.event):  # (the other polarity may have a calibration of its own)
             used = cal.range
+        seg = getattr(cal, "segment", None)
+        if seg:  # the method's calibrant segment: two dotted lines (as DataAnalysis), a faint band unless calibrated
+            for t in seg:
+                ax.axvline(t, color=CAL_COL, lw=1.1, ls=(0, (2, 2)), zorder=1)._range_mark = True
+            if not used:
+                ax.axvspan(seg[0], seg[1], color=CAL_COL, alpha=0.08, lw=0, zorder=0)._range_mark = True
+                return list(out) + [(CAL_COL, "calibrant")]
         rng = used or (cal.found if cal.found_event in (None, v.key) else None)
         if rng:
             t0, t1 = rng
@@ -731,6 +740,7 @@ class CalibPanel(object):
         self.cfg = self._saved_cfg()
         self.found = None  # (t0, t1) calibrant segment found in the file
         self.found_event = None  # scan event (polarity) it was found in
+        self.segment = None  # (t0, t1) the method's calibrant segment (Bruker), drawn with dotted lines
         self.range = None  # (t0, t1) of the spectrum the calibration was made on
         self.cal = None  # calibration applied
         self.rows = []  # calibrants of the applied calibration
@@ -887,6 +897,7 @@ class CalibPanel(object):
         self.data = data
         self.found, self.range, self.cal, self.rows, self.spec = None, None, None, [], None
         self.found_event = None
+        self.segment = None
         self._set_note("")
         if data is None:
             return
@@ -897,6 +908,7 @@ class CalibPanel(object):
             seg = pre[1]
         else:
             seg = K.find_calibrant_segment(data, refs, e, tol_ppm=tol)
+        self.segment = self._method_segment(data, seg)
         if seg is None:
             self._set_note("No %s segment found" % name.split(",")[0].lower())
             return
@@ -906,6 +918,43 @@ class CalibPanel(object):
                        (name.split(",")[0], seg[0], seg[1]))
         if self.auto.GetValue():
             wx.CallAfter(self.auto_calibrate, e, name)
+
+    @staticmethod
+    def _method_segment(data, seg):
+        """The acquisition segment of the method that holds the calibrant (Bruker .d): the one marked as the
+        calibration segment, else the one the calibrant found in the scans overlaps most; None without segments."""
+        spans = getattr(data, "segments", None)
+        if spans is None:  # (the engine's reader: from the .d folder itself)
+            try:
+                import hrms_data
+                spans = data.segments = hrms_data.bruker_segments(getattr(data, "path", None))
+            except Exception:
+                spans = []
+        marked = [g for g in spans if g.get("calibration")]
+        if marked:
+            return (marked[0]["start"], marked[0]["end"])
+        if not spans:
+            return None
+        if seg is None:  # the calibrant too weak to be found: the scans DataAnalysis calibrated the file on
+            try:
+                import hrms_data
+                sc = hrms_data.da_calibration_scans(getattr(data, "path", None))
+                rt = np.asarray(getattr(data, "rt", []), float)
+                if sc and len(rt) >= sc[1] >= sc[0] >= 1:
+                    seg = (rt[sc[0] - 1], rt[sc[1] - 1])
+            except Exception:
+                seg = None
+        if seg is None:
+            return None
+        a, b = seg[0], seg[1]
+        run = spans[-1]["end"] - spans[0]["start"]
+        short = [g for g in spans if g["end"] - g["start"] <= 0.5 * run]  # not the long sample segment
+        if not short:
+            return None
+        best = max(short, key=lambda g: min(b, g["end"]) - max(a, g["start"]))
+        if min(b, best["end"]) - max(a, best["start"]) <= 0:
+            return None
+        return (best["start"], best["end"])
 
     def auto_calibrate(self, e, name):
         if not self.data or not self.found:

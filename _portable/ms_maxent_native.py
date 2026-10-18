@@ -9,6 +9,10 @@ import os
 import sys
 import numpy as np
 
+import ms_brand
+
+METHOD_NAMES = {0: "Maximum entropy", 1: ms_brand.HYBRID_MAXENT}  # maxent_method of the settings
+
 _LIB = None
 PD = C.POINTER(C.c_double)
 
@@ -31,6 +35,10 @@ def _lib(E):
     L.mx_run.argtypes = [C.c_wchar_p, PD, PD, C.c_long, C.POINTER(E.MaxentParams), C.c_double,
                          E.PROGRESS, C.c_void_p, C.POINTER(C.c_void_p)]
     L.mx_run.restype = C.c_int
+    if hasattr(L, "mx_run2"):  # with the method (hybrid maximum entropy)
+        L.mx_run2.argtypes = [C.c_wchar_p, PD, PD, C.c_long, C.POINTER(E.MaxentParams), C.c_double, C.c_int,
+                              E.PROGRESS, C.c_void_p, C.POINTER(C.c_void_p)]
+        L.mx_run2.restype = C.c_int
     L.mx_free.argtypes = [C.c_void_p]
     L.mx_array.argtypes = [C.c_void_p, C.c_int, C.POINTER(PD), C.POINTER(PD)]
     L.mx_array.restype = C.c_long
@@ -54,9 +62,10 @@ def _integer(value, name):
 
 def _engine(p):
     """noise_model of msengine: 0 = the MaxEnt of 4.36 (area output, noise measured once, charge envelopes local in
-    mass); 4 = the MaxEnt of 4.35, with "maxent_engine": "4.35" in the settings (or in p, as the worker gets it)."""
+    mass); 4 = the MaxEnt of 4.35, with "maxent_engine": "4.35" in the settings (or in p, as the worker gets it).
+    Hybrid maximum entropy: always 0 (it is built on that engine)."""
     nm = _integer(p.get("noise_model", 0) or 0, "Noise model")
-    if nm:
+    if nm or _method(p):
         return nm
     eng = p.get("maxent_engine")
     if eng is None:
@@ -68,11 +77,22 @@ def _engine(p):
     return 4 if str(eng or "").strip() == "4.35" else 0
 
 
+def _method(p):
+    """maxent_method of the settings: 0 = maximum entropy, 1 = hybrid maximum entropy."""
+    m = _integer(p.get("maxent_method", 0) or 0, "Method")
+    if m not in METHOD_NAMES:
+        raise ValueError("Unknown maximum entropy method")
+    return m
+
+
 def run(spec, p, progress=None):
     import msengine_py as E
     if not E.available():
         raise RuntimeError("MaxEnt requires the native engine. Enable the C++ engine or restore msengine.dll.")
     L = _lib(E)
+    method = _method(p)
+    if method and not (hasattr(L, "mx_run2") and hasattr(E.lib(), "ms_maxent_ex")):
+        raise RuntimeError("%s is not in this engine: update MSpektra" % METHOD_NAMES[method])
     spec = np.ascontiguousarray(spec, dtype=np.float64)
     if spec.ndim != 2 or spec.shape[1] != 2:
         raise ValueError("A mass spectrum must have two columns: m/z and intensity")
@@ -120,8 +140,12 @@ def run(spec, p, progress=None):
 
     out = C.c_void_p()
     cb = E.PROGRESS(callback)
-    rc = L.mx_run(E._path(), x.ctypes.data_as(PD), y.ctypes.data_as(PD), len(x), C.byref(q),
-                  float(p.get("display_resolution", 0) or 0), cb, None, C.byref(out))
+    if method:
+        rc = L.mx_run2(E._path(), x.ctypes.data_as(PD), y.ctypes.data_as(PD), len(x), C.byref(q),
+                       float(p.get("display_resolution", 0) or 0), method, cb, None, C.byref(out))
+    else:  # (as before: also with a msmaxent.dll without mx_run2)
+        rc = L.mx_run(E._path(), x.ctypes.data_as(PD), y.ctypes.data_as(PD), len(x), C.byref(q),
+                      float(p.get("display_resolution", 0) or 0), cb, None, C.byref(out))
     try:
         if callback_error:
             raise callback_error[0]
@@ -155,9 +179,13 @@ def run(spec, p, progress=None):
                     peaks_used=int(s[5]), mz=(s[6], s[7]), value=s[8], unit=p.get("min_int_unit", "abs"))
         input_data = array(3)
         isotope = array(4)
-        return dict(method="Maximum entropy", mass=array(0), fit=array(1), zdist=array(2), peaks=peaks,
+        notes = L.mx_notes(out).decode("utf-8", "replace")
+        name = METHOD_NAMES[method]
+        if method and notes.startswith(METHOD_NAMES[0]):  # (the engine's notes start with its name)
+            notes = name + notes[len(METHOD_NAMES[0]):]
+        return dict(method=name, mass=array(0), fit=array(1), zdist=array(2), peaks=peaks,
                     data=input_data, input_data=input_data, data_info=info, r2=m[0],
-                    history=[(0.0, m[1])] * int(m[2]), notes=L.mx_notes(out).decode("utf-8", "replace"),
+                    history=[(0.0, m[1])] * int(m[2]), notes=notes,
                     isotope_peaks=[(float(mass), float(height)) for mass, height in isotope] if len(isotope) else None,
                     engine="C++ (native MaxEnt pipeline)")
     finally:

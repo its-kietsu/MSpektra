@@ -178,8 +178,9 @@ SHIFT_FIELDS = [("shifts", "Shift list (name, average and monoisotopic mass, in 
                 ("min_rel", "Masses used (share of the tallest)", _float(0, 1), _MSD["min_rel"])]
 
 # deconvolution: the settings of the deconvolution window (deconv_tab: _default_cfg, SETTINGS), stored as
-# that window keeps them (choices as their number in the list, numbers as typed)
-_DEC = [("method", "Method", _int(0, 2)), ("preset", "Preset", None), ("pol", "Polarity", _int(0, 1)),
+# that window keeps them (choices as their number in the list, numbers as typed; the method as its number,
+# deconv_tab.UNIDEC, MAXENT, ISODEC, HYBRID, not its place in the list)
+_DEC = [("method", "Method", _int(0, 3)), ("preset", "Preset", None), ("pol", "Polarity", _int(0, 1)),
         ("suggest_open", "Suggestions shown", _bool()),
         ("z0", "Charge from", NUMTEXT), ("z1", "Charge to", NUMTEXT), ("m0", "Mass from", NUMTEXT),
         ("m1", "Mass to", NUMTEXT), ("step", "Mass step", NUMTEXT), ("mz0", "m/z range from", NUMTEXT),

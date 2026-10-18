@@ -101,6 +101,7 @@ class _MzRow(U.SplitBox):
     def __init__(self, parent):
         U.SplitBox.__init__(self, parent, wx.HORIZONTAL)
         self.head_h = self.FromDIP(26)
+        T.keep_dip(self, "head_h")
         self.head = ("", "")
         self.title = "Mass spectra (m/z)"
 

@@ -559,7 +559,8 @@ def _meta(frame, kind, sample, fields):
     footer = base
     if kind in ("hrms", "deconv"):
         result = getattr(getattr(getattr(frame, "ms", None), "dec", None), "result", None) or {}
-        method = str(result.get("method") or "")
+        from ms_brand import method_name
+        method = str(method_name(result))
         if method:
             from ms_brand import display
             footer += "  ·  deconvolution: " + display(method)
@@ -1068,7 +1069,8 @@ def build_hrms(frame, fields, tmp):
     elif st["tab"].pick_t is not None:
         extra.append(("Scan time (min)", "%.2f" % st["tab"].pick_t))
     if dec and dec.get("method"):
-        extra.append(("Deconvolution", esc(dec["method"])))
+        from ms_brand import method_name
+        extra.append(("Deconvolution", esc(method_name(dec))))
     rep.add("info", _info_common(frame, fields, si, extra))
     top = local_max(spec[:, 0], spec[:, 1], n=8, sep=0.5)
     items = []
@@ -1509,8 +1511,9 @@ def build_deconv(frame, fields, tmp):
     p = res.get("params", {})
     peaks = sorted(res.get("peaks", []), key=lambda q: -q["height"])
     rep = Report("deconv", _meta(frame, "deconv", name, fields))
-    rep.add("title", "Deconvolution report", esc(name) + "  ·  " + esc(res.get("method", "")))
-    extra = [("Method", esc(res.get("method", "")))]
+    from ms_brand import method_name
+    rep.add("title", "Deconvolution report", esc(name) + "  ·  " + esc(method_name(res)))
+    extra = [("Method", esc(method_name(res)))]
     rep.add("info", _info_common(frame, fields, si, extra))
     step = float(p.get("mass_step", 1) or 1)
     dec = _mass_dec(res)  # as the window shows the masses

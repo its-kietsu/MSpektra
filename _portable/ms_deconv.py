@@ -23,6 +23,8 @@ import os
 
 import numpy as np
 
+from ms_brand import HYBRID_MAXENT, HYBRID_TAG
+
 PROTON = 1.007276467
 
 
@@ -380,6 +382,9 @@ def check_grid(p, method):
         raise ValueError("The upper mass must be larger than the lower mass")
     nm = (hi - lo) / step
     nz = int(p["z_range"][1]) - int(p["z_range"][0]) + 1
+    per_cell = 40.0  # maximum entropy: bytes per mass x charge point
+    if method == HYBRID_TAG:  # maximum entropy and the mass x charge grid of its first pass
+        method, per_cell = "maxent", 44.0
     if method == "unidec":
         if nz < 2:
             raise ValueError("UniDec needs at least two charge states (its engine stops with a single one, e.g. "
@@ -415,7 +420,7 @@ def check_grid(p, method):
         # number of points (its own check repeats this with the data in hand)
         if nm > 2e9:
             raise ValueError("Mass range / mass step gives more than two billion mass points")
-        need = 40.0 * nm * nz
+        need = per_cell * nm * nz
         if need > budget:
             raise ValueError("Mass range %g to %g Da every %g Da with %d charges gives %.0f x %d grid points and would "
                              "need about %s of memory; this computer can give it %s. Use a larger mass step (isotope "
@@ -1675,13 +1680,15 @@ def run_method(method, spec, folder, name, p, progress=None):
     peak in the m/z range) and is judged on the data as shown: peaks whose
     top is below it are removed (set to zero, after any baseline
     subtraction); the peaks above it are kept whole, for every method."""
-    if method == "maxent":
+    if method in ("maxent", HYBRID_TAG):
         # All processing/calculations happen in the native pipeline. Never silently
         # switch to a different Python solver when a native component is missing.
         import msengine_py
+        hybrid = method == HYBRID_TAG
+        what = HYBRID_MAXENT[:1].lower() + HYBRID_MAXENT[1:] if hybrid else "maximum entropy"
         callback = None if progress is None else lambda i, n, chi: progress(
-            i, n, "maximum entropy (C++): round %d of up to %d" % (i, n))
-        return msengine_py.maxent(spec, dict(p), progress=callback)
+            i, n, "%s (C++): round %d of up to %d" % (what, i, n))
+        return msengine_py.maxent(spec, dict(p, maxent_method=1) if hybrid else dict(p), progress=callback)
     spec = _restrict(spec, p.get("mz_range"))
     p = dict(p)
     summ = data_summary(spec, p, with_mask=True)

@@ -1,4 +1,4 @@
-MSpektra 4.38 - portable Windows package   (17.10.2026)
+MSpektra 4.5 - portable Windows package   (18.10.2026)
 ========================================================
 
 Analysis of LC-MS and HRMS data, with deconvolution:
@@ -39,6 +39,18 @@ The version is shown on the start screen, in the help window (?) of LCMS
 and HRMS Analysis, and in the first line of each log file. It went up by
 0.1 with every update until 3.3. Since 3.31 a small change adds 0.01, a
 large change 0.1 and a big change 1.0.
+
+4.5 (18.10.2026)
+Hybrid maximum entropy and better display scaling.
+* New deconvolution method Hybrid maximum entropy: fewer false species and
+  more reliable amounts when species of different size or charge are
+  present. With resolved isotopes it gives the same result as maximum
+  entropy.
+* HRMS Analysis shows the calibrant segment of a Bruker run with dotted
+  lines, as in DataAnalysis.
+* Windows fit and scale correctly on displays with different scaling and
+  over Remote Desktop; new windows open on the display in use.
+* A reopened analysis shows each deconvolution result with its own title.
 
 4.38 (17.10.2026)
 Faster maximum entropy and live resizing.

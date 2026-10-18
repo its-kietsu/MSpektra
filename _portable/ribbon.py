@@ -352,6 +352,9 @@ class TabRow(wx.Panel):
         self.Bind(wx.EVT_LEFT_DOWN, self._click)
         self.Bind(wx.EVT_MOTION, self._motion)
         self.Bind(wx.EVT_LEAVE_WINDOW, lambda e: self._set_hover(-1))
+        # moved to a display of another scale: the titles measured again (their places were kept in pixels of
+        # the old scale: wide gaps between the menus after a move from 200 % to 100 %)
+        T.keep_dip(self, then=lambda: (self.measure(), self.Refresh()))
 
     # the interface of ModernToolbar used by the chips (method_presets.add_chip)
     def add(self, w, gap=4):
@@ -485,6 +488,7 @@ class Ribbon(wx.Panel):
         self.Bind(wx.EVT_TIMER, lambda e: self.read_state(), self._timer)
         self._timer.Start(300)
         self.Bind(wx.EVT_WINDOW_DESTROY, self._gone)
+        T.keep_dip(self, then=self.fit)  # another scale: the groups placed again
 
     def _gone(self, e):
         if e.GetEventObject() is self:

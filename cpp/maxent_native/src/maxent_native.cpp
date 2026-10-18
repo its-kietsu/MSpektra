@@ -103,7 +103,8 @@ void validate(const Params& p,double display){
     require(std::isfinite(p.min_intensity)&&p.min_intensity>=0&&std::isfinite(p.baseline_width)&&p.baseline_width>0,"Invalid minimum intensity or baseline width");
     require(std::isfinite(p.chi2_target)&&p.chi2_target>=0,"Invalid chi squared target");
 }
-std::unique_ptr<Result> run(Module& core,const double* x,const double* y,long n,const Params& original,double display,Progress progress,void* user){
+std::unique_ptr<Result> run(Module& core,const double* x,const double* y,long n,const Params& original,double display,int method,Progress progress,void* user){
+    require(method==0||method==1,"Unknown maximum entropy method");
     validate(original,display);require(x&&y&&n>=10&&n<=20000000,"Too few or excessive input points");
     auto result=std::make_unique<Result>();auto& r=*result;double *rx=nullptr,*ry=nullptr;long nr=0;
     core.checked(core.get<int(*)(const double*,const double*,long,double,double,double**,double**,long*)>("ms_restrict")(
@@ -130,8 +131,12 @@ std::unique_ptr<Result> run(Module& core,const double* x,const double* y,long n,
         r.x[3].data(),r.y[3].data(),nr,0,p.baseline_width,out.data()));r.y[3]=std::move(out);p.baseline=0;}
     if(thr>0){for(long i=0;i<nr;++i)if(!mask[i])r.y[3][i]=0;
         require(npk>0&&used>=5&&std::any_of(r.y[3].begin(),r.y[3].end(),[](double v){return v>0;}),"No data above the minimum intensity; lower the minimum intensity");}
-    void* raw=nullptr;core.checked(core.get<int(*)(double*,double*,long,const Params*,void**,Progress,void*)>("ms_maxent")(
-        r.x[3].data(),thr>0?solver_y.data():r.y[3].data(),nr,thr>0?&original:&p,&raw,progress,user));require(raw!=nullptr,"Native solver returned no result");
+    void* raw=nullptr;
+    if(method==0)core.checked(core.get<int(*)(double*,double*,long,const Params*,void**,Progress,void*)>("ms_maxent")(
+        r.x[3].data(),thr>0?solver_y.data():r.y[3].data(),nr,thr>0?&original:&p,&raw,progress,user));
+    else {ParamsEx q{thr>0?original:p,method};core.checked(core.get<int(*)(double*,double*,long,const ParamsEx*,long,void**,Progress,void*)>("ms_maxent_ex")(
+        r.x[3].data(),thr>0?solver_y.data():r.y[3].data(),nr,&q,long(sizeof q),&raw,progress,user));}
+    require(raw!=nullptr,"Native solver returned no result");
     auto free=core.get<void(*)(void*)>("ms_maxent_free");std::unique_ptr<void,decltype(free)> owned(raw,free);
     read_array(core,raw,"ms_maxent_mass",r.x[0],r.y[0]);read_array(core,raw,"ms_maxent_fit",r.x[1],r.y[1]);read_array(core,raw,"ms_maxent_zdist",r.x[2],r.y[2]);
     r.metrics={core.get<double(*)(void*)>("ms_maxent_r2")(raw),core.get<double(*)(void*)>("ms_maxent_chi2")(raw),double(core.get<int(*)(void*)>("ms_maxent_rounds")(raw))};
@@ -161,10 +166,14 @@ std::unique_ptr<Result> run(Module& core,const double* x,const double* y,long n,
 API unsigned mx_abi(){return 1;}
 API unsigned mx_params_size(){return sizeof(Params);}
 API const char* mx_error(){return error.c_str();}
-API int mx_run(const wchar_t* path,const double* x,const double* y,long n,const Params* params,double display,Progress progress,void* user,void** output) noexcept {
+// method: 0 = maximum entropy (as mx_run), 1 = hybrid maximum entropy (msengine's ms_maxent_ex)
+API int mx_run2(const wchar_t* path,const double* x,const double* y,long n,const Params* params,double display,int method,Progress progress,void* user,void** output) noexcept {
     if(output)*output=nullptr;
-    try {error.clear();require(path&&params&&output,"Missing native input or output");Module core(path);auto r=run(core,x,y,n,*params,display,progress,user);*output=r.release();return 0;}
+    try {error.clear();require(path&&params&&output,"Missing native input or output");Module core(path);auto r=run(core,x,y,n,*params,display,method,progress,user);*output=r.release();return 0;}
     catch(const std::exception& ex){error=ex.what();return -1;}catch(...){error="Unexpected native MaxEnt error";return -1;}
+}
+API int mx_run(const wchar_t* path,const double* x,const double* y,long n,const Params* params,double display,Progress progress,void* user,void** output) noexcept {
+    return mx_run2(path,x,y,n,params,display,0,progress,user,output);
 }
 API void mx_free(void* handle){delete static_cast<Result*>(handle);}
 API long mx_array(void* handle,int kind,double** x,double** y){if(!handle||!x||!y||kind<0||kind>=5)return -1;auto& r=*static_cast<Result*>(handle);*x=r.x[kind].data();*y=r.y[kind].data();return long(r.x[kind].size());}
