@@ -397,7 +397,7 @@ def _spec_col(tab, e=None):
 def _traces(tab, e):
     out = []
     for v in tab.views:
-        if v.key == e:
+        if v.key == e and getattr(v, "kind", "main") != "search":  # (not the traces of a mass search)
             for tr in v.traces:
                 if tr.get("t") is not None and len(tr["t"]):
                     out.append(tr)
@@ -510,6 +510,8 @@ def figure_options(frame, kind):
         if not made:
             for e, lab in events:
                 out.append(("xicb%d" % e, "Extracted ion chromatogram %s of the main peak's base peak" % lab, True))
+        for s in getattr(tab, "searches", None) or []:  # Find mass: the tiles of the searches
+            out.append(("search%d" % s["id"], "Mass search, %s" % _search_masses(s), True))
         if events:
             out.append(("shade", "Shade the time ranges on the chromatograms", True))
     elif kind == "hrms":
@@ -1431,7 +1433,58 @@ def build_lcms(frame, fields, tmp):
             p = _tile_png(xic_cards.get(x["key"]), os.path.join(tmp, "b_xic%d.png" % k), W_FULL, H_PANEL,
                           **_mark_opts(mark))
             rep.add("figure", p or _one_fig(os.path.join(tmp, "b_xic%d.png" % k), chrom_drawer(x)), W_FULL)
+    _search_figures(rep, ms_tab, fields, tmp, mark)
     return rep
+
+
+def _search_masses(s):
+    import unilcms as U
+    return U.search_text(s, 6)
+
+
+def _search_figures(rep, ms_tab, fields, tmp, mark):
+    """Find mass: the search tiles as shown (one figure per plot), each with a caption."""
+    import unilcms as U
+    import ms_find_mass as F
+    searches = [s for s in (getattr(ms_tab, "searches", None) or []) if want(fields, "search%d" % s["id"])]
+    if not searches:
+        return
+    rep.add("section", "Mass searches" if len(searches) > 1 else "Mass search")
+    for s in searches:
+        for v in [v for v in (getattr(ms_tab, "search_views", None) or []) if v.search_id == s["id"]]:
+            path = os.path.join(tmp, "b_search%d_%d.png" % (s["id"], v.key))
+            p = _tile_png(v.card, path, W_FULL, H_PANEL, **_mark_opts(mark))
+            if not p:
+                def draw(ax, v=v):
+                    for tr in v.traces:
+                        ax.plot(tr["t"], tr["y"], color=tr["color"], lw=0.8)
+                        for a, b, g in F.shaded(tr["search"]):
+                            ax.axvspan(a, b, color=tr["color"], alpha=0.12, lw=0)
+                    if v.traces:
+                        headroom(ax, np.concatenate([np.asarray(tr["y"], float) for tr in v.traces]), 0.18)
+                        ax.set_xlim(float(v.traces[0]["t"][0]), float(v.traces[0]["t"][-1]))
+                    style(ax, "", "Intensity")
+                    ax.set_xlabel("Time (min)", fontsize=7.5, labelpad=1.5)
+                p = _one_fig(path, draw)
+            rep.add("figure", p, W_FULL)
+            bits = []
+            res = s.get("res", {}).get(v.key) or []
+            for (M, w, nm), r in zip(U.search_rows(s), res):
+                what = "%s%s ± %g Da" % (nm + ", " if nm else "", U._mass_text(M), w)
+                g = F.best_region(r)
+                if g is None:
+                    bits.append("%s not found" % what)
+                else:
+                    st = g.get("states") or []
+                    a, b = F.core(r, g, 0.1)
+                    bits.append("%s found at %.2f to %.2f min, mass %.1f Da%s" % (
+                        what, a, b, g["mass"],
+                        ", z %d to %d" % (min(st), max(st)) if st else ""))
+            note = ms_tab._search_note(s, v.key) if hasattr(ms_tab, "_search_note") else ""
+            cap = "Mass search %s: %s." % (ms_tab.ev_short(v.key), "; ".join(bits))
+            if note:
+                cap += " " + note.replace("\n", ". ") + "."
+            rep.add("caption", esc(cap))
 
 
 def _panel(ax, kind, s, lab, nb=4):

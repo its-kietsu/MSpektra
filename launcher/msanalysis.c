@@ -2,7 +2,6 @@
  * MSpektra.exe - launcher of the portable MSpektra package.
  * Starts  python\pythonw.exe -s _portable\launch_unidec.py [arguments]
  * from the folder this exe is in, without a console window.
- * Deconvolution engine UniDec: Marty et al., Anal. Chem. 2015, DOI 10.1021/acs.analchem.5b00140
  */
 #define WIN32_LEAN_AND_MEAN
 
@@ -75,7 +74,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, PWSTR pCmdLine, int nShow)
         wchar_t buf[512];
         FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, err, 0,
                        buf, 512, NULL);
-        show_error(L"MSpektra could not be started (it may be blocked by security software).\n"
+        show_error(L"MSpektra could not be started.\n"
                    L"Try MSpektra.bat or MSpektra (console).bat instead.", buf);
         return 1;
     }

@@ -1,23 +1,27 @@
 #include <winver.h>
 1 ICON "msanalysis.ico"
-1 24 "launcher.manifest"
+1 24 "mspektra.manifest"
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION 1,0,0,0
-PRODUCTVERSION 1,0,0,0
+FILEVERSION 4,0,0,0
+PRODUCTVERSION 4,0,0,0
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0x0L
 FILEOS VOS_NT_WINDOWS32
 FILETYPE VFT_APP
+FILESUBTYPE VFT2_UNKNOWN
 BEGIN
   BLOCK "StringFileInfo"
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "FileDescription", "MSpektra (portable package, deconvolution engine UniDec 8.2.1)"
-      VALUE "ProductName", "MSpektra"
-      VALUE "FileVersion", "1.0.0.0"
-      VALUE "ProductVersion", "1.0"
-      VALUE "OriginalFilename", "MSpektra.exe"
+      VALUE "CompanyName", "MSpektra"
+      VALUE "FileDescription", "MSpektra"
+      VALUE "FileVersion", "4.0.0.0"
       VALUE "InternalName", "MSpektra"
-      VALUE "Comments", "Deconvolution engine: UniDec by M. T. Marty. Please cite Marty et al., Anal. Chem. 2015, DOI 10.1021/acs.analchem.5b00140"
+      VALUE "LegalCopyright", "Copyright (c) 2026 Amal Kumar. MIT License."
+      VALUE "OriginalFilename", "MSpektra.exe"
+      VALUE "ProductName", "MSpektra"
+      VALUE "ProductVersion", "4.0.0.0"
     END
   END
   BLOCK "VarFileInfo"

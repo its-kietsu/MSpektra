@@ -1188,7 +1188,7 @@ class ProgressWindow(wx.Frame):
     """Small window while a deconvolution runs: what it does, the time, and
     Cancel (the calculation stops at once)."""
 
-    def __init__(self, parent, title, on_cancel):
+    def __init__(self, parent, title, on_cancel, cancel_tip="Stop the deconvolution now"):
         wx.Frame.__init__(self, parent, title=title, style=wx.CAPTION | wx.FRAME_FLOAT_ON_PARENT |
                           wx.FRAME_TOOL_WINDOW | wx.FRAME_NO_TASKBAR)
         self.SetBackgroundColour(wx.Colour(C["panel"]))
@@ -1199,7 +1199,7 @@ class ProgressWindow(wx.Frame):
         self.gauge = wx.Gauge(self, range=100, size=wx.Size(self.FromDIP(360), self.FromDIP(8)))
         self.clock = wx.StaticText(self, label="0 s")
         self.clock.SetForegroundColour(wx.Colour(C["muted"]))
-        btn = U.flat(self, "Cancel", handler=lambda e: self.cancel(), tooltip="Stop the deconvolution now")
+        btn = U.flat(self, "Cancel", handler=lambda e: self.cancel(), tooltip=cancel_tip)
         vs = wx.BoxSizer(wx.VERTICAL)
         pad = self.FromDIP(14)
         vs.Add(self.text, 0, wx.LEFT | wx.RIGHT | wx.TOP, pad)

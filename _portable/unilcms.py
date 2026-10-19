@@ -48,6 +48,9 @@ MUTED = "#6B7480"
 PAL = ["#2A62C4", "#E0602F", "#0BA064", "#8E5BD0", "#C99A1E", "#D2456F", "#5B6B7C", "#9C6B43"]
 AVG_COL = "#2F6FCB"
 BG_COL = "#8A94A3"
+SEARCH_COLS = ["#0F766E", "#B45309", "#7C3AED", "#BE185D", "#4D7C0F", "#0369A1"]  # the masses of a mass search
+NOTE_COL = "#B45309"  # the note of a mass search (another mass fits the same m/z)
+ABSENT_COL = "#C4C9D0"  # charge states of a found mass that are not present
 TITLE = "LCMS Analysis"
 APP = "MSpektra"
 OUT_SUFFIX = "_analysis"  # per file output folder: <data file name>_analysis
@@ -162,6 +165,168 @@ class XicDialog(wx.Dialog):
         if self.ev.GetCount() and ev == self.ev.GetCount() - 1 and self.ev.GetString(ev) == "All scan events":
             ev = -1
         return {"mz": mzs, "w": w, "ppm": self.unit.GetSelection() == 1, "event": ev}
+
+
+def search_text(s, n=3):
+    """The masses of a search in a few words (undo steps, report): names where given."""
+    rows = search_rows(s)
+    return ", ".join(nm or _mass_text(M) for M, w, nm in rows[:n]) + (" \u2026" if len(rows) > n else "")
+
+
+def search_rows(s):
+    """The masses of a mass search: [(mass, window, name)] (searches have "masses", "ws", "names")."""
+    ms = list(s.get("masses") or [])
+    ws = list(s.get("ws") or [s.get("w", 5.0)] * len(ms))
+    nm = list(s.get("names") or [""] * len(ms))
+    return [(float(m), float(ws[k] if k < len(ws) else 5.0), str(nm[k] if k < len(nm) else "")) for k, m in enumerate(ms)]
+
+
+def _mass_text(m):
+    """18366, 18364.5, 12243.25 (no trailing zeros)."""
+    return ("%.2f" % float(m)).rstrip("0").rstrip(".")
+
+
+class FindMassDialog(wx.Dialog):
+    """Find mass: a table of masses (one row each: neutral mass, window in Da, optional name; an empty row at the
+    end for a new mass, x removes a row), then the charge carrier, the lowest m/z of the charge states and the
+    scan event, shared by the rows. pols: the polarity of each event (negative ions: the carrier is a lost
+    proton)."""
+
+    LOST = "Lost H+"
+    MAX_ROWS = 12
+
+    def __init__(self, parent, title, v, events, pols, event):
+        import ms_find_mass as F
+        wx.Dialog.__init__(self, wx.GetTopLevelParent(parent), title=title)
+        self.SetBackgroundColour(wx.Colour(C["panel"]))
+        self.pols = list(pols)
+        self.names = [n for n, m in F.CARRIERS]
+        self.rows = []  # [(mass, window, name, remove button)]
+        self.table = wx.FlexGridSizer(0, 4, self.FromDIP(4), self.FromDIP(6))
+        for lab in ("Mass (Da)", "\u00b1 (Da)", "Name", ""):
+            st = wx.StaticText(self, label=lab)
+            st.SetForegroundColour(wx.Colour(C["muted"]))
+            self.table.Add(st, 0, wx.ALIGN_BOTTOM)
+        for r in list(v.get("rows") or [])[:self.MAX_ROWS]:
+            self._add_row(*r)
+        self._add_row()
+        self.ion = wx.Choice(self, choices=self.names + [self.LOST])
+        self.ion.SetMinSize(wx.Size(self.FromDIP(90), -1))
+        self._ion = self.names.index(v["carrier"]) if v.get("carrier") in self.names else 0
+        self.lo = wx.TextCtrl(self, value="%g" % v.get("mzmin", F.MZMIN), size=wx.Size(self.FromDIP(80), -1))
+        lbox = wx.BoxSizer(wx.HORIZONTAL)
+        lbox.Add(self.lo, 0, wx.ALIGN_CENTER_VERTICAL)
+        lbox.Add(wx.StaticText(self, label="m/z and up"), 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, self.FromDIP(6))
+        self.ev = wx.Choice(self, choices=list(events) + (["All scan events"] if len(events) > 1 else []))
+        self.ev.SetSelection(len(events) if (event is not None and event < 0 and len(events) > 1) else
+                             max(0, min(event or 0, len(events) - 1)))
+        if len(events) < 2:
+            self.ev.Enable(False)
+        g = wx.FlexGridSizer(0, 2, self.FromDIP(8), self.FromDIP(10))
+        for lab, ctrl in (("Charge carrier", self.ion), ("Charge states at", lbox), ("Scans", self.ev)):
+            g.Add(wx.StaticText(self, label=lab), 0, wx.ALIGN_CENTER_VERTICAL)
+            g.Add(ctrl, 0, wx.ALIGN_CENTER_VERTICAL)
+        vs = wx.BoxSizer(wx.VERTICAL)
+        pad = self.FromDIP(14)
+        vs.Add(self.table, 0, wx.LEFT | wx.RIGHT | wx.TOP, pad)
+        vs.Add(g, 0, wx.LEFT | wx.RIGHT | wx.TOP, pad)
+        vs.Add(self.CreateButtonSizer(wx.OK | wx.CANCEL), 0, wx.EXPAND | wx.ALL, pad)
+        self.SetSizerAndFit(vs)
+        self.ion.Bind(wx.EVT_CHOICE, self._ion_chosen)
+        self.ev.Bind(wx.EVT_CHOICE, lambda e: self._carrier_shown())
+        self._carrier_shown()
+        self.CentreOnParent()
+        self.rows[0][0].SetFocus()
+
+    def _add_row(self, mass="", w="5", name=""):
+        m = wx.TextCtrl(self, value=str(mass), size=wx.Size(self.FromDIP(90), -1))
+        wt = wx.TextCtrl(self, value=str(w), size=wx.Size(self.FromDIP(50), -1))
+        nm = wx.TextCtrl(self, value=str(name), size=wx.Size(self.FromDIP(170), -1))
+        x = wx.Button(self, label="\u00d7", size=wx.Size(self.FromDIP(26), self.FromDIP(24)), style=wx.BU_EXACTFIT)
+        x.SetToolTip("Remove this row")
+        row = (m, wt, nm, x)
+        self.rows.append(row)
+        for c in row:
+            self.table.Add(c, 0, wx.ALIGN_CENTER_VERTICAL)
+        m.Bind(wx.EVT_TEXT, lambda e, r=row: (self._typed(r), e.Skip()))
+        x.Bind(wx.EVT_BUTTON, lambda e, r=row: self.remove_row(r))
+        for c in (m, wt, nm):
+            c.Bind(wx.EVT_KEY_DOWN, lambda e, r=row: self._key(e, r))
+        return row
+
+    def _key(self, e, row):
+        """Ctrl+Delete removes the row."""
+        if e.GetKeyCode() == wx.WXK_DELETE and e.ControlDown():
+            self.remove_row(row)
+        else:
+            e.Skip()
+
+    def _typed(self, row):
+        """A mass typed in the last row: a new empty row below it."""
+        if row is self.rows[-1] and row[0].GetValue().strip() and len(self.rows) < self.MAX_ROWS:
+            self._add_row(w=row[1].GetValue().strip() or "5")
+            self._refit()
+
+    def remove_row(self, row):
+        if row not in self.rows:
+            return
+        if len(self.rows) == 1:  # (the last row is emptied instead)
+            for c in row[:3]:
+                c.ChangeValue("")
+            return
+        self.rows.remove(row)
+        for c in row:
+            self.table.Detach(c)
+            c.Destroy()
+        if self.rows[-1][0].GetValue().strip():
+            self._add_row()
+        self._refit()
+
+    def _refit(self):
+        self.Layout()
+        self.Fit()
+
+    def _event(self):
+        ev = self.ev.GetSelection()
+        if self.ev.GetCount() > len(self.pols) and ev == self.ev.GetCount() - 1:
+            return -1
+        return max(0, ev)
+
+    def _ion_chosen(self, e):
+        if self.ion.GetSelection() < len(self.names):
+            self._ion = self.ion.GetSelection()
+
+    def _carrier_shown(self):
+        """Negative ions only: the carrier is a lost proton (the choice is greyed)."""
+        e = self._event()
+        neg = 0 <= e < len(self.pols) and self.pols[e] == "-"
+        self.ion.SetSelection(len(self.names) if neg else self._ion)
+        self.ion.Enable(not neg)
+
+    def table_text(self):
+        """The rows as typed (remembered for the next time): [(mass, window, name)], the empty row left out."""
+        out = []
+        for m, w, n, x in self.rows:
+            if m.GetValue().strip() or n.GetValue().strip():
+                out.append((m.GetValue().strip(), w.GetValue().strip(), n.GetValue().strip()))
+        return out
+
+    def values(self):
+        import ms_find_mass as F
+        rows = []
+        for m, w, n, x in self.rows:
+            M, W = _num(m, None), _num(w, None)
+            if M is None or M <= 0:
+                continue
+            if W is None or W <= 0:
+                W = 5.0
+            if all(abs(M - r["M"]) > 1e-9 or abs(W - r["w"]) > 1e-9 for r in rows):
+                rows.append({"M": float(M), "w": float(W), "name": n.GetValue().strip()})
+        lo = _num(self.lo, None)
+        if lo is None or lo < 0:
+            lo = F.MZMIN
+        return {"rows": rows, "table": self.table_text(), "carrier": self.names[self._ion], "mzmin": float(lo),
+                "event": self._event()}
 
 
 class Form(wx.Panel):
@@ -5054,6 +5219,56 @@ def draw_spectrum(card, spec, full, sticks, view=None, n_labels=8, fmt="%.1f", r
     return label_maxima(ax, mz, it, n=n_labels, fmt=fmt, min_sep=(x1 - x0) / 24.0, xlim=(x0, x1), refine=refine)
 
 
+def _clear_of(ax, ann, placed):
+    """A label at a point placed where it does not cover the labels placed before: right of the point, else left
+    of it, else lower down on the right. Returns placed with it."""
+    try:
+        r = ax.figure.canvas.get_renderer()
+        x0, y0 = ann.xyann
+        tries = [(x0, y0, "left"), (-x0, y0, "right")]
+        bb = ann.get_window_extent(r)
+        h = bb.height * 72.0 / ax.figure.dpi + 2.0
+        tries += [(x0, y0 - k * h, "left") for k in range(1, 5)]
+        for x, y, ha in tries:
+            ann.xyann = (x, y)
+            ann.set_ha(ha)
+            bb = ann.get_window_extent(r)
+            if not any(bb.overlaps(p) for p in placed):
+                break
+        else:
+            ann.set_ha("left")
+            ann.xyann = (x0, y0)
+        return placed + [ann.get_window_extent(r)]
+    except Exception:
+        return placed
+
+
+def draw_charge_marks(ax, spec, sm):
+    """The charge states of a found mass (Find mass) over the spectrum: a triangle in the colour of the mass and
+    "13+" over the states present, a grey triangle over the others. sm: M, c (mass per charge), w, zs, on,
+    colour, sign."""
+    from matplotlib.transforms import offset_copy
+    mz, it = spec[:, 0], spec[:, 1]
+    x0, x1 = ax.get_xlim()
+    tm = offset_copy(ax.transData, fig=ax.figure, y=3.5, units="points")
+    tl = offset_copy(ax.transData, fig=ax.figure, y=7.5, units="points")
+    on = set(sm.get("on") or [])
+    sign = "+" if sm.get("sign", 1) > 0 else "−"
+    for z in sm.get("zs") or []:
+        m = (sm["M"] + z * sm["c"]) / z
+        if not (min(x0, x1) <= m <= max(x0, x1)):
+            continue
+        sel = np.abs(mz - m) <= max(0.3, sm.get("w", 5.0) / z)
+        yv = float(it[sel].max()) if np.any(sel) else 0.0
+        col = sm["colour"] if z in on else ABSENT_COL
+        ln, = ax.plot([m], [yv], ls="none", marker="v", ms=5, mew=0, color=col, transform=tm, zorder=9,
+                      clip_on=False)
+        ln._no_scale = True
+        if z in on:
+            ax.text(m, yv, "%d%s" % (z, sign), transform=tl, fontsize=7.5, color=col, ha="center", va="bottom",
+                    zorder=9, clip_on=False)
+
+
 def draw_spec_marks(ax, col, auto, pin_fmt, height):
     """Pinned labels (an automatic label next to one is removed) and the measurement of a spectrum;
     height(m): top of the peak at m."""
@@ -5195,6 +5410,7 @@ class MSTab(TabBase):
     TOL_DEFAULT = "0.5"
     FULL_WINDOW = True  # offer the separate Deconvolute window (UniDec GUI) for this kind of data
     OPEN_HINT = "Open a data file or drop it here"
+    FIND_MASS = True  # Find mass (right click a chromatogram): the mass search tiles
 
     def __init__(self, parent, frame):
         TabBase.__init__(self, parent, frame)
@@ -5205,9 +5421,17 @@ class MSTab(TabBase):
         self.xic_views = []
         self.xic_rows = []
         self._xic_sig = None
+        # mass searches (Find mass): [{"id", "masses", "ws", "names" (a row each), "carrier", "mzmin", "events",
+        # "res": {e: [result of each row]}}] (search_rows)
+        self.searches = []
+        self.search_views = []
+        self.search_rows = []
+        self._search_sig = None
+        self._search_job = None
         self.pick_t = None
         self.scroller = RowScroller(self)
         self.rows = StackBox(self.scroller)
+        self.rows.on_close_tile = self._close_search_tile
         self.rows.shape = tile_shape
         self.scroller.set_box(self.rows)
         self.bottom = SplitBox(self.rows, wx.HORIZONTAL)
@@ -5341,7 +5565,8 @@ class MSTab(TabBase):
             if w not in keep:
                 w.Destroy()
         self.cols, self.views, self.xic_views, self.xic_rows = [], [], [], []
-        self._xic_sig = None
+        self.search_views, self.search_rows = [], []
+        self._xic_sig = self._search_sig = None
         self.chrom_tile = PairCard(self.rows, "Chromatograms") if n > 1 else None
         self.spec_tile = PairCard(self.rows, "Mass spectra") if n > 1 else None
         for e in range(n):
@@ -5377,10 +5602,12 @@ class MSTab(TabBase):
         return NEG_COL if len(self.cols) > 1 and self.pol(e) == "-" else TRACE
 
     def _layout_rows(self):
-        defaults = {"main": 4.0, "xic": 3.0, "spec": 4.0, "table": 2.2}
+        defaults = {"main": 4.0, "xic": 3.0, "search": 3.0, "spec": 4.0, "table": 2.2}
         chroms, specs = self._chrom_tiles(), self._spec_tiles()
-        panes = chroms + self.xic_rows + specs
-        kinds = ["main"] * len(chroms) + ["xic"] * len(self.xic_rows) + ["spec"] * len(specs)
+        srows = getattr(self, "search_rows", [])
+        panes = chroms + self.xic_rows + srows + specs
+        kinds = ["main"] * len(chroms) + ["xic"] * len(self.xic_rows) + ["search"] * len(srows) + \
+            ["spec"] * len(specs)
         tables = [getattr(self, "hrms_details", self.table)]
         for key in ("dec", "cal"):
             if key in self.extras:
@@ -5398,7 +5625,7 @@ class MSTab(TabBase):
         weights = [self.rows.weight_of(p, defaults[k]) for p, k in zip(panes, kinds)]
         self.rows.set_panes(panes, weights)
         self.scroller.refit()
-        self.views = [c["view"] for c in self.cols] + self.xic_views
+        self.views = [c["view"] for c in self.cols] + self.xic_views + list(getattr(self, "search_views", []))
 
     def _xic_groups(self, lists):
         """The mass chromatograms shown, in tiles: the same m/z in several events in one tile. [[(e, x)]], in
@@ -5425,6 +5652,8 @@ class MSTab(TabBase):
         lists = [self.xic_shown(e) for e in evs] if self.xic_mode.GetSelection() == 0 else [[] for e in evs]
         for g in self._xic_groups(lists):
             out.append({("xic", evs[i], round(float(x["mz"]), 4)) for i, x in g})
+        for s in self._searches_shown():
+            out.append({("search", s["id"], e) for e in s["events"]})
         out += [{("spec", e) for e in evs}] if getattr(self, "spec_tile", None) else [{("spec", e)} for e in evs]
         n_extra = len(self.rows.all_panes) - len(out) - 1  # deconvolution and calibration rows
         out += [{("extra", j)} for j in range(max(0, n_extra))] + [{("bottom",)}]
@@ -5546,6 +5775,9 @@ class MSTab(TabBase):
             c.SetValue("")
         self._remember_spectrum_selection()
         n = min(data.n_events, self.MAXCOLS) if data else 1
+        if self._search_job is not None:
+            self._search_job["cancel"] = True  # (its result belongs to the file read before)
+        self.searches = []
         self._build_cols(n)
         self.xics = {e: [] for e in range(n)}
         for i, (t, lab) in enumerate(zip(self.xic_fields, self.xic_labels)):
@@ -5596,6 +5828,8 @@ class MSTab(TabBase):
         k = self.kind.GetSelection()
         stacked = self.xic_mode.GetSelection() == 0
         self._build_xic_rows()
+        self._build_search_rows()
+        self._search_traces()
         for col in self.cols:
             ev = col["e"]
             short = self.ev_short(ev)
@@ -5646,6 +5880,8 @@ class MSTab(TabBase):
         self.plot_chroms(keep_view=True)
 
     def empty_text(self, v):
+        if self.data and getattr(v, "kind", "") == "search":
+            return "Not found"
         if self.data:
             return "No trace chosen"
         return self.OPEN_HINT
@@ -5657,6 +5893,10 @@ class MSTab(TabBase):
             ln = ax.axvline(self.pick_t, color=C["accent"], lw=0.9, ls=(0, (4, 3)), alpha=0.9, zorder=4)
             ln._no_scale = True
             ln._ui_only = True  # a marker of the view, not part of copied or saved images
+        try:
+            self._search_marks(ax, scale_of, v)
+        except Exception as ex:
+            _log("mass search marks: %r" % ex)
         idx = self.data.event_scans(v.key)
         sat = self.data.saturated[idx]
         if np.any(sat) and getattr(v, "kind", "main") == "main":
@@ -5673,6 +5913,8 @@ class MSTab(TabBase):
             return []
         items = [(None, None), ("Add a mass chromatogram %s\u2026" % self.ev_short(v.key),
                                 lambda: self.ask_xic(v.key))]
+        if self.FIND_MASS:
+            items.append(("Find mass\u2026", lambda: self.ask_find_mass(v.key)))
         target = None
         if getattr(v, "kind", "") == "xic":
             target = v.xic
@@ -5868,6 +6110,391 @@ class MSTab(TabBase):
         self._set_xic_field(e)
         self.on_update()
 
+    # ------------------------------------------------------ Find mass (ms_find_mass)
+    def _search_by_id(self, sid):
+        return next((s for s in self.searches if s.get("id") == sid), None)
+
+    def _searches_shown(self):
+        """The searches with their scan events that have plots here."""
+        evs = {c["e"] for c in self.cols}
+        out = []
+        for s in self.searches:
+            e2 = [e for e in s.get("events", []) if e in evs]
+            if e2:
+                out.append(s if e2 == list(s["events"]) else dict(s, events=e2))
+        return out
+
+    def _build_search_rows(self):
+        """A tile per search: one plot, or (all scan events) one plot per event in one tile."""
+        shown = self._searches_shown()
+        sig = (tuple((s["id"], tuple(s["events"])) for s in shown), len(self.cols))
+        if sig == self._search_sig:
+            return
+        self._search_sig = sig
+        for row in self.search_rows:
+            row.Destroy()
+        self.search_rows, self.search_views = [], []
+        for s in shown:
+            tile = PairCard(self.rows, "Mass search") if len(s["events"]) > 1 else None
+            cards = []
+            for e in s["events"]:
+                card = PlotCard(tile or self.rows, "Mass search", "", mode="range")
+                v = ChromView(self, card, e)
+                v.kind, v.xic, v.search_id = "search", None, s["id"]
+                v.file_tag = "_mass_search_%s" % {"+": "pos", "-": "neg"}.get(self.pol(e), "ev%d" % (e + 1))
+                card.image_name = lambda v=v: self._chrom_image_name(v)
+                self.search_views.append(v)
+                cards.append(card)
+            if tile is not None:
+                tile.set_cards(cards)
+                self.search_rows.append(tile)
+            else:
+                self.search_rows += cards
+        self._layout_rows()
+
+    def _search_traces(self):
+        """The traces, titles and notes of the search plots."""
+        n = self.smooth.GetValue()
+        names = set()
+        for v in self.search_views:
+            s = self._search_by_id(v.search_id)
+            e = v.key
+            short = self.ev_short(e)
+            res = (s or {}).get("res", {}).get(e) or []
+            rows = search_rows(s) if s else []
+            one_w = len({w for M, w, nm in rows}) <= 1
+            traces, missing, few = [], [], []
+            for j, ((M, w, nm), r) in enumerate(zip(rows, res)):
+                mt = _mass_text(M)
+                lab = (nm or mt) + ("" if one_w else " \u00b1 %g" % w)
+                if not r.get("regions"):
+                    (few if r.get("few") else missing).append(lab)
+                    continue
+                name = "%s Da search %s" % (mt, short)
+                if name in names:
+                    name = "%s Da search %d %s" % (mt, s["id"], short)
+                names.add(name)
+                traces.append({"name": name, "label": lab, "t": r["t"], "y": LI.smooth(r["trace"], n),
+                               "color": SEARCH_COLS[j % len(SEARCH_COLS)], "search": r, "mass_name": nm,
+                               "key": "search:%d:%d:%s:%g" % (s["id"], e, mt, w)})
+            v.traces = traces
+            parts = ["\u00b1 %g Da" % rows[0][1]] if rows and one_w else []
+            if s and self.pol(e) != "-" and s.get("carrier", "H+") != "H+":
+                parts.append(s["carrier"])
+            if missing:
+                parts.append("%s not found" % ", ".join(missing))
+            if few:
+                parts.append("%s not found (too few charge states)" % ", ".join(few))
+            card = v.card
+            card.side_name, card.side_colour = short + " Search", self.ev_colour(e)
+            card.set_title("Mass search" + (" " + short if len(self.cols) > 1 and card.pair is None else ""),
+                           ", ".join(parts))
+
+    def _search_note(self, s, e):
+        """The harmonic note of each mass: another mass that fits the same m/z."""
+        rel = {"half": "half this mass", "double": "double this mass",
+               "one and a half times": "one and a half times this mass", "two thirds": "two thirds of this mass"}
+        res = (s or {}).get("res", {}).get(e) or []
+        rows = search_rows(s) if s else []
+        lines = []
+        for (M, w, nm), r in zip(rows, res):
+            h = r.get("harmonic") if r.get("regions") else None
+            if not h:
+                continue
+            txt = "These m/z also fit %s Da (%s), it may be the same species" % (
+                _mass_text(round(h[0], 1)), rel.get(h[1], h[1]))
+            lines.append(txt if len(rows) == 1 else "%s: %s" % (nm or _mass_text(M), txt[0].lower() + txt[1:]))
+        return "\n".join(lines)
+
+    def _search_marks(self, ax, scale_of, v):
+        """The found regions shaded (search plots and the TIC of the event), the label of the best region and
+        the harmonic note."""
+        import ms_find_mass as F
+        kind = getattr(v, "kind", "main")
+        if kind == "search":
+            v._labels = []  # (placed once the plot has its axis ranges: plot_view)
+            for tr in v.traces:
+                r, col = tr["search"], tr["color"]
+                for a, b, g in F.shaded(r):
+                    ax.axvspan(a, b, color=col, alpha=0.12, lw=0, zorder=0)
+                g = F.best_region(r)
+                if g is None:
+                    continue
+                y = tr["y"] * scale_of.get(tr["name"], 1.0)
+                sel = (tr["t"] >= g["t0"]) & (tr["t"] <= g["t1"])
+                if not np.any(sel):
+                    continue
+                i = int(np.argmax(np.where(sel, y, -np.inf)))
+                st = g.get("states") or []
+                txt = (tr["mass_name"] + ", " if tr.get("mass_name") else "") + "%.1f Da" % g["mass"] + (
+                    ", z %d to %d" % (min(st), max(st)) if st else "")
+                ann = ax.annotate(txt, (tr["t"][i], y[i]), xytext=(8, -2), textcoords="offset points", fontsize=8,
+                                  color=col, va="top", zorder=6)
+                v._labels.append(ann)
+            note = self._search_note(self._search_by_id(v.search_id), v.key)
+            if note:
+                ax.text(0.01, 0.96, note, transform=ax.transAxes, ha="left",
+                        va="top", fontsize=8, color=NOTE_COL, zorder=7, linespacing=1.3,
+                        bbox=dict(boxstyle="square,pad=0.2", fc="white", ec="none", alpha=0.8))
+        elif kind == "main":
+            for s in self._searches_shown():
+                if v.key not in s["events"]:
+                    continue
+                for j, r in enumerate(s["res"].get(v.key) or []):
+                    for a, b, g in F.shaded(r):
+                        sp = ax.axvspan(a, b, color=SEARCH_COLS[j % len(SEARCH_COLS)], alpha=0.10, lw=0, zorder=0)
+                        sp._range_mark = True
+
+    def plot_view(self, v, keep_view=False):
+        TabBase.plot_view(self, v, keep_view)
+        if getattr(v, "kind", "") == "search" and getattr(v, "_labels", None):
+            placed = []
+            for ann in v._labels:  # the labels of the masses clear of each other
+                placed = _clear_of(v.card.ax, ann, placed)
+            v._labels = []
+            v.card.canvas.draw_idle()
+
+    def chrom_menu(self, x, y, v):
+        if getattr(v, "kind", "") != "search":
+            return TabBase.chrom_menu(self, x, y, v)
+        s = self._search_by_id(v.search_id)
+        items = []
+        if s is not None:
+            sid = s["id"]
+            items.append(("Edit search…", lambda: self.ask_find_mass(v.key, search_id=sid)))
+            rows = search_rows(s)
+            if len(rows) > 1:
+                items.append(("Remove a mass", [((nm + ", " if nm else "") + _mass_text(M) + " Da",
+                                                 lambda k=k: self.remove_search_mass(sid, k))
+                                                for k, (M, w, nm) in enumerate(rows)]))
+        items += [("Find mass…", lambda: self.ask_find_mass(v.key)), (None, None),
+                  ("Average a time range…", self.ask_average), (None, None),
+                  ("Full view", v.card.reset_view), ("Copy chromatogram data", lambda: self.copy_chrom(v)),
+                  ("Export chromatogram…", lambda: self.export_chrom(v))]
+        return items + self.frame.link_menu() + self.view_menu()
+
+    def _search_pick(self, view, x, y):
+        """A click inside a found region: the averaged spectrum of its main part (trace >= 20 % of its top) with
+        the charge states of the mass marked. False: not inside one."""
+        import ms_find_mass as F
+        best = None
+        for tr in view.traces:
+            for a, b, g in F.shaded(tr["search"]):
+                if a <= x <= b:
+                    yd = float(np.interp(x, tr["t"], tr["y"] * tr.get("_scale", 1.0)))
+                    d = abs(yd - y) if y is not None else 0.0
+                    if best is None or d < best[0]:
+                        best = (d, tr, g)
+        if best is None:
+            return False
+        if self.busy_averaging():
+            return True
+        tr, g = best[1], best[2]
+        r = tr["search"]
+        a, b = F.core(r, g, 0.2)
+        self.pick_t = None
+        self.avg = (a, b)
+        self.fill_range_fields()
+        self.plot_chroms(keep_view=True)
+        self.compute_average()
+        if a == b or any(c.get("range") == (a, b) for c in self.cols):
+            for col in self.cols:
+                if col["e"] == view.key and col["spec"] is not None:
+                    col["smark"] = {"M": float(r["M"]), "c": float(r["c"]), "w": float(r["w"]),
+                                    "zs": [int(z) for z in r["zs"]], "on": [int(z) for z in g.get("states") or []],
+                                    "colour": tr["color"], "sign": -1 if r.get("polarity") == "-" else 1,
+                                    "name": tr.get("mass_name") or ""}
+                    self.plot_spec(col)
+                    # the m/z range of the charge states (the other spectra of the tile follow)
+                    card = col["spec_card"]
+                    ev = self.data.events[col["e"]]
+                    lo = max(ev.get("mz_low") or 0.0, float(r.get("mzmin", 0.0)) - 20.0)
+                    hi = ev.get("mz_high") or (card.full[1] if card.full else None)
+                    if card.full and hi and hi > lo:
+                        set_mz_range(card, lo, hi)
+            if a != b:
+                self.frame.link_time("ms", rng=self.avg)
+            self.status("Spectrum of %s, %.2f to %.2f min" % (tr.get("mass_name") or "%s Da" % _mass_text(r["M"]),
+                                                              a, b))
+        return True
+
+    def ask_find_mass(self, e=None, search_id=None):
+        """Find mass: the dialog (a table of masses), then the search (off the interface thread)."""
+        if not self.data or not self.FIND_MASS:
+            self.status("Open a data file first")
+            return
+        if self._search_job is not None:
+            self.status("A mass search is running")
+            return
+        s = self._search_by_id(search_id)
+        last = settings().get("find_mass")
+        last = last if isinstance(last, dict) else {}
+        n = len(self.cols)
+        if s is not None:
+            v = {"rows": [(_mass_text(M), "%g" % w, nm) for M, w, nm in search_rows(s)], "carrier": s["carrier"],
+                 "mzmin": s["mzmin"]}
+            ev = -1 if len(s["events"]) > 1 else s["events"][0]
+        else:
+            v = {k: last[k] for k in ("carrier", "mzmin") if k in last}
+            rows = last.get("rows")
+            v["rows"] = [tuple(str(x) for x in r[:3]) for r in rows if isinstance(r, (list, tuple)) and
+                         len(r) >= 3] if isinstance(rows, list) else []
+            ev = -1 if (last.get("event") == -1 and n > 1) else (e if e is not None and 0 <= e < n else 0)
+        dlg = FindMassDialog(self, "Edit mass search" if s is not None else "Find mass", v,
+                             [self.data.event_label(c["e"]) for c in self.cols], [self.pol(c["e"]) for c in self.cols],
+                             ev)
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            vals = dlg.values()
+        finally:
+            dlg.Destroy()
+        T._save({"find_mass": {"rows": [list(r) for r in vals["table"]], "carrier": vals["carrier"],
+                               "mzmin": vals["mzmin"], "event": -1 if vals["event"] < 0 else 0}})
+        if not vals["rows"]:
+            self.status("No mass entered")
+            return
+        self.find_mass(vals, replace=search_id if s is not None else None)
+
+    def find_mass(self, vals, replace=None):
+        """Search the masses vals["rows"] ([{"M", "w", "name"}]; carrier, mzmin shared) in the scan event
+        vals["event"] (-1: every event shown) in a worker thread; the tile is made (or the search replace
+        replaced) when it is done. Progress in the status bar and a small window with Cancel."""
+        import ms_find_mass as F
+        if self._search_job is not None or not self.data:
+            return False
+        events = [c["e"] for c in self.cols] if vals["event"] < 0 else [vals["event"]]
+        rows = [{"M": float(r["M"]), "w": float(r.get("w", 5.0)), "name": str(r.get("name") or "")}
+                for r in vals["rows"]]
+        data, carrier, mzmin = self.data, vals["carrier"], float(vals["mzmin"])
+        shorts = {e: self.ev_short(e) for e in events}
+        n = max(1, len(events) * len(rows))
+        job = {"vals": dict(vals, rows=rows), "events": events, "replace": replace, "data": data,
+               "cancel": False, "frac": 0.0, "now": "", "done": False, "out": None, "err": None,
+               "cancelled": False, "t0": time.time(), "win": None}
+
+        def work():
+            try:
+                out, k = {}, 0
+                for e in events:
+                    lst = []
+                    for r in rows:
+                        what = r["name"] or "%s Da" % _mass_text(r["M"])
+                        job["now"] = "%s %s" % (what, shorts[e]) if len(self.cols) > 1 else what
+                        lst.append(F.search(data, e, r["M"], r["w"], carrier, mzmin, cancel=lambda: job["cancel"],
+                                            progress=lambda x, k=k: job.__setitem__("frac", (k + x) / n)))
+                        k += 1
+                    out[e] = lst
+                job["out"] = out
+            except F.Cancelled:
+                job["cancelled"] = True
+            except Exception as ex:
+                import traceback
+                traceback.print_exc()
+                job["err"] = ex
+            finally:
+                job["done"] = True
+        self._search_job = job
+        threading.Thread(target=work, name="find mass", daemon=True).start()
+        if getattr(self, "_search_timer", None) is None:
+            self._search_timer = wx.Timer(self)
+            self.Bind(wx.EVT_TIMER, self._search_tick, self._search_timer)
+        self._search_timer.Start(120)
+        self.status("Find mass …")
+        return True
+
+    def _search_tick(self, e=None):
+        job = self._search_job
+        if job is None:
+            self._search_timer.Stop()
+            return
+        if not job["done"]:
+            txt = "Find mass: %s, %d %%" % (job["now"], int(100 * job["frac"]))
+            self.status(txt)
+            if job["win"] is None and time.time() - job["t0"] > 0.8 and not job["cancel"]:
+                import deconv_tab
+                job["win"] = deconv_tab.ProgressWindow(wx.GetTopLevelParent(self), "Find mass",
+                                                       lambda: job.__setitem__("cancel", True),
+                                                       cancel_tip="Stop the search")
+            if job["win"] is not None:
+                job["win"].update(int(1000 * job["frac"]), 1000, txt)
+            return
+        self._search_timer.Stop()
+        self._search_job = None
+        if job["win"] is not None:
+            job["win"].finish()
+        self._search_finished(job)
+
+    def _search_finished(self, job):
+        if job["cancelled"]:
+            self.status("Mass search cancelled")
+            return
+        if job["err"] is not None:
+            _report_error(self, "The mass search could not be finished", job["err"])
+            return
+        if self.data is not job["data"] or job["out"] is None:
+            return  # (another file was read meanwhile)
+        vals = job["vals"]
+        rows = vals["rows"]
+        old = self._search_by_id(job["replace"])
+        sid = old["id"] if old is not None else max([s["id"] for s in self.searches] + [0]) + 1
+        s = {"id": sid, "masses": [r["M"] for r in rows], "ws": [r["w"] for r in rows],
+             "names": [r["name"] for r in rows], "carrier": vals["carrier"], "mzmin": float(vals["mzmin"]),
+             "events": list(job["events"]), "res": job["out"]}
+        if old is not None:
+            self.searches = [s if o is old else o for o in self.searches]
+        else:
+            self.searches = self.searches + [s]
+        self._searches_changed()
+        found = [k for k in range(len(rows)) if any(lst[k]["regions"] for lst in s["res"].values())]
+        import undo
+        undo.commit(self, ("edit the mass search %s" if old is not None else "find mass %s") % search_text(s))
+        if len(rows) == 1:
+            self.status("%s %s" % (rows[0]["name"] or "%s Da" % _mass_text(rows[0]["M"]),
+                                   "found" if found else "not found"))
+        else:
+            self.status("%d of %d masses found" % (len(found), len(rows)))
+
+    def _searches_changed(self):
+        self._build_search_rows()
+        self._search_traces()
+        self.update_trace_choice()
+        self.plot_chroms(keep_view=True)
+        self.tree_changed()
+
+    def remove_search_mass(self, sid, k):
+        """Row k of the search taken out (the others keep their results)."""
+        s = self._search_by_id(sid)
+        if s is None:
+            return
+        rows = search_rows(s)
+        if not 0 <= k < len(rows):
+            return
+        keep = [j for j in range(len(rows)) if j != k]
+        if not keep:
+            self.remove_search(sid)
+            return
+        new = dict(s, masses=[rows[j][0] for j in keep], ws=[rows[j][1] for j in keep],
+                   names=[rows[j][2] for j in keep],
+                   res={e: [lst[j] for j in keep if j < len(lst)] for e, lst in s["res"].items()})
+        new.pop("w", None)
+        self.searches = [new if o is s else o for o in self.searches]
+        self._searches_changed()
+        self.status("%s removed from the mass search" % (rows[k][2] or "%s Da" % _mass_text(rows[k][0])))
+
+    def remove_search(self, sid):
+        self.searches = [s for s in self.searches if s.get("id") != sid]
+        self._searches_changed()
+
+    def _close_search_tile(self, pane):
+        """Close this tile on a search tile: the search is removed (Undo brings it back)."""
+        for v in self.search_views:
+            if v.card is pane or (v.card.pair is not None and v.card.pair is pane):
+                self.remove_search(v.search_id)
+                self.status("Mass search closed")
+                return True
+        return False
+
     # ---------------------------------------------------------- spectra
     def chrom_pick(self, x, y, view):
         if not self.data:
@@ -5875,6 +6502,8 @@ class MSTab(TabBase):
         if getattr(self, "_averaging", False):  # the reader is busy in the averaging thread
             self.status("Still averaging the previous range")
             return
+        if getattr(view, "kind", "") == "search" and self._search_pick(view, x, y):
+            return  # (inside a found region: the spectrum of its main part)
         self.avg = None
         self.pick_t = x
         self.t0.SetValue("%.3f" % x)
@@ -5911,6 +6540,7 @@ class MSTab(TabBase):
     def spectrum_replaced(self, col):
         # Formula measurements belong to the previous spectrum, not its view.
         col.pop("overlay", None)
+        col.pop("smark", None)  # (the charge states of a found mass: that spectrum only)
 
     def _remember_spectrum_selection(self):
         self._display_selection = (self.avg, self.bg, self.pick_t, self.use_bg.GetValue())
@@ -6114,15 +6744,28 @@ class MSTab(TabBase):
                    else "The mass spectrum appears here")
             ax.text(0.5, 0.5, msg, transform=ax.transAxes, ha="center", va="center", fontsize=9, color=MUTED)
             card.full = None
+            card.set_legend([])
             card.set_title(title, "")
             card.draw()
             return
         lo, hi = shared_mz_range(self.data, [c for c in self.cols if c["spec_card"].pair is card.pair] if
                                  card.pair is not None else [col])
         apex = self.APEX_LABELS and bool(getattr(self.data, "has_profile", False))
-        auto = draw_spectrum(card, spec, (lo, hi), self.spec_style.GetSelection() == 1, view, 8, self.MZ_FMT,
-                             self.apex_fn if apex else None, color=self.ev_colour(e))
+        sm = col.get("smark")  # the charge states of a found mass (Find mass: a found region clicked)
+        card.label_room_pt = 26.0 if sm else 16.0
+        auto = draw_spectrum(card, spec, (lo, hi), self.spec_style.GetSelection() == 1, view, 0 if sm else 8,
+                             self.MZ_FMT, self.apex_fn if apex else None, color=self.ev_colour(e))
         draw_spec_marks(ax, col, auto, self.PIN_FMT, lambda m: self._peak_height(col, m))
+        if sm:
+            try:
+                draw_charge_marks(ax, spec, sm)
+            except Exception as ex:
+                _log("charge state marks: %r" % ex)
+        if sm:  # (in the plot: a note of the title row would cover the labels of the tallest peaks)
+            ax.plot([0.012], [0.935], transform=ax.transAxes, ls="none", marker="v", ms=5, mew=0,
+                    color=sm["colour"], zorder=9)[0]._no_scale = True
+            ax.text(0.022, 0.96, "charge states of %s" % (sm.get("name") or "%s Da" % _mass_text(sm["M"])),
+                    transform=ax.transAxes, ha="left", va="top", fontsize=8, color=sm["colour"], zorder=9)
         sub = col["desc"]
         try:
             sp_ = col.get("spec")
@@ -7430,6 +8073,8 @@ Mass spectrometry
   * Click a chromatogram for the spectrum at that time, drag to average a
     range, Shift + drag to set the background range.
   * Saturated readings count as the highest normal reading and are marked by red ticks.
+  * Right click a chromatogram > Find mass: where the charge states of a
+    mass appear in the run. Click a shaded region for its spectrum.
 
 PDA
   * Map: drag the handles on the top and right edges (or use the arrow

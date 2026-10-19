@@ -1,4 +1,4 @@
-MSpektra 4.51 - portable Windows package   (19.10.2026)
+MSpektra 4.52 - portable Windows package   (19.10.2026)
 ========================================================
 
 Analysis of LC-MS and HRMS data, with deconvolution:
@@ -39,6 +39,18 @@ The version is shown on the start screen, in the help window (?) of LCMS
 and HRMS Analysis, and in the first line of each log file. It went up by
 0.1 with every update until 3.3. Since 3.31 a small change adds 0.01, a
 large change 0.1 and a big change 1.0.
+
+4.52 (19.10.2026)
+Find mass in LCMS Analysis and fewer antivirus false alarms.
+* Find mass: right click a chromatogram (or Chromatogram > Find mass...)
+  and enter one or more masses in the table, each with a window and an
+  optional name. MSpektra works out their charge states and shows in a
+  new tile where in the run they appear; the regions are also shaded on
+  the TIC. Click a region to see its spectrum with the charge states
+  marked.
+* MSpektra.exe and the calculation libraries now carry proper program
+  details, so antivirus programs are less likely to remove them by
+  mistake.
 
 4.51 (19.10.2026)
 Compact LCMS view and mass spectra in the PDA view.

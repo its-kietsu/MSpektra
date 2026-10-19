@@ -271,6 +271,7 @@ def menu_chromatogram(fr):
         _tool(fr, "xic", "Mass chromatogram tool", "X"),
         _view_cmd(fr, "Add a mass chromatogram…", "ask_xic", (None,), kinds=MS),
         _view_cmd(fr, "Remove every mass chromatogram", "clear_xic", (None,), kinds=MS),
+        _view_cmd(fr, "Find mass…", "ask_find_mass", kinds=("ms",)),
         (None, None),
         _view_cmd(fr, "Go to a time and wavelength…", "ask_goto", kinds=PDA),
         _view_cmd(fr, "Map and chromatogram settings…", "ask_settings", kinds=PDA)]

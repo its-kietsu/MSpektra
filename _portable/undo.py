@@ -1042,11 +1042,12 @@ def ms_get(tab):
     cols = []
     for c in tab.cols:
         cols.append({"pins": list(c.get("pins") or []), "measure": c.get("measure"), "m1": c.get("m1"),
-                     "overlay": c.get("overlay")})
+                     "overlay": c.get("overlay"), "smark": _copy(c.get("smark"))})
     st = {"ctrl": _ctrls_get(tab, MS_CTRLS),
           "peaks": [dict(p) for p in tab.peaks], "sel_peak": tab.sel_peak,
           "avg": tab.avg, "bg": tab.bg, "pick_t": tab.pick_t,
           "xics": {e: [dict(x) for x in lst] for e, lst in tab.xics.items()},
+          "searches": _copy(list(getattr(tab, "searches", None) or [])),  # Find mass (results kept by reference)
           "cols": cols,
           "fields": tuple(c.GetValue() for c in (tab.t0, tab.t1, tab.b0, tab.b1)),
           "xic_text": tuple(c.GetValue() for c in tab.xic_fields)}
@@ -1073,7 +1074,8 @@ def ms_set(tab, st):
     _set_linking(doc, True)
     try:
         c0, c1 = cur["ctrl"], st["ctrl"]
-        chrom = any(c0.get(k) != c1.get(k) for k in _CHROM_CTRLS) or not _eq(cur["xics"], st["xics"])
+        chrom = any(c0.get(k) != c1.get(k) for k in _CHROM_CTRLS) or not _eq(cur["xics"], st["xics"]) or \
+            not _eq(cur.get("searches") or [], st.get("searches") or [])
         spec = any(c0.get(k) != c1.get(k) for k in _SPEC_CTRLS) or \
             not _eq((cur["avg"], cur["bg"], cur["pick_t"]), (st["avg"], st["bg"], st["pick_t"]))
         peaks = not _eq(cur["peaks"], st["peaks"]) or cur.get("sel_peak") != st.get("sel_peak")
@@ -1082,6 +1084,8 @@ def ms_set(tab, st):
         marks = [not _eq(a, b) for a, b in zip(cur["cols"], st["cols"])]
         _ctrls_set(tab, MS_CTRLS, c1)
         tab.xics = {int(e): [dict(x) for x in lst] for e, lst in st["xics"].items()}
+        if hasattr(tab, "searches"):  # (saved before Find mass: none)
+            tab.searches = _copy(list(st.get("searches") or []))
         for e in range(len(tab.xic_fields)):
             tab._set_xic_field(e)
         try:
@@ -1117,6 +1121,10 @@ def ms_set(tab, st):
                 col["overlay"] = cs["overlay"]
             else:
                 col.pop("overlay", None)
+            if cs.get("smark") is not None:  # (Find mass: the charge states marked on the spectrum)
+                col["smark"] = _copy(cs["smark"])
+            else:
+                col.pop("smark", None)
         for c, v in zip((tab.t0, tab.t1, tab.b0, tab.b1), st.get("fields") or ()):
             if c.GetValue() != v:
                 c.ChangeValue(v)
@@ -1174,6 +1182,9 @@ _MS_TRACE_CTRLS = [c for c in MS_CTRLS if c[0] in ("kind", "xic_mode", "smooth")
 def ms_describe(tab, a, b):
     # the mass chromatograms and the settings that change the traces first: their peaks are measured again or
     # dropped with them (the step is the change of the trace, not of the peaks)
+    r = _searches_describe(a.get("searches") or [], b.get("searches") or [])
+    if r:
+        return r, None
     if _eq(a["xics"], b["xics"]):
         r = _ctrls_describe(tab, _MS_TRACE_CTRLS, a["ctrl"], b["ctrl"], MS_UNITS)
         if r:
@@ -1186,6 +1197,33 @@ def ms_describe(tab, a, b):
         if t:
             return t, None
     return _ms_describe_rest(tab, a, b)
+
+
+def _searches_describe(a, b):
+    """Find mass: a search added, edited, closed, or a mass removed from it."""
+    if _eq(a, b):
+        return None
+
+    def masses(s):
+        m = s.get("masses") or []
+        return ", ".join(("%.2f" % v).rstrip("0").rstrip(".") for v in m[:3]) + (" …" if len(m) > 3 else "")
+    ia, ib = {s.get("id"): s for s in a}, {s.get("id"): s for s in b}
+    for k, s in ib.items():
+        if k not in ia:
+            return "find mass %s" % masses(s)
+    for k, s in ia.items():
+        if k not in ib:
+            return "close the mass search %s" % masses(s)
+    for k, s in ib.items():
+        o = ia[k]
+        if _eq(o, s):
+            continue
+        gone = [m for m in o.get("masses") or [] if m not in (s.get("masses") or [])]
+        if gone and len(s.get("masses") or []) < len(o.get("masses") or []) and \
+                all(m in (o.get("masses") or []) for m in s.get("masses") or []):
+            return "remove %s from the mass search" % ("%.2f" % gone[0]).rstrip("0").rstrip(".")
+        return "edit the mass search %s" % masses(s)
+    return "mass search"
 
 
 def _xics_describe(tab, a, b):

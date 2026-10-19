@@ -106,6 +106,7 @@ class HRMSTab(U.MSTab):
     PICK_MIN = 0.004
     TOL_DEFAULT = "0.02"
     FULL_WINDOW = False  # HRMS data are deconvoluted in the settings window only
+    FIND_MASS = False  # (Find mass: LCMS Analysis)
     OPEN_HINT = "Open a .d or .raw folder, a .raw file or an mzML file"
     TOOL_HINTS = dict(U.MSTab.TOOL_HINTS)
     TOOL_HINTS["formula"] = "Formula: click a peak to find formulas"
