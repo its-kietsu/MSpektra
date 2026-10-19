@@ -229,7 +229,7 @@ class EngineFile(object):
             rts.append(_arr(prt, n))
             tics.append(_arr(ptic, n))
             bpcs.append(_arr(pbpc, n))
-            sat = np.zeros(max(int(n), 0), bool)  # scans with saturated readings left out (Shimadzu)
+            sat = np.zeros(max(int(n), 0), bool)  # scans with saturated readings (Shimadzu)
             if hasattr(L, "ms_event_flags") and n > 0:
                 pf = POINTER(ctypes.c_ubyte)()
                 nf = L.ms_event_flags(self.handle, e, byref(pf))

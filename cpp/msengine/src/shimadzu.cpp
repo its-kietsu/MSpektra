@@ -16,7 +16,8 @@
 //   * polarity and m/z range of each event come from the MS method stream,
 //   * the m/z scale is checked against the method's scan range (LCMS-2020
 //     files decode with m/z twice too high) and corrected,
-//   * saturated readings (>= 2.1e9) are left out,
+//   * saturated readings (>= 2.1e9, a flag value) count as the highest
+//     normal reading of the file,
 //   * spectra are kept as float32 like the Python arrays so that all values
 //     and the binned averages agree bit for bit.
 #include "file.h"
@@ -829,12 +830,17 @@ public:
                 for (size_t j = 0; j < total; j++) mz_[j] *= f;
             }
         }
-        // saturated readings: left out
+        // saturated readings: the file stores a flag value (about 2.1e9); they count as the highest
+        // normal reading of the file (the detector's ceiling), so the TIC does not dip
         saturated_.assign(n, false);
+        float ceiling = 0.f;
+        bool any_normal = false;
+        for (size_t j = 0; j < total; j++)
+            if (it_[j] < SATURATION && (!any_normal || it_[j] > ceiling)) { ceiling = it_[j]; any_normal = true; }
         for (size_t k = 0; k < n; k++) {
             const size_t a = offsets_[k], b = offsets_[k + 1];
             bool sat = false;
-            for (size_t j = a; j < b; j++) if (it_[j] >= SATURATION) { it_[j] = 0.f; sat = true; }
+            for (size_t j = a; j < b; j++) if (it_[j] >= SATURATION) { it_[j] = ceiling; sat = true; }
             if (!sat) continue;
             saturated_[k] = true;
             tic[k] = (double)np_sum_f32(it_.data() + a, (long)(b - a));

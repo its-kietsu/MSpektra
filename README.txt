@@ -1,4 +1,4 @@
-MSpektra 4.5 - portable Windows package   (18.10.2026)
+MSpektra 4.51 - portable Windows package   (19.10.2026)
 ========================================================
 
 Analysis of LC-MS and HRMS data, with deconvolution:
@@ -39,6 +39,21 @@ The version is shown on the start screen, in the help window (?) of LCMS
 and HRMS Analysis, and in the first line of each log file. It went up by
 0.1 with every update until 3.3. Since 3.31 a small change adds 0.01, a
 large change 0.1 and a big change 1.0.
+
+4.51 (19.10.2026)
+Compact LCMS view and mass spectra in the PDA view.
+* Positive and negative ions share one tile, one plot below the other,
+  in blue and red. Their names and the power of ten are on the left, the
+  scan details inside the plot and the unit at the end of the time or
+  m/z axis, so the plots are taller.
+* The PDA view shows the mass spectra at the time picked in the PDA
+  chromatogram, as the TIC does.
+* Each plot can still be copied or saved alone; the right click menu can
+  also copy or save both plots as one image.
+* Mass spectra: "m/z range..." and "Full m/z range" in the right click
+  menu.
+* Shimadzu files: saturated readings count as the highest normal reading,
+  so the TIC no longer dips where the signal is saturated.
 
 4.5 (18.10.2026)
 Hybrid maximum entropy and better display scaling.

@@ -6,13 +6,15 @@ here are also used by HRMS Analysis (hrms.py).
 Part of the portable add-ons; the deconvolution engine itself is unchanged.
 
 Mass spectrometry tab
-  one tile per scan event (positive and negative side by side): TIC or base
+  tiles of each scan event one below the other (chromatograms first, then
+  the spectra): TIC or base
   peak chromatogram, mass chromatograms (right click), spectrum at a time or
   averaged over a range with background subtraction, peak integration,
   export (.txt, .jdx, .csv) and deconvolution in the same window.
 PDA tab
   wavelength-time map with a time slider (top edge) and a wavelength slider
-  (right edge); the chromatogram and the UV spectrum follow the sliders.
+  (right edge); the chromatogram and the UV spectrum follow the sliders, and
+  the mass spectra of the MS data follow the time chosen (MS detector delay).
   More wavelengths, max plot, UV averages with background subtraction,
   overlay of the MS trace with an adjustable delay, peak integration, export.
 
@@ -40,6 +42,7 @@ import data_formats
 
 INK = "#000000"  # axes, ticks and labels
 TRACE = "#1D4ED8"  # the main trace (spectra, chromatograms, UV)
+NEG_COL = "#B3261E"  # negative ions, when both polarities are shown (not the red of saturated marks)
 LW_TRACE, LW_SPEC, LW_STICK = 0.7, 0.6, 0.7  # line widths (pt): chromatograms and UV, profile spectra, centroids
 MUTED = "#6B7480"
 PAL = ["#2A62C4", "#E0602F", "#0BA064", "#8E5BD0", "#C99A1E", "#D2456F", "#5B6B7C", "#9C6B43"]
@@ -491,6 +494,13 @@ def table_frame(win, gc, w, h):
     card_frame(win, gc, w, h, ((2, 12),))
 
 
+def inner_frame(win, gc, w, h):
+    """A plot inside a tile of several plots (PairCard draws the card): white, no edge."""
+    gc.SetPen(wx.TRANSPARENT_PEN)
+    gc.SetBrush(wx.Brush(wx.Colour("#FFFFFF")))
+    gc.DrawRectangle(0, 0, w, h)
+
+
 class _HeaderOps(object):
     """Stands in for the graphics context while a header is laid out: what would be drawn where (text, lines,
     rounded labels) and how far to the right it reaches; the text measured as on win."""
@@ -668,6 +678,21 @@ class PlotCard(wx.Panel):
         self._press = None
         self._drag_art = None
         self.margins = [0.84, 0.52, 0.16, 0.14]  # left, bottom, right, top (inches)
+        self.pair = None  # the PairCard holding this plot with others (one tile), or None
+        self.hide_x = False  # no x numbers and title (a plot above another of the same tile, which has them)
+        # in a tile of several plots (pair): no title row; the y title is side_name (e.g. "(+) TIC") and the
+        # power of ten of the axis, in side_colour; the title row's text is a small note in the plot
+        self.side_name = ""
+        self.side_colour = None
+        self._side_txt = None
+        self._side_n = 0
+        self._ylabel_orig = ""
+        self._unit = ""
+        self._info_box = None
+        self._info_key = None
+        self._ro_art = None
+        self._export = False  # an image being made: the x axis shown in full
+        self._syncing = False
         s = wx.BoxSizer(wx.VERTICAL)
         self._hh = self.FromDIP(30)
         s.AddSpacer(self._hh)
@@ -700,11 +725,14 @@ class PlotCard(wx.Panel):
 
     # ----------------------------------------------------------- appearance
     def set_title(self, title, subtitle=None):
+        old = (self.title, self.subtitle)
         self.title = title
         if subtitle is not None:
             self.subtitle = subtitle
         self._update_header()
         self.Refresh()
+        if self.pair is not None and old != (self.title, self.subtitle):
+            self.draw()  # (the note in the plot)
 
     def set_badge(self, text=None, colour=None, tip=""):
         """Warning pill after the title (None removes it); tip is added to
@@ -714,6 +742,17 @@ class PlotCard(wx.Panel):
             self.badge = badge
             self._update_header()
             self.Refresh()
+            if self.pair is not None:
+                self.draw()
+
+    def set_shared(self):
+        """In a tile of several plots (PairCard): no title row and no edge around the plot (place: its y title,
+        a note of the title row inside the plot, the unit at the end of the x axis)."""
+        it = self.GetSizer().GetItem(1)  # the plot
+        it.SetFlag(wx.EXPAND | wx.LEFT | wx.RIGHT)
+        self._hdr_key = None
+        self._update_header()
+        self.place()
 
     def _badge_width(self, gc, font=ui_font):
         if not self.badge:
@@ -728,7 +767,17 @@ class PlotCard(wx.Panel):
         e.Skip()
 
     def _paint(self, e):
+        if self.pair is not None:  # (no title row)
+            paint_card(self, self._hh, inner_frame, lambda gc, w, font=None: None, ("shared",))
+            return
         paint_card(self, self._hh, card_frame, self._draw_header, self._header_key())
+
+    def _view_changed(self):
+        """The x range was changed by the user: the owner is told, and the other plots of the tile follow."""
+        if self.on_view:
+            self.on_view()
+        if self.pair is not None and not self._syncing:
+            self.pair.sync_x(self)
 
     def _header_key(self):
         """What the header shows (text, legend, badge, read-out) and its scale."""
@@ -810,6 +859,13 @@ class PlotCard(wx.Panel):
     def _update_header(self):
         """Header height follows its text (one or two lines)."""
         try:
+            if self.pair is not None:  # no title row: a thin strip above the plot
+                hh = self.FromDIP(1)
+                if hh != self._hh:
+                    self._hh = hh
+                    self.GetSizer().GetItem(0).AssignSpacer(wx.Size(0, hh))
+                    self.Layout()
+                return
             w = self.GetClientSize()[0]
             if w < 50:
                 return
@@ -838,12 +894,206 @@ class PlotCard(wx.Panel):
             self.legend_items = items
             self._update_header()
             self.RefreshRect(wx.Rect(0, 0, self.GetClientSize()[0], self._hh))
+            if self.pair is not None:
+                self.draw()
 
     def _set_readout(self, text):
         if text != self.readout:
             self.readout = text
+            if self.pair is not None:
+                self._shared_readout(text)
+                return
             w = self.GetClientSize()[0]
             self.RefreshRect(wx.Rect(0, 0, w, self._hh))
+
+    def _shared_readout(self, text):
+        """The read-out of a plot without a title row: at the top left inside the plot, drawn over the stored
+        picture of the plot (not in images)."""
+        try:
+            ax = self.ax
+            art = self._ro_art
+            if art is None or art not in ax.texts:
+                if not text:
+                    return
+                art = ax.text(0.006, 0.975, "", transform=ax.transAxes, ha="left", va="top", fontsize=8,
+                              color=C["accent_text"], fontweight="bold", zorder=12,
+                              bbox=dict(boxstyle="square,pad=0.25", fc="white", ec="none", alpha=0.85))
+                art._ui_only = True
+                self._ro_art = art
+                self.add_live(art)
+            art.set_text(text)
+            art.set_visible(bool(text))
+            self.blit_live()
+        except RuntimeError:
+            pass
+
+    # ------------------------------------------- a plot in a tile of several plots
+    SHARED_L = 0.78  # left margin (inches): the y title and the numbers
+    SHARED_DX = 0.64  # the middle of the y title from the frame (inches)
+    SHARED_B = (0.06, 0.27)  # bottom margin without and with the x numbers
+    SHARED_T = 0.05  # top margin
+
+    def _side_base(self):
+        name = self.side_name or self.title or ""
+        if "(%)" in (self._ylabel_orig or ""):
+            name += "  (%)"
+        return name
+
+    def _side_power(self, n):
+        """The y title with the power of ten of the axis (SideFormatter, at every drawing)."""
+        try:
+            self._side_n = n = int(n or 0)
+            txt = self._side_base() + (("  ×10" + ("%d" % n).translate(_SUP)) if n else "")
+            lab = self.ax.yaxis.label
+            if lab.get_text() != txt:
+                lab.set_text(txt)
+            self._side_txt = txt
+        except Exception:
+            pass
+
+    def _info_items(self):
+        """[(colour, text)] of the title row shown as a note in the plot: the legend (except the trace named
+        in the y title), the warning and the subtitle."""
+        side = " " + (self.side_name or "") + " "
+        items = [(col, lab) for col, lab in self.legend_items if lab and (" " + lab + " ") not in side]
+        if self.badge:
+            items.append((self.badge[1], self.badge[0]))
+        if self.subtitle:
+            items.append((C["muted"], " ".join(self.subtitle.split())))
+        return items
+
+    def _unit_shown(self, on):
+        u = getattr(self.ax, "_unit_art", None)
+        if u is not None:
+            u.set_visible(bool(on) and u in self.ax.texts)
+
+    def _shared_look(self, show_x, w_in):
+        """y title (name, power of ten), unit at the right end of the x axis, more x numbers, the note at the
+        top right: made again after every new drawing of the plot (style_axes, cla)."""
+        from matplotlib.ticker import AutoMinorLocator
+        from matplotlib.transforms import ScaledTranslation
+        ax = self.ax
+        # y title
+        lab = ax.yaxis.label
+        if lab.get_text() != self._side_txt:  # (a new drawing: the axis title of style_axes)
+            self._ylabel_orig = lab.get_text()
+            self._side_txt = None
+        if not getattr(ax.yaxis.get_major_formatter(), "_side", False):
+            ax.yaxis.set_major_formatter(_side_formatter(self))
+        ax.yaxis.get_offset_text().set_visible(False)
+        self._side_power(self._side_n)
+        lab.set_fontsize(9.5)
+        lab.set_fontweight("bold")
+        lab.set_color(self.side_colour or INK)
+        lab.set_verticalalignment("center")
+        lab.set_visible(True)
+        ax.yaxis.set_label_coords(0.0, 0.5, transform=ax.transAxes + ScaledTranslation(
+            -self.SHARED_DX, 0.0, self.fig.dpi_scale_trans))
+        # x axis: more numbers, the unit on their line at the right end
+        loc = ax.xaxis.get_major_locator()
+        if hasattr(loc, "dense"):
+            loc.dense = True
+        ml = ax.xaxis.get_minor_locator()
+        if isinstance(ml, AutoMinorLocator) and getattr(ml, "ndivs", None) != 2:
+            ax.xaxis.set_minor_locator(AutoMinorLocator(2))
+        if type(ax.xaxis.get_major_formatter()).__name__ == "ScalarFormatter":
+            ax.xaxis.set_major_formatter(_unit_formatter())
+        xl = ax.xaxis.label.get_text()
+        if xl:
+            self._unit = xl
+            ax.xaxis.label.set_text("")
+        u = getattr(ax, "_unit_art", None)
+        if (u is None or u not in ax.texts) and self._unit:
+            u = ax.text(1.0, 0.0, self._unit, ha="right", va="top", fontsize=9, color=INK, clip_on=False,
+                        style="italic" if self._unit == "m/z" else "normal",
+                        transform=ax.transAxes + ScaledTranslation(0.0, -6.5 / 72.0, self.fig.dpi_scale_trans))
+            u._unit_mark = True
+            ax._unit_art = u
+        elif u is not None and self._unit and u.get_text() != self._unit:
+            u.set_text(self._unit)
+            u.set_fontstyle("italic" if self._unit == "m/z" else "normal")
+        self._unit_shown(show_x)
+        if self._export:
+            return  # (an image being made: the note stays as it is, hidden)
+        # the note: what the title row said
+        items = self._info_items()
+        try:
+            i = self.pair.cards.index(self)
+            if i > 0 and self.pair.cards[i - 1]._info_items() == items:
+                items = []  # (the same as on the plot above)
+        except (ValueError, AttributeError):
+            pass
+        room = max(40.0, 0.86 * (w_in - self.SHARED_L - self.margins[2]) * 72.0)  # (points)
+        key = (tuple(items), round(room))
+        box = self._info_box
+        if box is not None and (key != self._info_key or box not in ax.get_children()):
+            try:
+                box.remove()
+            except Exception:
+                pass
+            box = self._info_box = None
+        self._info_key = key
+        if box is None and items:
+            from matplotlib.offsetbox import AnchoredOffsetbox, HPacker, TextArea
+            parts, used = [], 0.0
+            for j, (col, txt) in enumerate(items):
+                sep = 5.0 + _text_w_pt("·", 8) if j else 0.0
+                tw = _text_w_pt(txt, 8)
+                if used + sep + tw > room:  # (a narrow plot: the text shortened)
+                    while txt and used + sep + _text_w_pt(txt + "…", 8) > room:
+                        txt = txt[:-1]
+                    if not txt.strip():
+                        break
+                    txt = txt.rstrip() + "…"
+                    tw = room
+                if j:
+                    parts.append(TextArea("·", textprops=dict(color=C["muted"], fontsize=8)))
+                parts.append(TextArea(txt, textprops=dict(color=col, fontsize=8)))
+                used += sep + tw
+                if used >= room:
+                    break
+            if parts:
+                box = AnchoredOffsetbox(loc="upper right", child=HPacker(children=parts, align="baseline", pad=0,
+                                                                          sep=5), pad=0.2, borderpad=0.3,
+                                        frameon=True)
+                box.patch.set_facecolor("white")
+                box.patch.set_edgecolor("none")
+                box.patch.set_alpha(0.78)
+                box.set_zorder(8)
+                box._ui_only = True  # (as the title row: not in images)
+                ax.add_artist(box)
+                self._info_box = box
+
+    def _side_title_at(self, dx=None):
+        """In an image: the y title just left of the y numbers, dx inches from the frame (measured when None;
+        the plots of one image use the largest, so their titles line up). Returns dx."""
+        from matplotlib.transforms import ScaledTranslation
+        try:
+            if dx is None:
+                r = self.fig.canvas.get_renderer()
+                ticks = self.ax.yaxis._update_ticks()
+                ws = [t.label1.get_window_extent(r).width for t in ticks
+                      if t.label1.get_visible() and t.label1.get_text()]
+                lab = self.ax.yaxis.label
+                tick = ticks[0].get_tick_padding() + ticks[0].get_pad() if ticks else 6.5   # (points)
+                dx = (max(ws or [0.0]) + 0.5 * lab.get_window_extent(r).width) / self.fig.dpi + \
+                    (tick + 0.45 * lab.get_fontsize()) / 72.0
+            self.ax.yaxis.set_label_coords(0.0, 0.5, transform=self.ax.transAxes + ScaledTranslation(
+                -dx, 0.0, self.fig.dpi_scale_trans))
+            return dx
+        except Exception as ex:
+            _log("y title of an image: %s" % ex)
+            return None
+
+    def _place_shared(self, w, h):
+        show_x = self._export or not self.hide_x
+        l, r, t = self.SHARED_L, self.margins[2], self.SHARED_T
+        b = self.SHARED_B[1] if show_x else self.SHARED_B[0]
+        self.ax.tick_params(axis="x", labelbottom=show_x)
+        self.ax.xaxis.label.set_visible(False)
+        self._shared_look(show_x, w)
+        self.ax.set_position([l / w, b / h, max(0.05, 1 - (l + r) / w), max(0.05, 1 - (b + t) / h)])
+        self._fit_notes(w * (1 - (l + r) / w) * self.fig.dpi)
 
     def _set_plot_tip(self, tip):
         if tip != self._plot_tip:
@@ -922,20 +1172,26 @@ class PlotCard(wx.Panel):
             self.canvas.draw_idle()
 
     # ------------------------------------------------------ image export
-    def _render(self, fmt="png", dpi=None, target=None):
+    def _render(self, fmt="png", dpi=None, target=None, measure=False, align=None, shared=False, height_in=None):
         """The plot as an image: at the journal size of the image settings
-        (width x height in cm, text size in points), or as on screen."""
+        (width x height in cm, text size in points), or as on screen. For the image of a whole tile
+        (PairCard): shared, a plot above another has no x numbers; measure returns its margins (left, right,
+        bottom, inches; None as on screen) and the place of its y title instead; align (left, right, y title)
+        sets them; height_in its height."""
         import io
         from matplotlib.text import Text
         cfg = export_settings()
         dpi = dpi or cfg["dpi"]
+        self._export = not (shared and self.hide_x)
+        self.ax.tick_params(axis="x", labelbottom=self._export or not self.hide_x)
+        self._unit_shown(self._export or not self.hide_x)  # (a plot of a tile of several: the unit of x)
         ui = [a for a in self.fig.findobj() if getattr(a, "_ui_only", False) and a.get_visible()]
         for a in ui:
             a.set_visible(False)
         for a in self.live:
             a.set_animated(False)
         # saved images always carry the axis titles, even from a short tile
-        self.ax.xaxis.label.set_visible(True)
+        self.ax.xaxis.label.set_visible(not (shared and self.hide_x))
         self.ax.yaxis.label.set_visible(True)
         out = target if target is not None else io.BytesIO()
         old_size = self.fig.get_size_inches().copy()
@@ -946,13 +1202,15 @@ class PlotCard(wx.Panel):
         titles = None
         try:
             if cfg["mode"] == "screen":
+                if measure:
+                    return None
                 self.fig.savefig(out, format=fmt, dpi=dpi, facecolor="white", bbox_inches="tight", pad_inches=0.06)
             else:
                 k = float(cfg["text"]) / 10.0  # on screen the axis titles are 10 pt
                 for t in self.fig.findobj(Text):
                     fonts.append((t, t.get_fontsize()))
                     t.set_fontsize(max(6.5, t.get_fontsize() * k))
-                self.fig.set_size_inches(cfg["width_cm"] / 2.54, cfg["height_cm"] / 2.54, forward=False)
+                self.fig.set_size_inches(cfg["width_cm"] / 2.54, height_in or cfg["height_cm"] / 2.54, forward=False)
                 titles = _titles_state(self.fig)
                 fit_axes(self.fig)
                 fit_titles(self.fig)
@@ -962,6 +1220,10 @@ class PlotCard(wx.Panel):
                 a = self._auto
                 if a is not None and self.ylock is None and np.allclose(self.ax.get_ylim(), a[1]):
                     self.autoscale_y(a[0])
+                    fit_axes(self.fig)
+                side_dx = None
+                if self.pair is not None:  # the y title next to the numbers (in an image of the tile: lined up)
+                    side_dx = self._side_title_at(align[2] if align is not None and len(align) > 2 else None)
                     fit_axes(self.fig)
                 if self.relabel_fn is not None:  # labels placed for the image (they overlapped in it)
                     relabeled = True
@@ -977,8 +1239,16 @@ class PlotCard(wx.Panel):
                         # are placed once more for it: names placed for a taller plot ran into each other
                         if abs(self.ax.get_position().height - h0) <= 0.03 * h0:
                             break
+                W = self.fig.get_size_inches()[0]
+                pos = self.ax.get_position()
+                if measure:
+                    return pos.x0 * W, (1.0 - pos.x1) * W, pos.y0 * self.fig.get_size_inches()[1], side_dx
+                if align is not None:  # the plots of a tile one below the other: their frames line up
+                    self.ax.set_position([align[0] / W, pos.y0, max(0.05, 1.0 - (align[0] + align[1]) / W),
+                                          pos.height])
                 self.fig.savefig(out, format=fmt, dpi=dpi, facecolor="white")
         finally:
+            self._export = False
             if titles is not None:
                 _restore_titles(titles)  # their texts (sizes: next line, as before the image)
             for t, fs in fonts:
@@ -1043,6 +1313,9 @@ class PlotCard(wx.Panel):
         for a in self.live:
             a.set_animated(False)
         xl_vis, yl_vis = self.ax.xaxis.label.get_visible(), self.ax.yaxis.label.get_visible()
+        self._export = True
+        self.ax.tick_params(axis="x", labelbottom=True)
+        self._unit_shown(True)
         self.ax.xaxis.label.set_visible(True)
         self.ax.yaxis.label.set_visible(True)
         old_size = self.fig.get_size_inches().copy()
@@ -1062,6 +1335,8 @@ class PlotCard(wx.Panel):
             self.ax.xaxis.label.set_visible(True)
             self.ax.yaxis.label.set_visible(True)
             titles = _titles_state(self.fig)
+            if self.pair is not None:
+                self._side_title_at()
             fit_axes(self.fig)
             fit_titles(self.fig)
             fit_axes(self.fig)
@@ -1090,6 +1365,7 @@ class PlotCard(wx.Panel):
                 a.set_visible(True)
             for a in self.live:
                 a.set_animated(self._blit_ok)
+            self._export = False
             self.ax.xaxis.label.set_visible(xl_vis)
             self.ax.yaxis.label.set_visible(yl_vis)
             if relabel is not None:
@@ -1166,6 +1442,9 @@ class PlotCard(wx.Panel):
             w, h = self.fig.get_size_inches()
             if w <= 0.3 or h <= 0.3:
                 return
+            if self.pair is not None:
+                self._place_shared(w, h)
+                return
             l, b, r, t = self.margins
             if self.ax.get_title(loc="right") or self.ax.get_title(loc="left") or self.ax.get_title():
                 t = max(t, 0.30)  # room for a caption above the plot
@@ -1174,6 +1453,12 @@ class PlotCard(wx.Panel):
                 l, b, t = min(l, 0.68), 0.34, min(t, 0.30)
             self.ax.xaxis.label.set_visible(not compact)
             self.ax.yaxis.label.set_visible(not compact)
+            if self.hide_x:
+                # the plot below in the tile has the x numbers and title (an image of this plot alone has them)
+                self.ax.tick_params(axis="x", labelbottom=self._export)
+                if not self._export:
+                    b = 0.10
+                    self.ax.xaxis.label.set_visible(False)
             self.ax.set_position([l / w, b / h, max(0.05, 1 - (l + r) / w), max(0.05, 1 - (b + t) / h)])
             self._fit_notes(w * (1 - (l + r) / w) * self.fig.dpi)
         except Exception:
@@ -1308,8 +1593,11 @@ class PlotCard(wx.Panel):
         import undo
         items = list(items) + [(None, None)] + undo.menu_items(top)  # Undo: <step> (Ctrl+Z), Redo (Ctrl+Y)
         items = list(items) + [(None, None), ("Copy image (Ctrl+C)", self.copy_image),
-                               ("Save image as\u2026 (Ctrl+S)", self.save_image),
-                               ("Image size for copy and save\u2026", lambda: ask_export_settings(self))]
+                               ("Save image as\u2026 (Ctrl+S)", self.save_image)]
+        if self.pair is not None:  # (the entries above: this plot only)
+            items += [("Copy image of both plots", self.pair.copy_image),
+                      ("Save image of both plots as\u2026", self.pair.save_image)]
+        items += [("Image size for copy and save\u2026", lambda: ask_export_settings(self))]
         if _stack_of(self) is not None:
             items += tile_menu(self)
         menu = build_menu(self, items)
@@ -1385,8 +1673,7 @@ class PlotCard(wx.Panel):
                 e.xdata, e.ydata, inside = cx, cy, True
         if kind == "pan":
             self.canvas.draw_idle()
-            if self.on_view:
-                self.on_view()
+            self._view_changed()
             return
         if kind == "zoom":
             px, py = p[3], p[4]
@@ -1394,8 +1681,7 @@ class PlotCard(wx.Panel):
                 self.ax.set_xlim(min(p[1], e.xdata), max(p[1], e.xdata))
                 self.ax.set_ylim(min(p[2], e.ydata), max(p[2], e.ydata))
                 self.ylock = self.ax.get_ylim()
-                if self.on_view:
-                    self.on_view()
+                self._view_changed()
             self.canvas.draw_idle()
             return
         if kind == "click":
@@ -1429,8 +1715,7 @@ class PlotCard(wx.Panel):
             self.ylock = None
             self.autoscale_y()
             self.canvas.draw_idle()
-            if self.on_view:
-                self.on_view()
+            self._view_changed()
         elif self.on_range:
             self.on_range(a, b, shift)
         else:
@@ -1450,8 +1735,7 @@ class PlotCard(wx.Panel):
             self.ylock = None
             self.autoscale_y()
             self.canvas.draw_idle()
-            if self.on_view:
-                self.on_view()
+            self._view_changed()
 
     def reset_view(self):
         self.ylock = None
@@ -1459,8 +1743,7 @@ class PlotCard(wx.Panel):
             self.ax.set_xlim(*self.full)
         self.autoscale_y()
         self.canvas.draw_idle()
-        if self.on_view:
-            self.on_view()
+        self._view_changed()
 
     def autoscale_y(self, pad=0.08):
         """y range from the visible part of the lines (unless the y range was
@@ -1516,6 +1799,178 @@ class PlotCard(wx.Panel):
                     lo = hi - (b - a)
             self.ax.set_ylim(lo, hi)
             self._auto = None
+
+
+class PairCard(wx.Panel):
+    """One tile with plots one below the other that share the x axis (the positive and the negative ions of a
+    file): each plot is a PlotCard of its own (mouse, tools, menus, images of that plot alone), drawn without its
+    own card and title row (its name and the power of ten of its y axis are its y title, the text of the title
+    row a note inside the plot); the x numbers and the unit only under the lowest. Zooming one plot zooms the
+    others."""
+
+    own_refresh = True   # (paints itself again when resized: place_panes)
+
+    def __init__(self, parent, title):
+        wx.Panel.__init__(self, parent, style=wx.BORDER_NONE)
+        self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+        self.SetBackgroundColour(C["bg"])
+        self.title = title  # (Closed tiles, file names of images)
+        self.cards = []
+        self.Bind(wx.EVT_PAINT, self._paint)
+        self.Bind(wx.EVT_SIZE, lambda e: (self.relayout(), e.Skip()))
+        self.Bind(wx.EVT_MOUSEWHEEL, lambda e: forward_wheel(self, e))
+
+    def set_cards(self, cards):
+        self.cards = list(cards)
+        for i, c in enumerate(self.cards):
+            c.pair = self
+            c.hide_x = i < len(self.cards) - 1
+            c.set_shared()
+        self.relayout()
+
+    def relayout(self):
+        w, h = self.GetClientSize()
+        n = len(self.cards)
+        if not n or w < 10 or h < 10:
+            return
+        sx, top, bot = self.FromDIP(4), self.FromDIP(3), self.FromDIP(7)
+        inner = max(n, h - top - bot)
+        # the x numbers under the lowest plot (its bottom margin minus that of the others): frames of one height
+        try:
+            dpi = float(self.cards[-1].fig.dpi)
+        except Exception:
+            dpi = float(self.FromDIP(100))
+        b0, b1 = PlotCard.SHARED_B
+        extra = min(int(round((b1 - b0) * dpi)), inner // 3)
+        each = max(1, (inner - extra) // n)
+        rects, y = [], top
+        for i, c in enumerate(self.cards):
+            ch = each if i < n - 1 else inner - each * (n - 1)
+            rects.append((c, (sx, y, max(1, w - 2 * sx), max(1, ch))))
+            y += ch
+        place_panes(self, rects)
+
+    def _paint(self, e):
+        paint_card(self, self.FromDIP(12) + 4, card_frame, lambda gc, w, font=None: None, ("tile",))
+
+    def sync_x(self, src):
+        """The other plots at the x range of src (and their y ranges made again)."""
+        xl = src.ax.get_xlim()
+        for c in self.cards:
+            if c is src or not c.full:
+                continue
+            c._syncing = True
+            try:
+                c.ax.set_xlim(*xl)
+                c.ylock = None
+                c.autoscale_y()
+                if c.on_view:
+                    c.on_view()
+                c.draw()
+            except RuntimeError:
+                pass
+            finally:
+                c._syncing = False
+
+    # ------------------------------------------------------ image of the whole tile
+    def _image(self, fmt):
+        """The plots one below the other as one image (PNG, TIFF or SVG), each at the size of the image
+        settings (the upper ones without x numbers), their frames lined up."""
+        import io
+        cards = [c for c in self.cards if c.full is not None] or list(self.cards)
+        meas = [c._render("png", measure=True, shared=True) for c in cards]
+        align = None
+        if all(m is not None for m in meas):
+            dx = [m[3] for m in meas if m[3] is not None]
+            align = (max(m[0] for m in meas), max(m[1] for m in meas), max(dx) if dx else None)
+        cfg = export_settings()
+        h_in = float(cfg["height_cm"]) / 2.54
+        parts = []
+        for i, c in enumerate(cards):
+            last = i == len(cards) - 1
+            hi = None if (last or meas[-1] is None) else max(0.6, h_in - meas[-1][2] + 0.08)
+            parts.append(c._render("svg" if fmt == "svg" else "png", align=align, shared=True,
+                                   height_in=hi).getvalue())
+        if fmt == "svg":
+            return _stack_svg(parts)
+        from PIL import Image
+        ims = [Image.open(io.BytesIO(b)).convert("RGB") for b in parts]
+        W = max(im.width for im in ims)
+        out = Image.new("RGB", (W, sum(im.height for im in ims)), "white")
+        y = 0
+        for im in ims:
+            out.paste(im, (0, y))
+            y += im.height
+        buf = io.BytesIO()
+        dpi = int(cfg["dpi"])
+        out.save(buf, format="TIFF" if fmt in ("tif", "tiff") else "PNG", dpi=(dpi, dpi))
+        return buf.getvalue()
+
+    def _name(self):
+        name = None
+        try:
+            name = self.cards[0].image_name() if self.cards and self.cards[0].image_name else None
+        except Exception:
+            name = None
+        if name and "_pos" in name:
+            return name.replace("_pos", "_pos_neg", 1)
+        frame = wx.GetTopLevelParent(self)
+        base = frame.base_name() if hasattr(frame, "base_name") else "plot"
+        return (name or base) + "_" + "".join(ch if ch.isalnum() else "_" for ch in self.title.lower()).strip("_")
+
+    def copy_image(self):
+        try:
+            data = self._image("png")
+            how = copy_png_to_clipboard(self, data)
+            msg = "Image of both plots copied: paste it with Ctrl+V"
+            _status(self, msg)
+            toast(self, msg)
+            _log("copy image of a tile: %d bytes, %s" % (len(data), how))
+        except Exception as ex:
+            _report_error(self, "The image could not be copied", ex)
+
+    def save_image(self):
+        try:
+            frame = wx.GetTopLevelParent(self)
+            name = safe_file_name(self._name())
+            wild = "PNG image (*.png)|*.png|TIFF image (*.tif)|*.tif|SVG, vector (*.svg)|*.svg"
+            if hasattr(frame, "ask_save"):
+                path = frame.ask_save("Save image of both plots", name + ".png", wild)
+            else:
+                path = ask_save_file(frame, "Save image of both plots", name + ".png", wild)
+            if not path:
+                return
+            fmt = os.path.splitext(path)[1].lower().lstrip(".")
+            if fmt not in ("png", "tif", "tiff", "svg"):
+                fmt = "png"
+                path += ".png"
+            data = self._image(fmt)
+            with open(path, "wb") as fh:
+                fh.write(data)
+            _status(self, "Saved " + path)
+            toast(self, "Saved %s\nin %s" % (os.path.basename(path), os.path.dirname(path)))
+        except Exception as ex:
+            _report_error(self, "The image could not be saved", ex)
+
+
+def _stack_svg(parts):
+    """SVG images (bytes) one below the other in one SVG."""
+    import re
+    inner, W, H = [], 0.0, 0.0
+    for b in parts:
+        t = b.decode("utf-8")
+        t = re.sub(r"<\?xml[^>]*\?>", "", t)
+        t = re.sub(r"<!DOCTYPE[^>]*>", "", t, flags=re.S)
+        m = re.search(r"<svg\b[^>]*>", t)
+        head = m.group(0)
+        w = float(re.search(r'width="([\d.]+)', head).group(1))
+        h = float(re.search(r'height="([\d.]+)', head).group(1))
+        inner.append(t[:m.start()] + head.replace("<svg", '<svg x="0" y="%g"' % H, 1) + t[m.end():])
+        W, H = max(W, w), H + h
+    out = ('<?xml version="1.0" encoding="utf-8" standalone="no"?>\n'
+           '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" '
+           'width="%gpt" height="%gpt" viewBox="0 0 %g %g">\n' % (W, H, W, H)) + "\n".join(inner) + "\n</svg>\n"
+    return out.encode("utf-8")
 
 
 _MPL_READY = []
@@ -2113,7 +2568,7 @@ def tile_shape(pane, width):
         tw = sum(pane.weights) or 1.0
         wmax = max(w for p, w in zip(pane.panes, pane.weights)) / tw
         return width * wmax * aspect
-    if isinstance(pane, PlotCard):
+    if isinstance(pane, (PlotCard, PairCard)):
         return width * aspect
     return None
 
@@ -2184,10 +2639,13 @@ def _spaced_locator(spacing_pt=32.0):
 def _x_locator(steps=(1, 2, 2.5, 5, 10)):
     """At most 8 labelled ticks on the x axis, fewer where the plot is too narrow for their numbers
     (a copied journal sized image of a mass spectrum had its 5 digit numbers run into each other).
-    steps: the tick steps allowed (times: without 2.5, which gave 2.5, 5.0, 7.5 min)."""
+    steps: the tick steps allowed (times: without 2.5, which gave 2.5, 5.0, 7.5 min). dense (set on the
+    locator): about twice as many numbers (the plots of a tile of several plots), still apart."""
     from matplotlib.ticker import MaxNLocator
 
     class WidthLocator(MaxNLocator):
+        dense = False
+
         def __call__(self):
             try:
                 ax = self.axis.axes
@@ -2197,12 +2655,84 @@ def _x_locator(steps=(1, 2, 2.5, 5, 10)):
                 lo, hi = self.axis.get_view_interval()
                 digits = len("%d" % max(abs(lo), abs(hi))) + (2 if abs(hi - lo) < 10 else 0)
                 fs = float(self.axis._major_tick_kw.get("labelsize", 9) or 9)
-                each = digits * 0.62 * fs + 1.6 * fs  # a number and the gap to the next
-                self.set_params(nbins=int(max(2, min(8, w_pt // each))))
+                each = digits * 0.62 * fs + (1.2 if self.dense else 1.6) * fs  # a number and the gap to the next
+                self.set_params(nbins=int(max(2, min(16 if self.dense else 8, w_pt // each))))
             except Exception:
                 pass
             return MaxNLocator.__call__(self)
     return WidthLocator(nbins=8, steps=list(steps))
+
+
+_TEXT_W = {}
+
+
+def _text_w_pt(s, size, italic=False):
+    """Width of a text in points at size (the plot font), measured without drawing."""
+    key = (s, round(float(size), 2), bool(italic))
+    w = _TEXT_W.get(key)
+    if w is None:
+        from matplotlib.textpath import text_to_path
+        from matplotlib.font_manager import FontProperties
+        w = text_to_path.get_text_width_height_descent(
+            s, FontProperties(size=size, style="italic" if italic else "normal"), ismath=False)[0]
+        if len(_TEXT_W) > 2000:
+            _TEXT_W.clear()
+        _TEXT_W[key] = w
+    return w
+
+
+_SUP = str.maketrans("0123456789-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁻")
+
+
+def _side_formatter(card):
+    """y numbers of a plot in a tile of several plots: divided by the power of ten of the axis, which is
+    written in the y title of the plot (no ×10ⁿ above the axis); the title follows every zoom."""
+    import weakref
+    from matplotlib.ticker import ScalarFormatter
+
+    class SideFormatter(ScalarFormatter):
+        def set_locs(self, locs):
+            ScalarFormatter.set_locs(self, locs)
+            c = ref()
+            if c is not None:
+                c._side_power(self.orderOfMagnitude)
+
+    ref = weakref.ref(card)
+    f = SideFormatter(useOffset=False, useMathText=True)
+    f.set_powerlimits((-3, 4))
+    f._side = True
+    return f
+
+
+def _unit_formatter():
+    """x numbers of a plot with its unit at the right end of the axis (on the line of the numbers): a number
+    that the unit would cover is left out (worked out again at every drawing, so also after a zoom)."""
+    from matplotlib.ticker import ScalarFormatter
+
+    class UnitFormatter(ScalarFormatter):
+        def __call__(self, x, pos=None):
+            s = ScalarFormatter.__call__(self, x, pos)
+            try:
+                ax = self.axis.axes
+                u = getattr(ax, "_unit_art", None)
+                if not s or u is None or not u.get_visible() or not u.get_text() or u not in ax.texts:
+                    return s
+                k = ax.figure.dpi / 72.0
+                ticks = self.axis.majorTicks
+                fs = ticks[0].label1.get_fontsize() if ticks else 9.0
+                px = ax.transData.transform((x, 0.0))[0]
+                half = 0.5 * _text_w_pt(s, fs) * k
+                uw = _text_w_pt(u.get_text(), u.get_fontsize(), u.get_style() == "italic") * k
+                if px + half > ax.bbox.x1 - uw - 0.6 * fs * k:
+                    return ""
+            except Exception:
+                pass
+            return s
+
+    f = UnitFormatter(useOffset=False)
+    f.set_scientific(False)
+    f._unit = True
+    return f
 
 
 def _titles_state(fig):
@@ -2995,7 +3525,7 @@ def plot_floor(win, view_h):
 
 
 def _is_plot_tile(p):
-    if isinstance(p, PlotCard):
+    if isinstance(p, (PlotCard, PairCard)):
         return True
     return isinstance(p, SplitBox) and any(isinstance(q, PlotCard) for q in p.panes)
 
@@ -3475,6 +4005,11 @@ class StackBox(wx.Panel):
                     # a tile can ask for its own size (HRMS: the deconvolution
                     # result rows at full size while the others are at half)
                     sc_i = getattr(p, "tile_scale", None) or sc
+                    if isinstance(p, PairCard):
+                        # several plots in one tile: half the window at half size (the chromatograms and the
+                        # spectra of both polarities in one window), the whole window at journal proportions
+                        out[i] = int(max(self.min, low, sc_i * (H - self.gap)))
+                        continue
                     out[i] = int(max(self.min, low, sc_i * min(want, 0.62 * H)))
             return out
         free = [i for i in range(n) if out[i] is None]
@@ -4008,6 +4543,12 @@ class TabBase(wx.Panel):
                        edgecolor="#FFFFFF")._range_mark = True
         extra = self.chrom_extras(ax, scale_of, v) or []
         card.set_legend([(tr["color"], tr["label"]) for tr in v.traces] + list(extra))
+        if card.pair is not None and lo is not None:  # the plots of a tile share the time axis: the full view
+            for o in self.views:
+                if o is not v and o.card.pair is card.pair:
+                    for tr in o.traces:
+                        if len(tr["t"]):
+                            lo, hi = min(lo, tr["t"][0]), max(hi, tr["t"][-1])
         card.full = (lo, hi)
         ax.set_xlim(*(view if view else card.full))
         card.autoscale_y()
@@ -4407,6 +4948,53 @@ def _pol_name(pol, e):
 SPEC_WILDCARD = "Text, m/z and intensity (*.txt)|*.txt|JCAMP-DX (*.jdx)|*.jdx"
 
 
+def shared_mz_range(data, cols):
+    """The m/z range of the full view of the spectra of cols (scan events of data): the acquired range,
+    the same for the plots of one tile (they share the m/z axis)."""
+    lo = hi = None
+    for c in cols:
+        e = c["e"]
+        ev = data.events[e] if data is not None and e is not None and e < len(data.events) else {}
+        sp = c.get("spec")
+        a = ev.get("mz_low") or (float(sp[:, 0].min()) if sp is not None and len(sp) else None)
+        b = ev.get("mz_high") or (float(sp[:, 0].max()) if sp is not None and len(sp) else None)
+        if a is None or b is None:
+            continue
+        lo, hi = (a, b) if lo is None else (min(lo, a), max(hi, b))
+    if lo is None:
+        return 0.0, 1.0
+    return (lo, hi) if hi > lo else (lo - 1.0, hi + 1.0)
+
+
+def ask_mz_range(win, card):
+    """A small window for the m/z range of a spectrum (the other spectra of its tile follow)."""
+    if not card.full:
+        return
+    x0, x1 = card.ax.get_xlim()
+    v = ask_form(win, "m/z range", [dict(key="lo", label="From", value="%.6g" % x0, unit="m/z"),
+                                    dict(key="hi", label="To", value="%.6g" % x1, unit="m/z")], ok="Show")
+    if v is None:
+        return
+    a, b = _num_s(v["lo"], None), _num_s(v["hi"], None)
+    if a is None or b is None or a == b:
+        win.status("Enter the lower and the upper m/z")
+        return
+    set_mz_range(card, min(a, b), max(a, b))
+
+
+def set_mz_range(card, a, b):
+    card.ax.set_xlim(a, b)
+    card.ylock = None
+    card.autoscale_y()
+    card.draw()
+    card._view_changed()
+
+
+def mz_range_items(win, card):
+    """Menu entries of a spectrum: m/z range (a small window) and the full m/z range."""
+    return [("m/z range\u2026", lambda: ask_mz_range(win, card)), ("Full m/z range", card.reset_view)]
+
+
 def spec_nearest_peak(spec, xlim, x, pick_min):
     """m/z of the strongest point near x (within 1/150 of the view, at least pick_min), or None."""
     if spec is None or not len(spec):
@@ -4445,18 +5033,18 @@ def measure_text(m1, m2, sign):
     return "Δ %.2f m/z" % d
 
 
-def draw_spectrum(card, spec, full, sticks, view=None, n_labels=8, fmt="%.1f", refine=None):
+def draw_spectrum(card, spec, full, sticks, view=None, n_labels=8, fmt="%.1f", refine=None, color=TRACE):
     """The spectrum as a profile line or as sticks, over the full view (x0, x1) or the view kept, the y
     range made automatically and the n strongest maxima labelled; returns the labels."""
     ax = card.ax
     mz, it = spec[:, 0], spec[:, 1]
     if sticks:
         from ms_plot_render import SpectrumSticks
-        artist = SpectrumSticks(mz, it, color=TRACE, linewidth=LW_STICK)
+        artist = SpectrumSticks(mz, it, color=color, linewidth=LW_STICK)
         ax.add_collection(artist, autolim=False)
         card.extra_scale = [artist.full_data()]
     else:
-        plot_trace(ax, mz, it, color=TRACE, lw=LW_SPEC)
+        plot_trace(ax, mz, it, color=color, lw=LW_SPEC)
     card.full = full
     ax.set_xlim(*(view if view else card.full))
     card.autoscale_y(pad=0.12)
@@ -4592,7 +5180,7 @@ def open_spectrum_in_deconvolute(win, owner, spec, name, sign, rng):
 
 
 # ==========================================================================
-# MS tab: one tile per scan event (positive and negative side by side)
+# MS tab: the tiles of the scan events one below the other (positive, negative)
 # ==========================================================================
 class MSTab(TabBase):
     ylabel = "Intensity"
@@ -4682,7 +5270,7 @@ class MSTab(TabBase):
 
         self.kind.Bind(wx.EVT_CHOICE, self.on_update)
         self.xic_mode.Bind(wx.EVT_CHOICE, self.on_update)
-        self.spec_style.Bind(wx.EVT_CHOICE, lambda e: [self.plot_spec(c, keep_view=True) for c in self.cols])
+        self.spec_style.Bind(wx.EVT_CHOICE, lambda e: self._style_changed())
         self.norm.Bind(wx.EVT_CHECKBOX, lambda e: self.plot_chroms(keep_view=True))
         for c in self.xic_fields + [self.tol]:
             c.Bind(wx.EVT_TEXT_ENTER, self.on_update)
@@ -4744,32 +5332,24 @@ class MSTab(TabBase):
         self._layout_rows()
 
     # ------------------------------------------------------------ layout
-    def _col_weights(self):
-        return list(self.row_main.weights) if getattr(self, "row_main", None) and self.row_main.weights else None
-
-    def _sync_cols(self, weights):
-        for row in [self.row_main, self.row_spec] + self.xic_rows:
-            if len(row.panes) == len(weights):
-                row.weights = list(weights)
-                row.relayout()
-
     def _build_cols(self, n):
+        """The tiles of n scan events: with one event a chromatogram tile and a spectrum tile, with more one
+        tile of chromatograms and one of spectra, each with a plot per event one below the other (PairCard);
+        mass chromatograms in between (_build_xic_rows)."""
         keep = {self.bottom} | {r for row, t, w in self.extras.values() for r in _extra_rows(row)}
-        for w in list(self.rows.panes):
+        for w in list(self.rows.all_panes):
             if w not in keep:
                 w.Destroy()
         self.cols, self.views, self.xic_views, self.xic_rows = [], [], [], []
         self._xic_sig = None
-        self.row_main = SplitBox(self.rows, wx.HORIZONTAL)
-        self.row_spec = SplitBox(self.rows, wx.HORIZONTAL)
-        for row in (self.row_main, self.row_spec):
-            row.on_change = self._sync_cols
+        self.chrom_tile = PairCard(self.rows, "Chromatograms") if n > 1 else None
+        self.spec_tile = PairCard(self.rows, "Mass spectra") if n > 1 else None
         for e in range(n):
-            card = PlotCard(self.row_main, "Chromatogram", "", mode="range")
+            card = PlotCard(self.chrom_tile or self.rows, "Chromatogram", "", mode="range")
             view = ChromView(self, card, e)
             view.kind, view.xic, view.file_tag = "main", None, ""
             card.image_name = lambda v=view: self._chrom_image_name(v)
-            spc = PlotCard(self.row_spec, "Mass spectrum", "", mode="zoom")
+            spc = PlotCard(self.spec_tile or self.rows, "Mass spectrum", "", mode="zoom")
             col = {"e": e, "view": view, "spec_card": spc, "spec": None, "desc": "", "range": None}
             spc.on_menu = lambda x, y, c=col: self.spec_menu(x, y, c)
             spc.on_view = lambda c=col: self.plot_spec(c, keep_view=True)
@@ -4779,14 +5359,28 @@ class MSTab(TabBase):
             spc.tools_supported = {"xic", "measure", "label"}
             spc.on_tool = lambda tool, kind, x, y, c=col: self.spec_tool(c, tool, x, y)
             self.cols.append(col)
-        self.row_main.set_panes([c["view"].card for c in self.cols], [1] * n)
-        self.row_spec.set_panes([c["spec_card"] for c in self.cols], [1] * n)
+        if n > 1:
+            self.chrom_tile.set_cards([c["view"].card for c in self.cols])
+            self.spec_tile.set_cards([c["spec_card"] for c in self.cols])
+        # the tile of the chromatograms and the one of the spectra (reveal, tests)
+        self.row_main, self.row_spec = self._chrom_tiles()[0] if n else None, self._spec_tiles()[0] if n else None
         self._layout_rows()
+
+    def _chrom_tiles(self):
+        return [self.chrom_tile] if getattr(self, "chrom_tile", None) else [c["view"].card for c in self.cols]
+
+    def _spec_tiles(self):
+        return [self.spec_tile] if getattr(self, "spec_tile", None) else [c["spec_card"] for c in self.cols]
+
+    def ev_colour(self, e):
+        """Colour of the traces and spectra of scan event e: negative ions red when both polarities are shown."""
+        return NEG_COL if len(self.cols) > 1 and self.pol(e) == "-" else TRACE
 
     def _layout_rows(self):
         defaults = {"main": 4.0, "xic": 3.0, "spec": 4.0, "table": 2.2}
-        panes = [self.row_main] + self.xic_rows + [self.row_spec]
-        kinds = ["main"] + ["xic"] * len(self.xic_rows) + ["spec"]
+        chroms, specs = self._chrom_tiles(), self._spec_tiles()
+        panes = chroms + self.xic_rows + specs
+        kinds = ["main"] * len(chroms) + ["xic"] * len(self.xic_rows) + ["spec"] * len(specs)
         tables = [getattr(self, "hrms_details", self.table)]
         for key in ("dec", "cal"):
             if key in self.extras:
@@ -4805,6 +5399,93 @@ class MSTab(TabBase):
         self.rows.set_panes(panes, weights)
         self.scroller.refit()
         self.views = [c["view"] for c in self.cols] + self.xic_views
+
+    def _xic_groups(self, lists):
+        """The mass chromatograms shown, in tiles: the same m/z in several events in one tile. [[(e, x)]], in
+        the order of the lists (the first of each event, then the second, ...)."""
+        groups, where = [], {}
+        for k in range(max([len(x) for x in lists] + [0])):
+            for e, mlist in enumerate(lists):
+                if k >= len(mlist):
+                    continue
+                x = mlist[k]
+                key = round(float(x["mz"]), 4)
+                g = where.get(key)
+                if g is None or any(e2 == e for e2, x2 in groups[g]):
+                    where[key] = g = len(groups)
+                    groups.append([])
+                groups[g].append((e, x))
+        return groups
+
+    def _tile_members(self):
+        """What each tile of the column now holds: a set of ("main", e), ("xic", e, m/z), ("spec", e),
+        ("extra", j) or ("bottom",) (old_layouts)."""
+        evs = [c["e"] for c in self.cols]
+        out = [{("main", e) for e in evs}] if getattr(self, "chrom_tile", None) else [{("main", e)} for e in evs]
+        lists = [self.xic_shown(e) for e in evs] if self.xic_mode.GetSelection() == 0 else [[] for e in evs]
+        for g in self._xic_groups(lists):
+            out.append({("xic", evs[i], round(float(x["mz"]), 4)) for i, x in g})
+        out += [{("spec", e) for e in evs}] if getattr(self, "spec_tile", None) else [{("spec", e)} for e in evs]
+        n_extra = len(self.rows.all_panes) - len(out) - 1  # deconvolution and calibration rows
+        out += [{("extra", j)} for j in range(max(0, n_extra))] + [{("bottom",)}]
+        return out
+
+    def old_layouts(self, old, version=1):
+        """Tile layouts of an analysis saved before the plots of the scan events shared tiles
+        (ms_project.set_views), as the tiles are now. 4.5 and older (version 1): the chromatograms of the
+        events were one row of tiles side by side, the spectra another and each row of mass chromatograms held
+        one tile per event; after the column and the bottom row came these rows (in the order they were made)
+        and the rows of the deconvolution results. Version 2: a tile per plot, one below the other.
+        [] when it cannot be told."""
+        n = len(self.cols)
+        evs = [c["e"] for c in self.cols]
+        lists = [self.xic_shown(e) for e in evs] if self.xic_mode.GetSelection() == 0 else [[] for e in evs]
+        new = self._tile_members()
+        n_extra = sum(1 for m in new if next(iter(m))[0] == "extra")
+        if not old or not n:
+            return []
+        stack = old[0]
+        units = []  # per tile of the old column: [(member, closed)]
+        if version >= 2:
+            units += [[(("main", e), False)] for e in evs]
+            for k in range(max([len(x) for x in lists] + [0])):
+                units += [[(("xic", e, round(float(lists[i][k]["mz"]), 4)), False)] for i, e in enumerate(evs)
+                          if k < len(lists[i])]
+            units += [[(("spec", e), False)] for e in evs]
+            rest = list(old[2:])
+        else:
+            if len(old) < 4 or len(old[2]["weights"]) != n or len(old[3]["weights"]) != n:
+                return []
+            main, spec, rest = old[2], old[3], list(old[4:])
+            k = max([len(x) for x in lists] + [0])
+            # the rows of mass chromatograms: k rows of one tile per event, one after the other
+            p = next((i for i in range(len(rest) - k + 1) if all(len(r["weights"]) == n for r in rest[i:i + k])),
+                     None)
+            if p is None:
+                return []
+            xrows, rest = rest[p:p + k], rest[:p] + rest[p + k:]
+            units.append([(("main", e), i in main["closed"]) for i, e in enumerate(evs)])
+            for j in range(k):
+                units.append([(("xic", e, round(float(lists[i][j]["mz"]), 4)), i in xrows[j]["closed"])
+                              for i, e in enumerate(evs) if j < len(lists[i])])
+            units.append([(("spec", e), i in spec["closed"]) for i, e in enumerate(evs)])
+        units += [[(("extra", j), False)] for j in range(n_extra)] + [[(("bottom",), False)]]
+        if len(stack["weights"]) != len(units):
+            return []
+        frac = {int(i): v for i, v in stack["frac"].items()}
+        closed = set()
+        for i, u in enumerate(units):
+            closed |= {m for m, c in u if c or i in stack["closed"]}
+        out = dict(weights=[], closed=[], frac={})
+        for j, mem in enumerate(new):
+            hit = [i for i, u in enumerate(units) if any(m in mem for m, c in u)]
+            out["weights"].append(stack["weights"][hit[0]] if hit else 3.0)
+            if hit and mem <= closed:
+                out["closed"].append(j)
+            fr = [frac[i] for i in hit if i in frac]
+            if fr:
+                out["frac"][j] = min(0.95, sum(fr))
+        return [out, old[1]] + rest
 
     def xic_shown(self, e):
         """The mass chromatograms of an event that are drawn (not hidden in the files panel tree)."""
@@ -4829,28 +5510,25 @@ class MSTab(TabBase):
             row.Destroy()
         self.xic_rows, self.xic_views = [], []
         if stacked:
-            cw = self._col_weights() or [1] * len(self.cols)
-            for k in range(max([len(x) for x in lists] + [0])):
-                row = SplitBox(self.rows, wx.HORIZONTAL)
-                row.on_change = self._sync_cols
-                panes = []
-                for col, mlist in zip(self.cols, lists):
-                    if k < len(mlist):
-                        x = mlist[k]
-                        card = PlotCard(row, ("m/z " + self.PIN_FMT + " %s") % (x["mz"], self.ev_short(col["e"])), "",
-                                        mode="range")
-                        v = ChromView(self, card, col["e"])
-                        v.kind, v.xic = "xic", x
-                        v.file_tag = "_mz%g_%s" % (x["mz"], {"+": "pos", "-": "neg"}.get(self.pol(col["e"]), "ev"))
-                        card.image_name = lambda v=v: self._chrom_image_name(v)
-                        self.xic_views.append(v)
-                        panes.append(card)
-                    else:
-                        blank = wx.Panel(row, style=wx.BORDER_NONE)
-                        blank.SetBackgroundColour(C["bg"])
-                        panes.append(blank)
-                row.set_panes(panes, cw)
-                self.xic_rows.append(row)
+            # a tile per m/z: the same m/z of several events one below the other in it
+            for g in self._xic_groups(lists):
+                tile = PairCard(self.rows, ("m/z " + self.PIN_FMT) % g[0][1]["mz"]) if len(g) > 1 else None
+                cards = []
+                for i, x in g:
+                    col = self.cols[i]
+                    card = PlotCard(tile or self.rows, ("m/z " + self.PIN_FMT + " %s") % (
+                        x["mz"], self.ev_short(col["e"])), "", mode="range")
+                    v = ChromView(self, card, col["e"])
+                    v.kind, v.xic = "xic", x
+                    v.file_tag = "_mz%g_%s" % (x["mz"], {"+": "pos", "-": "neg"}.get(self.pol(col["e"]), "ev"))
+                    card.image_name = lambda v=v: self._chrom_image_name(v)
+                    self.xic_views.append(v)
+                    cards.append(card)
+                if tile is not None:
+                    tile.set_cards(cards)
+                    self.xic_rows.append(tile)
+                else:
+                    self.xic_rows += cards
         self._layout_rows()
 
     def _chrom_image_name(self, v):
@@ -4941,6 +5619,9 @@ class MSTab(TabBase):
                 if stacked:
                     for v in self.xic_views:
                         if v.key == ev and xic_key(v.xic) == xic_key(x):
+                            if v.card.pair is not None:  # (with the same m/z of the other polarity: its colour)
+                                tr["color"] = self.ev_colour(ev)
+                            v.card.side_name, v.card.side_colour = short + " XIC", tr["color"]
                             v.traces = [tr]
                             v.card.set_title(("m/z " + self.PIN_FMT + " %s") % (x["mz"], short),
                                              "window " + xic_window_text(x))
@@ -4949,13 +5630,16 @@ class MSTab(TabBase):
             for i, tr in enumerate(traces):
                 tr["color"] = tr.get("color") or (TRACE if i == 0 else PAL[i % len(PAL)])
             if traces:
-                traces[0]["color"] = TRACE if k in (0, 1) else traces[0]["color"]
+                traces[0]["color"] = self.ev_colour(ev) if k in (0, 1) else traces[0]["color"]
             col["view"].traces = traces
             col["view"].file_tag = "_" + {"+": "pos", "-": "neg"}.get(self.pol(ev), "ev%d" % (ev + 1))
             e_ = self.data.events[ev]
             sub = "m/z %g to %g" % (e_["mz_low"], e_["mz_high"]) if e_["mz_low"] else ""
             if n >= 3:
                 sub += (", " if sub else "") + "smoothed (%d points)" % n
+            # (a tile of both polarities: the y title of the plot)
+            col["view"].card.side_name = short + " " + ("TIC", "BPC", "XIC")[min(k, 2)]
+            col["view"].card.side_colour = self.ev_colour(ev)
             col["view"].card.set_title(_pol_name(self.pol(ev), ev) if self.pol(ev) or not getattr(
                 self.data, "labels", None) else self.data.event_label(ev), sub)  # (labels: lcms_sources)
         self.update_trace_choice()
@@ -5214,7 +5898,7 @@ class MSTab(TabBase):
             col["measure"] = None
             col["m1"] = None
             col["desc"] = "scan %d at %.3f min%s" % (k + 1, self.data.rt[j],
-                                                    ", saturated signal left out"
+                                                    ", saturated signal"
                                                     if sat is not None and len(sat) > j and sat[j] else "")
             self.plot_spec(col, keep_view=True)
         self._remember_spectrum_selection()
@@ -5422,6 +6106,8 @@ class MSTab(TabBase):
         style_axes(ax, "m/z", "Intensity")
         e = col["e"]
         title = "Mass spectrum %s" % self.ev_short(e) if self.data else "Mass spectrum"
+        card.side_name = (self.ev_short(e) + " MS") if self.data else "MS"  # (y title in a tile of both polarities)
+        card.side_colour = self.ev_colour(e)
         spec = col["spec"]
         if spec is None or len(spec) == 0:
             msg = ("Drag across a chromatogram to average a time range" if self.data
@@ -5431,13 +6117,11 @@ class MSTab(TabBase):
             card.set_title(title, "")
             card.draw()
             return
-        mz = spec[:, 0]
-        e_ = self.data.events[e]
-        lo = e_.get("mz_low") or float(mz.min())
-        hi = e_.get("mz_high") or float(mz.max())
+        lo, hi = shared_mz_range(self.data, [c for c in self.cols if c["spec_card"].pair is card.pair] if
+                                 card.pair is not None else [col])
         apex = self.APEX_LABELS and bool(getattr(self.data, "has_profile", False))
         auto = draw_spectrum(card, spec, (lo, hi), self.spec_style.GetSelection() == 1, view, 8, self.MZ_FMT,
-                             self.apex_fn if apex else None)
+                             self.apex_fn if apex else None, color=self.ev_colour(e))
         draw_spec_marks(ax, col, auto, self.PIN_FMT, lambda m: self._peak_height(col, m))
         sub = col["desc"]
         try:
@@ -5491,13 +6175,21 @@ class MSTab(TabBase):
                 items.append(("Open this spectrum in the Deconvolute window", lambda: self.open_full(e)))
         if getattr(self, "dec", None) is not None and self.dec.results:
             items += [(None, None), ("Close the deconvolution results", self.dec.close)]
-        items += [(None, None), ("Full view", col["spec_card"].reset_view)]
+        items += [(None, None)] + mz_range_items(self, col["spec_card"])
         return items + self.view_menu()
 
     def _set_style(self, i):
         self.spec_style.SetSelection(i)
+        self._style_changed()
+
+    def _style_changed(self):
+        """Profile or sticks chosen: the spectra drawn again, also the mass spectra of the PDA view."""
         for c in self.cols:
             self.plot_spec(c, keep_view=True)
+        pda = getattr(self.frame, "pda", None)
+        if pda is not None and getattr(pda, "mscols", None):
+            for c in pda.mscols:
+                pda.plot_ms(c, keep_view=True)
 
     def all_cards(self):
         return [v.card for v in self.views] + [c["spec_card"] for c in self.cols]
@@ -5839,6 +6531,9 @@ class PDATab(TabBase):
         self.spec_card.readout_fmt = lambda x, y: "%.1f nm   %.1f mAU" % (x, y)
         self.spec_card.margins = [0.78, 0.52, 0.14, 0.14]
         self.table = PeakTable(self.rows, self.select_peak, self.delete_peak)
+        # the mass spectra of the time chosen, one tile per scan event below the chromatogram (files with MS data)
+        self.mscols = []
+        self._ms_key = None
         self.map_card.image_name = lambda: self.frame.base_name() + "_PDA_map"
         self.chrom.image_name = lambda: self.frame.base_name() + "_PDA_chromatogram_%.0fnm" % (self.wl_sel or 0)
         self.spec_card.image_name = lambda: self.frame.base_name() + "_UV_%.2fmin" % (self.t_sel or 0)
@@ -5887,9 +6582,9 @@ class PDATab(TabBase):
 
         hs = wx.BoxSizer(wx.HORIZONTAL)
         self.row2.set_panes([self.chrom, self.spec_card], [3, 2])
-        self.rows.set_panes([self.map_card, self.row2, self.table], [7, 5, 2.2])
+        self._layout_tiles()
         self.scroller.set_box(self.rows)
-        self.build_tools([("mode", "label", "Label", "label", "Label: click a band to pin its wavelength")])
+        self.build_tools([("mode", "label", "Label", "label", self.TOOL_HINTS["label"])])
         left = wx.BoxSizer(wx.VERTICAL)
         left.Add(self.tools, 0, wx.EXPAND | wx.BOTTOM, self.FromDIP(10))
         left.Add(self.scroller, 1, wx.EXPAND)
@@ -5929,6 +6624,7 @@ class PDATab(TabBase):
         if ms:
             self.ms_event.SetSelection(0)
         self.overlay.Enable(ms is not None)
+        self._build_ms_tiles()
         self._last = (None, None)
         if pda is not None:
             w = pda.wavelengths
@@ -6004,14 +6700,18 @@ class PDATab(TabBase):
             # a new time replaces an averaged time range; a new wavelength
             # alone keeps it (the UV average stays, only the chromatogram changes)
             self._clear_range()
-        if not force and not had_range and self._drag_update(t_changed, wl_changed):
-            pass
-        elif wl_changed or force:
-            self.on_update(keep=True)
-            self.compute_uv()
-        else:
-            self.plot_chroms(keep_view=True)
-            self.compute_uv()
+        self._ms_hold = not force  # the mass spectra follow when the slider is let go
+        try:
+            if not force and not had_range and self._drag_update(t_changed, wl_changed):
+                pass
+            elif wl_changed or force:
+                self.on_update(keep=True)
+                self.compute_uv()
+            else:
+                self.plot_chroms(keep_view=True)
+                self.compute_uv()
+        finally:
+            self._ms_hold = False
         if os.environ.get("UNILCMS_DEBUG"):
             _log("live update %.0f ms (time %s, wavelength %s)" % ((time.perf_counter() - _t0) * 1000,
                                                                   t_changed, wl_changed))
@@ -6087,6 +6787,7 @@ class PDATab(TabBase):
             sub += ", smoothed (%d points)" % n
         self.chrom.set_title("Chromatogram", sub)
         self.plot_chroms(keep_view=keep and bool(self.chrom.full))
+        self.compute_ms()  # (a new MS detector delay)
 
     def chrom_extras(self, ax, scale_of, v):
         extra = []
@@ -6182,6 +6883,7 @@ class PDATab(TabBase):
         self.uv = (wl, a)
         self.uv_desc = desc
         self.plot_uv(keep_view=True)
+        self.compute_ms()
 
     def plot_uv(self, keep_view=False):
         self.tree_changed()
@@ -6251,7 +6953,239 @@ class PDATab(TabBase):
         self.plot_uv(keep_view=True)
 
     def all_cards(self):
-        return [self.map_card, self.chrom, self.spec_card]
+        return [self.map_card, self.chrom, self.spec_card] + [c["spec_card"] for c in self.mscols]
+
+    # ------------------------------------------------------ mass spectra
+    MS_WEIGHT = 4.0
+
+    def _ms_tiles(self):
+        tile = getattr(self, "ms_tile", None)
+        return [tile] if tile is not None else [c["spec_card"] for c in self.mscols]
+
+    def _layout_tiles(self):
+        ms = self._ms_tiles()
+        panes = [self.map_card, self.row2] + ms + [self.table]
+        defaults = [7, 5] + [self.MS_WEIGHT] * len(ms) + [2.2]
+        self.rows.set_panes(panes, [self.rows.weight_of(p, w) for p, w in zip(panes, defaults)])
+        self.scroller.refit()
+
+    def old_layouts(self, old, version=1):
+        """Tile layouts of an analysis saved before (ms_project.set_views): 4.5 and older (version 1) had no
+        mass spectra in this view (map, chromatogram and UV spectrum, table); version 2 a tile per mass
+        spectrum."""
+        m = len(self._ms_tiles())
+        if not old:
+            return old
+        st = old[0]
+        k = len(self.mscols) if version >= 2 else 0  # the mass spectrum tiles saved
+        if len(st["weights"]) != 3 + k:
+            return [] if version >= 2 else old
+        # each tile now: the tiles saved that held it
+        src = [[0], [1]] + ([list(range(2, 2 + k))] if m == 1 and k > 1 else [[2 + j] if k else [] for j in range(m)])
+        src.append([2 + k])
+        frac = {int(i): v for i, v in st["frac"].items()}
+        new = dict(weights=[st["weights"][s_[0]] if s_ else self.MS_WEIGHT for s_ in src],
+                   closed=[j for j, s_ in enumerate(src) if s_ and all(i in st["closed"] for i in s_)],
+                   frac={j: min(0.95, sum(frac[i] for i in s_ if i in frac)) for j, s_ in enumerate(src)
+                         if any(i in frac for i in s_)})
+        return [new] + list(old[1:])
+
+    def _ms_tab(self):
+        tab = getattr(self.frame, "ms", None)
+        return tab if isinstance(tab, MSTab) else None
+
+    def _build_ms_tiles(self):
+        """The mass spectrum of each scan event of the MS data (none without MS or PDA data): with several
+        events one tile with a plot per event, one below the other."""
+        for w in self._ms_tiles():
+            try:
+                w.Destroy()
+            except RuntimeError:
+                pass
+        self.mscols = []
+        self._ms_key = None
+        ms = self.ms
+        n = min(ms.n_events, MSTab.MAXCOLS) if (ms is not None and self.pda is not None) else 0
+        self.ms_tile = PairCard(self.rows, "Mass spectra") if n > 1 else None
+        for e in range(n):
+            card = PlotCard(self.ms_tile or self.rows, "Mass spectrum", "", mode="zoom")
+            col = {"e": e, "spec": None, "spec_card": card, "pins": [], "measure": None, "m1": None, "desc": "",
+                   "range": None, "msg": ""}
+            card.on_menu = lambda x, y, c=col: self.ms_menu(x, y, c)
+            card.on_view = lambda c=col: self.plot_ms(c, keep_view=True)
+            card.readout_fmt = lambda x, y: MSTab.READ_FMT % (x, _g(y))
+            card.image_name = lambda c=col: self._ms_name(c)
+            card.tool_getter = lambda: self.tool
+            card.tools_supported = {"label"}
+            card.on_tool = lambda tool, kind, x, y, c=col: self.ms_tool(c, tool, x)
+            self.mscols.append(col)
+        if self.ms_tile is not None:
+            self.ms_tile.set_cards([c["spec_card"] for c in self.mscols])
+        self._layout_tiles()
+        for c in self.mscols:
+            self.plot_ms(c)
+
+    def _ms_times(self):
+        """(MS time range a, b (a == b: one time), background range or None, delay) for the time or the range
+        chosen here: MS time = PDA time + MS detector delay (as Link MS and PDA times)."""
+        d = _num(self.delay, 0.0) or 0.0
+        if self.avg and self.avg[1] != self.avg[0]:
+            bg = self.bg if (self.use_bg.GetValue() and self.bg) else None
+            return self.avg[0] + d, self.avg[1] + d, ((bg[0] + d, bg[1] + d) if bg else None), d
+        return self.t_sel + d, self.t_sel + d, None, d
+
+    def compute_ms(self):
+        """The mass spectra of the time or time range chosen."""
+        if not self.mscols or getattr(self, "_ms_hold", False) or self.pda is None or self.t_sel is None:
+            return
+        tab = self._ms_tab()
+        if tab is not None and getattr(tab, "_averaging", False):
+            return  # (the reader is busy in the averaging thread of the MS view)
+        a, b, bg, d = self._ms_times()
+        binw = tab.bin_width() if tab is not None else 0.05
+        key = (a, b, bg, binw)
+        if key == self._ms_key:
+            return
+        self._ms_key = key
+        ms = self.ms
+        later = " (delay %g min)" % d if d else ""
+        wx.BeginBusyCursor()
+        try:
+            for col in self.mscols:
+                e = col["e"]
+                col.update(spec=None, range=None, desc="", msg="", measure=None, m1=None)
+                try:
+                    idx = ms.event_scans(e)
+                    rt = np.asarray(ms.rt[idx], float)
+                    gap = max(2.0 * float(np.median(np.diff(rt))) if len(rt) > 1 else 0.0, 0.02)
+                    if not len(rt) or b < rt[0] - gap or a > rt[-1] + gap:
+                        col["msg"] = "No MS scans at %s min%s" % (
+                            ("%.2f" % a) if a == b else "%.2f to %.2f" % (a, b), later)
+                        continue
+                    n = 0
+                    if a != b:
+                        spec, n = ms.average(e, a, b, bg=bg, binw=binw)
+                    if n:
+                        col.update(spec=spec, range=(a, b), desc="%.2f to %.2f min, %d scans%s%s" % (
+                            a, b, n, ", background %.2f to %.2f min subtracted" % bg if bg else "", later))
+                    else:  # one time, or a range narrower than the scan interval: the nearest scan
+                        t = 0.5 * (a + b)
+                        spec, k = ms.scan_spectrum(e, t, binw=binw)
+                        j = idx[int(np.argmin(np.abs(rt - t)))]
+                        col.update(spec=spec, desc="scan %d at %.3f min%s" % (k + 1, ms.rt[j], later))
+                except Exception as ex:
+                    _log("PDA view mass spectrum: %s" % ex)
+                    col["msg"] = "The mass spectrum could not be read"
+        finally:
+            wx.EndBusyCursor()
+        for col in self.mscols:
+            self.plot_ms(col, keep_view=True)
+
+    def plot_ms(self, col, keep_view=False):
+        """A mass spectrum tile, drawn as in the Mass spectrometry view."""
+        card = col["spec_card"]
+        ax = card.ax
+        view = ax.get_xlim() if (keep_view and card.full) else None
+        card.reset()
+        style_axes(ax, "m/z", "Intensity")
+        ms, e = self.ms, col["e"]
+        title = "Mass spectrum %s" % _pol_short(ms.events[e]["polarity"], e, ms.events) if ms else "Mass spectrum"
+        card.side_name = (_pol_short(ms.events[e]["polarity"], e, ms.events) + " MS") if ms else "MS"
+        card.side_colour = NEG_COL if (ms and len(self.mscols) > 1 and ms.events[e].get("polarity") == "-") else TRACE
+        spec = col["spec"]
+        if spec is None or not len(spec):
+            ax.text(0.5, 0.5, col.get("msg") or "Click or drag across the chromatogram", transform=ax.transAxes,
+                    ha="center", va="center", fontsize=9, color=MUTED)
+            card.full = None
+            card.set_title(title, "")
+            card.draw()
+            return
+        tab = self._ms_tab()
+        sticks = tab is not None and tab.spec_style.GetSelection() == 1
+        lo, hi = shared_mz_range(ms, self.mscols if card.pair is not None else [col])
+        neg = len(self.mscols) > 1 and ms.events[e].get("polarity") == "-"
+        auto = draw_spectrum(card, spec, (lo, hi), sticks, view, 8, MSTab.MZ_FMT,
+                             color=NEG_COL if neg else TRACE)
+        draw_spec_marks(ax, col, auto, MSTab.PIN_FMT, lambda m: spec_peak_height(spec, m, MSTab.PICK_MIN))
+        ib = int(np.argmax(spec[:, 1]))
+        sub = col["desc"] + "   \u00b7   base peak m/z " + (MSTab.PIN_FMT % spec[ib, 0]) + " (" + _g(spec[ib, 1]) + ")"
+        card.set_title(title, sub)
+        card.draw()
+
+    def _ms_name(self, col):
+        if self.ms is None or col["spec"] is None:
+            return None
+        pol = {"+": "pos", "-": "neg"}.get(self.ms.events[col["e"]]["polarity"], "ev%d" % (col["e"] + 1))
+        rng = col["range"]
+        return "%s_MS_%s_%s" % (self.frame.base_name(), pol, "%.2f-%.2fmin" % rng if rng else
+                                "%.2fmin" % self._ms_times()[0])
+
+    def ms_tool(self, col, tool, x):
+        if col["spec"] is None:
+            return
+        pk = spec_nearest_peak(col["spec"], col["spec_card"].ax.get_xlim(), x, MSTab.PICK_MIN)
+        if pk is None:
+            self.status("Click closer to a peak")
+            return
+        if spec_click(col, tool, pk, MSTab.PIN_FMT, lambda m1, m2: measure_text(m1, m2, self.ms.adduct_sign(col["e"])),
+                      self.status):
+            self.plot_ms(col, keep_view=True)
+
+    def _set_ms_style(self, i):
+        tab = self._ms_tab()
+        if tab is not None:
+            tab._set_style(i)  # (as the Mass spectrometry view: its spectra and these)
+
+    def ms_menu(self, x, y, col):
+        items = []
+        spec = col["spec"]
+        pk = spec_nearest_peak(spec, col["spec_card"].ax.get_xlim(), x, MSTab.PICK_MIN) if spec is not None else None
+        if pk is not None:
+            items += [spec_pin_item(col, pk, MSTab.PIN_FMT, lambda m: self.ms_tool(col, "label", m)), (None, None)]
+        items += spec_clear_items(col, lambda: self.plot_ms(col, keep_view=True))
+        tab = self._ms_tab()
+        if tab is not None:
+            items.append(spec_display_item(tab.spec_style.GetSelection() == 1, self._set_ms_style))
+        if spec is not None:
+            if tab is not None:
+                items.append(("Show in the Mass spectrometry view", self.show_in_ms))
+            items += [("Export spectrum\u2026", lambda: self.export_ms(col)),
+                      ("Copy spectrum data", lambda: copy_spectrum(self, spec))]
+        items += [(None, None)] + mz_range_items(self, col["spec_card"])
+        return items + self.view_menu()
+
+    def show_in_ms(self):
+        """The time or range of these spectra chosen in the Mass spectrometry view, which is shown."""
+        tab = self._ms_tab()
+        if tab is None or tab.data is None or tab.busy_averaging():
+            return
+        a, b, bg, d = self._ms_times()
+        self.frame._linking = True  # (this view stays as it is)
+        try:
+            if a != b:
+                tab.avg, tab.pick_t = (a, b), None
+                tab.fill_range_fields()
+                tab.plot_chroms(keep_view=True)
+                tab.compute_average()
+            else:
+                tab.chrom_pick(a, None, None)
+        finally:
+            self.frame._linking = False
+        self.frame.show_page(tab)
+
+    def export_ms(self, col):
+        if col["spec"] is None:
+            return
+        path = self.frame.ask_save("Export mass spectrum", self._ms_name(col) + ".txt", SPEC_WILDCARD)
+        if not path:
+            return
+        try:
+            write_spectrum_file(path, col["spec"], self.frame.base_name(), self.ms.events[col["e"]]["polarity"],
+                                col["range"])
+        except Exception as ex:
+            _report_error(self, _write_failed(path), ex)
+            return
+        self.status("Saved " + path)
 
     def spec_menu(self, x, y):
         items = []
@@ -6495,7 +7429,7 @@ Mass spectrometry
     mass chromatograms.
   * Click a chromatogram for the spectrum at that time, drag to average a
     range, Shift + drag to set the background range.
-  * Saturated readings are left out and marked by red ticks.
+  * Saturated readings count as the highest normal reading and are marked by red ticks.
 
 PDA
   * Map: drag the handles on the top and right edges (or use the arrow
@@ -9136,7 +10070,7 @@ class LCMSFrame(PostrunFrame):
         if ms:
             info.append(ms.summary())
             if ms.saturated.any():
-                info.append("%d scans with saturated signal (left out)" % int(ms.saturated.sum()))
+                info.append("%d scans with saturated signal" % int(ms.saturated.sum()))
         if pda:
             info.append("PDA " + pda.summary())
         if errors:

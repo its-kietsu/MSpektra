@@ -265,6 +265,10 @@ def _export(ctx):
             tab.on_export_spectrum(None)
             return True
         if ctx.view == "pda":
+            for col in getattr(tab, "mscols", []):
+                if card is col["spec_card"]:
+                    tab.export_ms(col)
+                    return True
             tab.on_export_uv()
             return True
     except Exception as ex:

@@ -11,7 +11,8 @@ On top of it this module
   * corrects the m/z scale: for LCMS-2020 files OpenSZRaw 0.2.0 reports m/z
     values twice too high (checked against a LabSolutions export); the scan
     range in the method is used to detect and undo this,
-  * leaves out saturated detector readings, as LabSolutions does,
+  * counts saturated detector readings at the highest normal reading of the
+    file (the file stores a flag value of about 2.1e9 for them),
   * builds TIC, base peak and mass (extracted ion) chromatograms per event,
   * averages spectra over a time range, optionally minus a background range.
 
@@ -186,13 +187,15 @@ class LCDFile(object):
                 self.mz_scale = 1.0 / round(k)
                 self.mz *= self.mz_scale
                 bpm *= self.mz_scale
-        # saturated readings: left out (LabSolutions ignores them too)
+        # saturated readings: the file stores a flag value (about 2.1e9, hundreds of times any real reading);
+        # counted at the highest normal reading of the file (the detector's ceiling), so the TIC does not dip
         sat = self.inten >= SATURATION
         self.saturated = np.zeros(n, bool)
         if np.any(sat):
             scan_of = np.repeat(np.arange(n), lens)
             self.saturated[np.unique(scan_of[sat])] = True
-            self.inten[sat] = 0
+            normal = self.inten[~sat]
+            self.inten[sat] = normal.max() if len(normal) else 0
             for i in np.where(self.saturated)[0]:
                 a, b = self.offsets[i], self.offsets[i + 1]
                 seg = self.inten[a:b]

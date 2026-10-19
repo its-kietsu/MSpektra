@@ -35,13 +35,20 @@ def views(page):
             layouts.append(dict(weights=list(w.all_weights),closed=[i for i,p in enumerate(w.all_panes) if p in w.closed],
                                 frac={i:v for i,p in enumerate(w.all_panes) if (v:=getattr(w,'frac',{}).get(p)) is not None}))
     sc=getattr(page,'scroller',None)
-    return dict(cards=cards,layouts=layouts,scroll=list(sc.GetViewStart()) if sc else None)
+    # tiles 3: the plots of the scan events in shared tiles (4.5 and older: rows side by side; 2: a tile per plot;
+    # see old_layouts)
+    return dict(cards=cards,layouts=layouts,scroll=list(sc.GetViewStart()) if sc else None,tiles=3)
 
 def set_views(page,state):
     import unilcms as U
     cards=[w for w in _walk(page) if hasattr(w,'ax') and hasattr(w,'canvas')]
     layouts=[w for w in _walk(page) if isinstance(w,(U.SplitBox,U.StackBox))]
-    for w,st in zip(layouts,state.get('layouts',[])):
+    saved=state.get('layouts',[])
+    if state.get('tiles',1)<3 and hasattr(page,'old_layouts'):
+        # saved before: the layouts as the tiles are now (a layout that cannot be told is left as it is)
+        try:saved=page.old_layouts(saved,state.get('tiles',1))
+        except Exception:saved=[]
+    for w,st in zip(layouts,saved):
         if len(st['weights'])!=len(w.all_panes):continue
         w.all_weights=list(st['weights']);w.closed={w.all_panes[i] for i in st['closed'] if 0<=i<len(w.all_panes)}
         if hasattr(w,'frac'):w.frac={w.all_panes[i]:v for i,v in st['frac'].items() if 0<=i<len(w.all_panes)}

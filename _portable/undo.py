@@ -1274,6 +1274,7 @@ def pda_get(tab):
         return None
     return {"ctrl": _ctrls_get(tab, PDA_CTRLS), "t": tab.t_sel, "wl": tab.wl_sel, "avg": tab.avg, "bg": tab.bg,
             "peaks": [dict(p) for p in tab.peaks], "sel_peak": tab.sel_peak, "pins": list(tab.uv_pins),
+            "ms_pins": [list(c.get("pins") or []) for c in getattr(tab, "mscols", [])],
             "fields": tuple(c.GetValue() for c in (tab.t0, tab.t1, tab.b0, tab.b1))}
 
 
@@ -1314,6 +1315,11 @@ def pda_set(tab, st):
                 c.ChangeValue(v)
         if chroms:
             tab.plot_chroms(keep_view=True)
+        ms_pins = st.get("ms_pins")
+        if ms_pins is not None and ms_pins != cur.get("ms_pins"):  # labels on the mass spectra
+            for c, pins in zip(getattr(tab, "mscols", []), ms_pins):
+                c["pins"] = list(pins)
+                tab.plot_ms(c, keep_view=True)
         if uv:
             tab.compute_uv()
     finally:
@@ -1344,6 +1350,12 @@ def pda_describe(tab, a, b):
         add = [w for w in b["pins"] if w not in a["pins"]]
         rem = [w for w in a["pins"] if w not in b["pins"]]
         return ("label %.0f nm" % add[0] if add else "remove the label of %.0f nm" % rem[0] if rem else "labels"), None
+    if (a.get("ms_pins") or []) != (b.get("ms_pins") or []):
+        old = [m for p in (a.get("ms_pins") or []) for m in p]
+        new = [m for p in (b.get("ms_pins") or []) for m in p]
+        add = [m for m in new if m not in old]
+        rem = [m for m in old if m not in new]
+        return ("label m/z %.2f" % add[0] if add else "remove the label of m/z %.2f" % rem[0] if rem else "labels"), None
     return _ctrls_describe(tab, PDA_CTRLS, a["ctrl"], b["ctrl"], PDA_UNITS) or \
         (("peak areas measured again", None) if not _eq(a["peaks"], b["peaks"]) else None)
 
