@@ -2,16 +2,19 @@
 
 1. the charge states of M with m/z >= mzmin (500) inside the m/z range of the scan event, each a mass chromatogram of
    the window (M +- w + z*carrier)/z (negative ions: the carrier is a lost proton, (M +- w - z*1.007276)/z);
-2. each state against the same state of decoy masses (M +- 50..170 Da): a state is present where it is 3x the median
-   of its decoys; candidate scans have >= 4 neighbouring states present;
-3. in each candidate scan the summed signal of the states over the masses M-150..M+150 Da must peak at M (within the
-   window) and be the best within +-30 Da and > 3x its median;
+2. each state against the same state of decoy masses (M +- 50..170 Da, moved out by w - 10 for windows wider than
+   10 Da, so that they stay outside the window): a state is present where it is 3x the median of its decoys;
+   candidate scans have >= 4 neighbouring states present;
+3. in each candidate scan the summed signal of the states (each +- min(w, 5) Da) over the masses M-150-w..M+150+w
+   must peak inside the window, that peak the best within +-30 Da of itself and > 3x the median; every such peak
+   inside the window (>= 20 % of the best) is a mass found there (a wide window can hold several species);
 4. found regions: runs of >= 8 found scans (gaps of 2 allowed);
 5. trace: the sum over the states of (state - decoy median), clipped at 0;
 6. harmonic note: M x 1/2, 2, 3/2, 2/3 whose charge states share most of M's m/z while M's own states are weak.
 
-The mass chromatograms and the scans are read by msengine (one pass for all windows: ms_xic_multi); the rest is a
-few array operations on them."""
+The mass chromatograms and the scans are read by msengine (one pass for all windows: ms_xic_multi), and the profiles
+of step 3 are computed there for a block of candidate scans at a time (ms_mass_profile, the values of _profile); the
+rest is a few array operations on them."""
 import numpy as np
 
 PROTON = 1.007276
@@ -20,6 +23,7 @@ MZMIN = 500.0
 DECOYS = (-170, -130, -110, -70, -50, 50, 70, 110, 130, 170)
 GRID = np.arange(-150, 151, 1.0)
 NEED = 4  # neighbouring states present in a candidate scan
+BLOCK = 128  # candidate scans per ms_mass_profile call (cancel is checked between the calls)
 HARMONICS = ((0.5, "half"), (2.0, "double"), (1.5, "one and a half times"), (2 / 3, "two thirds"))
 
 
@@ -64,17 +68,56 @@ def _xics(f, e, wins, check):
     return np.array(out).reshape(len(wins), -1)
 
 
-def _profile(mz, it, M, w, zs, c):
-    """Summed signal of the charge states over the masses M + GRID."""
+def decoys(w):
+    """Decoy mass offsets: DECOYS, moved out by w - 10 Da for windows wider than 10 Da (outside the window)."""
+    sh = max(0.0, float(w) - 10.0)
+    return tuple(d + (sh if d > 0 else -sh) for d in DECOYS)
+
+
+def grid(w):
+    """Mass offsets of the profile: GRID, wider by the window beyond 0 (whole Da)."""
+    r = 150 + int(np.ceil(max(0.0, float(w))))
+    return GRID if r <= 150 + 5 else np.arange(-r, r + 1, 1.0)
+
+
+def _profiles(f, e, times, M, w, zs, c, G):
+    """_profile of the scans nearest to times (the spectra of f.scan_spectrum) in one msengine call: (rows, number
+    of points of each spectrum), or None (then _profile on each spectrum)."""
+    try:
+        import msengine_py as E
+        return E.mass_profile(f, e, times, M, min(float(w), 5.0), zs, c, G)
+    except Exception:
+        return None
+
+
+def _profile(mz, it, M, w, zs, c, G=GRID):
+    """Summed signal of the charge states over the masses M + G (each state +- min(w, 5) Da: a wide window must not
+    blur two species into one)."""
+    w = min(float(w), 5.0)
     cs = np.concatenate([[0.0], np.cumsum(it, dtype=float)])
     zz = np.asarray(zs, float)[:, None]
-    cen = (M + GRID[None, :] + zz * c) / zz
+    cen = (M + G[None, :] + zz * c) / zz
     hi = cs[np.searchsorted(mz, cen + w / zz)]
     lo = cs[np.searchsorted(mz, cen - w / zz)]
-    P = np.zeros(len(GRID))
+    P = np.zeros(len(G))
     for k in range(len(zs)):
         P += hi[k] - lo[k]
     return P
+
+
+def _species(lists, main, tol=3.0, share=0.3):
+    """Masses seen in at least share of the found scans of a region (each within tol Da of their median), the main
+    mass first: a wide window can hold several species (b-lactoglobulin A and B in 18300 +- 100)."""
+    flat = sorted(m for ms in lists for m in ms)
+    groups = []
+    for m in flat:
+        if groups and m - groups[-1][-1] <= tol:
+            groups[-1].append(m)
+        else:
+            groups.append([m])
+    out = [float(np.median(gr)) for gr in groups if len(gr) >= share * max(1, len(lists))]
+    out.sort(key=lambda m: abs(m - main))
+    return out
 
 
 def _runs(mask, min_len=8, gap=2):
@@ -119,12 +162,13 @@ def search(f, e, M, w, carrier="H+", mzmin=MZMIN, harmonics=True, cancel=None, p
         return res
     check()
     wins = _windows(M, w, zs, c)
-    for d in DECOYS:
+    dec = decoys(w)
+    for d in dec:
         wins += _windows(M + d, w, zs, c)
     Y = _xics(f, e, wins, check)
     nz = len(zs)
     X = Y[:nz]
-    Dz = Y[nz:].reshape(len(DECOYS), nz, -1)
+    Dz = Y[nz:].reshape(len(dec), nz, -1)
     tell(0.3)
     check()
     ref = np.median(Dz, axis=0)
@@ -137,29 +181,46 @@ def search(f, e, M, w, carrier="H+", mzmin=MZMIN, harmonics=True, cancel=None, p
     trace = (X - ref).clip(0).sum(axis=0)
     ok = np.zeros(len(t), bool)
     best = np.full(len(t), np.nan)
+    peaks = {}  # scan -> masses found in it (several when the window holds several species)
     cand = np.where(run >= NEED)[0]
-    near = np.abs(GRID) <= max(w, 3)
-    near30 = np.abs(GRID) <= 30
+    G = grid(w)
+    near = np.abs(G) <= max(w, 3)
     binw = getattr(f, "_binw", None)  # (the bin width in use: the search does not change it)
+    rows = None
     for j, i in enumerate(cand):
         if j % 16 == 0:
             check()
             tell(0.3 + 0.6 * j / max(1, len(cand)))
-        s = f.scan_spectrum(e, float(t[i]), binw=binw) if binw is not None else f.scan_spectrum(e, float(t[i]))
-        s = np.asarray(s[0] if isinstance(s, tuple) else s)
-        if not len(s):
-            continue
-        P = _profile(s[:, 0], s[:, 1], M, w, zs, c)
+        if j % BLOCK == 0:
+            rows = _profiles(f, e, t[cand[j:j + BLOCK]], M, w, zs, c, G)
+        if rows is not None:
+            if not rows[1][j % BLOCK]:
+                continue
+            P = rows[0][j % BLOCK]
+        else:
+            s = f.scan_spectrum(e, float(t[i]), binw=binw) if binw is not None else f.scan_spectrum(e, float(t[i]))
+            s = np.asarray(s[0] if isinstance(s, tuple) else s)
+            if not len(s):
+                continue
+            P = _profile(s[:, 0], s[:, 1], M, w, zs, c, G)
+        med = np.median(P)
         k = int(np.argmax(np.where(near, P, -1)))
-        if P[k] >= P[near30].max() - 1e-9 and P[k] > 3 * np.median(P):
+        if P[k] >= P[np.abs(G - G[k]) <= 30].max() - 1e-9 and P[k] > 3 * med:
             ok[i] = True
-            best[i] = M + GRID[k]
+            best[i] = M + G[k]
+            if w > 10:
+                js = [j for j in np.where(near & (P >= 0.2 * P[k]) & (P > 3 * med))[0]
+                      if P[j] >= P[np.abs(G - G[j]) <= 30].max() - 1e-9]
+                peaks[int(i)] = [float(M + G[j]) for j in js]
     regions = []
     for a, b in _runs(ok):
         sel = slice(a, b + 1)
         states = [int(z) for z, p in zip(zs, present[:, sel].mean(axis=1)) if p >= 0.5]
-        regions.append(dict(t0=float(t[a]), t1=float(t[b]), mass=float(np.nanmedian(best[sel])),
-                            height=float(trace[sel].max()), states=states))
+        g = dict(t0=float(t[a]), t1=float(t[b]), mass=float(np.nanmedian(best[sel])),
+                 height=float(trace[sel].max()), states=states)
+        if peaks:
+            g["masses"] = _species([peaks[i] for i in range(a, b + 1) if i in peaks], g["mass"])
+        regions.append(g)
     res.update(trace=trace, ok=ok, regions=regions)
     tell(0.9)
     if harmonics and regions:

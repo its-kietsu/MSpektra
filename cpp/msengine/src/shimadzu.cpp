@@ -21,6 +21,7 @@
 //   * spectra are kept as float32 like the Python arrays so that all values
 //     and the binned averages agree bit for bit.
 #include "file.h"
+#include "f32scans.h"
 #include "cfb.h"
 #include <algorithm>
 #include <cctype>
@@ -921,6 +922,14 @@ public:
         }
         return true;
     }
+
+    // one pass for several windows, parallel over the scans (the values of xic() above, bit for bit)
+    bool xic_multi(const std::vector<long>& idx, const double* mz, const double* tol, int nw, double* out,
+                   const std::atomic<bool>* stop) override {
+        xic_multi_f32(mz_, it_, offsets_, idx, mz, tol, nw, out, stop);
+        return true;
+    }
+    bool concurrent_reads() const override { return true; }   // arrays in memory, read only
 
     // LCDFile._binned + _fill on the 0.05 Da grid: the plain sum per bin
     // (file.cpp divides by the scan count), bin m/z = intensity weighted mean,

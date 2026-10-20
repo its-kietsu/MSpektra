@@ -817,6 +817,7 @@ class PlotCard(wx.Panel):
         self.canvas.SetMinSize(wx.Size(20, 20))  # the tile, not the figure, sets the size
         self.ax = self.fig.add_subplot(111)
         self.full = None  # (x0, x1) full view
+        self.xlock = None  # (x0, x1) kept by "m/z range...": double click and new spectra come back to it
         self.on_range = None  # callback(x0, x1, shift)
         self.on_pick = None  # callback(x, y)
         self.on_menu = None  # callback(x, y) -> list of (label, func)
@@ -1189,7 +1190,8 @@ class PlotCard(wx.Panel):
         except (ValueError, AttributeError):
             pass
         room = max(40.0, 0.86 * (w_in - self.SHARED_L - self.margins[2]) * 72.0)  # (points)
-        key = (tuple(items), round(room))
+        drop = bool(getattr(self, "top_tags", False))  # charge tags along the top: the note goes below them
+        key = (tuple(items), round(room), drop)
         box = self._info_box
         if box is not None and (key != self._info_key or box not in ax.get_children()):
             try:
@@ -1218,9 +1220,13 @@ class PlotCard(wx.Panel):
                 if used >= room:
                     break
             if parts:
+                kw = {}
+                if drop:
+                    h_pt = max(1.0, ax.get_position().height * self.fig.get_figheight() * 72.0)
+                    kw = dict(bbox_to_anchor=(1.0, 1.0 - min(0.4, 13.0 / h_pt)), bbox_transform=ax.transAxes)
                 box = AnchoredOffsetbox(loc="upper right", child=HPacker(children=parts, align="baseline", pad=0,
                                                                           sep=5), pad=0.2, borderpad=0.3,
-                                        frameon=True)
+                                        frameon=True, **kw)
                 box.patch.set_facecolor("white")
                 box.patch.set_edgecolor("none")
                 box.patch.set_alpha(0.78)
@@ -1904,8 +1910,8 @@ class PlotCard(wx.Panel):
 
     def reset_view(self):
         self.ylock = None
-        if self.full:
-            self.ax.set_xlim(*self.full)
+        if self.xlock or self.full:
+            self.ax.set_xlim(*(self.xlock or self.full))
         self.autoscale_y()
         self.canvas.draw_idle()
         self._view_changed()
@@ -2710,8 +2716,8 @@ def tile_menu(win):
         journal = sb.mode() == "journal" and not sb.resized()
         sc = sb.scale()
         sizes = []
-        if sb.fit_first:
-            sizes.append(("First %d tiles fill the window" % sb.fit_first
+        if sb.has_fit():
+            sizes.append(((sb.fit_label or "First %d tiles fill the window" % sb.fit_first)
                           + (" (default)" if sb.default_mode == "two" else ""), sb.two,
                           sb.mode() == "two" and not sb.resized()))
         sizes += [("Half size" + (" (default)" if sb.default_mode == "journal" else ""), lambda: sb.journal(0.5),
@@ -4052,6 +4058,11 @@ class StackBox(wx.Panel):
         self.frac = {}  # pane -> height / window height, after the user resized tiles
         self.shape = None  # callback(pane, width) -> height wanted for journal proportions, or None
         self.fit_first = 0  # mode "two": this many first tiles fill the window, the others below at that size
+        # mode "two" instead by share: callback(pane) -> its share of the window, or None for a tile below (the
+        # tiles with a share fill the window, the others follow below); fit_label names the mode in the menu
+        self.fit_share = None
+        self.fit_label = None
+        self.fit_floor = 0  # DIP: with fit_share, least height of each share (a small window then scrolls)
         self.mode_key, self.default_mode = "tile_mode", "journal"  # setting of the tile mode
         self.view_h = self.FromDIP(600)
         self.on_change = None  # callback() while and after a drag (the column length changed)
@@ -4107,7 +4118,36 @@ class StackBox(wx.Panel):
 
     def mode(self):
         m = settings().get(self.mode_key, self.default_mode)
-        return m if (m != "two" or self.fit_first) else "journal"
+        return m if (m != "two" or self.has_fit()) else "journal"
+
+    def has_fit(self):
+        """Mode "two" can be chosen: some tiles fill the window."""
+        if self.fit_share is not None:
+            return any(self._shares())
+        return bool(self.fit_first)
+
+    def _shares(self, bases=None):
+        """Share of the window of each tile shown in mode "two" (0 for the tiles below). fit_share may give
+        (share, pixels): the tile gets these pixels (its title and axes) and its share of what is left;
+        bases, a list, receives these pixels."""
+        if self.fit_share is None:
+            out = [1.0 if i < self.fit_first else 0.0 for i in range(len(self.panes))]
+            if bases is not None:
+                bases[:] = [0] * len(out)
+            return out
+        out, base = [], []
+        for p in self.panes:
+            try:
+                s = self.fit_share(p)
+            except Exception:
+                s = None
+            s, b = s if isinstance(s, tuple) else (s, 0)
+            ok = bool(s) and float(s) > 0
+            out.append(float(s) if ok else 0.0)
+            base.append(int(b) if ok else 0)
+        if bases is not None:
+            bases[:] = base
+        return out
 
     @staticmethod
     def scale():
@@ -4130,19 +4170,29 @@ class StackBox(wx.Panel):
             f = self.frac.get(p)
             if f is not None:
                 out[i] = int(max(self.min, f * H))
-        if self.fit_first and self.mode() == "two":
-            # the first tiles fill the window (e.g. chromatogram and spectrum);
-            # the others follow below at the same height, tables smaller
-            k = min(self.fit_first, n)
+        if self.mode() == "two":
+            # the first tiles fill the window (e.g. chromatogram and spectrum; with fit_share the tiles given a
+            # share, each its share of the window); the others follow below at the same height, tables smaller
+            bases = []
+            shares = self._shares(bases)
+            top = [i for i in range(n) if shares[i] > 0]
+            k = len(top)
             unit = int(max(self.min, (H - self.gap * (k - 1)) / float(k)))
-            fixed = sum(out[i] for i in range(k) if out[i] is not None)
-            free = [i for i in range(k) if out[i] is None]
+            fixed = sum(out[i] for i in top if out[i] is not None)
+            free = [i for i in top if out[i] is None]
             if free:
-                each = int(max(self.min, (H - self.gap * (k - 1) - fixed) / float(len(free))))
+                rest = H - self.gap * (k - 1) - fixed
+                ts = sum(shares[i] for i in free)
+                left = max(0, rest - sum(bases[i] for i in free))
+                each = max(left / ts, self.FromDIP(self.fit_floor) if self.fit_share is not None else 0)
                 for i in free:
-                    out[i] = each
+                    out[i] = int(max(self.min, bases[i] + each * shares[i]))
+                if self.fit_share is not None and sum(out[i] for i in free) < rest:
+                    out[free[-1]] += rest - sum(out[i] for i in free)  # (the last one ends at the window's end)
             W = max(Wc, self.FromDIP(300))
-            for i in range(k, n):
+            for i in range(n):
+                if i in top:
+                    continue
                 if out[i] is None:
                     try:
                         want = self.shape(self.panes[i], W) if self.shape is not None else 0
@@ -5144,10 +5194,20 @@ def ask_mz_range(win, card):
     if a is None or b is None or a == b:
         win.status("Enter the lower and the upper m/z")
         return
-    set_mz_range(card, min(a, b), max(a, b))
+    set_mz_range(card, min(a, b), max(a, b), lock=True)
 
 
-def set_mz_range(card, a, b):
+def _tile_cards(card):
+    pair = getattr(card, "pair", None)
+    return list(pair.cards) if pair is not None and getattr(pair, "cards", None) else [card]
+
+
+def set_mz_range(card, a, b, lock=False):
+    """The m/z range of a spectrum; lock: kept (double click and new spectra come back to it, "Full m/z range"
+    releases it), for every plot of the tile."""
+    if lock:
+        for c in _tile_cards(card):
+            c.xlock = (float(a), float(b))
     card.ax.set_xlim(a, b)
     card.ylock = None
     card.autoscale_y()
@@ -5156,8 +5216,13 @@ def set_mz_range(card, a, b):
 
 
 def mz_range_items(win, card):
-    """Menu entries of a spectrum: m/z range (a small window) and the full m/z range."""
-    return [("m/z range\u2026", lambda: ask_mz_range(win, card)), ("Full m/z range", card.reset_view)]
+    """Menu entries of a spectrum: m/z range (a small window, kept until the full m/z range is chosen) and the full
+    m/z range."""
+    def full():
+        for c in _tile_cards(card):
+            c.xlock = None
+        card.reset_view()
+    return [("m/z range\u2026", lambda: ask_mz_range(win, card)), ("Full m/z range", full)]
 
 
 def spec_nearest_peak(spec, xlim, x, pick_min):
@@ -5211,7 +5276,7 @@ def draw_spectrum(card, spec, full, sticks, view=None, n_labels=8, fmt="%.1f", r
     else:
         plot_trace(ax, mz, it, color=color, lw=LW_SPEC)
     card.full = full
-    ax.set_xlim(*(view if view else card.full))
+    ax.set_xlim(*(view if view else (card.xlock or card.full)))
     card.autoscale_y(pad=0.12)
     x0, x1 = ax.get_xlim()
     if n_labels <= 0:
@@ -5433,6 +5498,14 @@ class MSTab(TabBase):
         self.rows = StackBox(self.scroller)
         self.rows.on_close_tile = self._close_search_tile
         self.rows.shape = tile_shape
+        if self.FIND_MASS:  # LCMS Analysis (HRMS Analysis keeps its own tile heights)
+            # by default every plot tile (chromatograms, spectra, deconvolution, mass searches) fills the window,
+            # the tables below: the spectrum with the fit and charge states of a deconvolved mass stays in view
+            # next to the deconvolved spectrum (with + and - one below the other, since 4.51, it was scrolled out)
+            self.rows.fit_share = self._fit_share
+            self.rows.fit_label = "Plots fill the window"
+            self.rows.fit_floor = 60  # (plots lower than this: a very small window scrolls instead)
+            self.rows.mode_key, self.rows.default_mode = "lcms_tile_mode", "two"
         self.scroller.set_box(self.rows)
         self.bottom = SplitBox(self.rows, wx.HORIZONTAL)
         self.table = PeakTable(self.bottom, self.select_peak, self.delete_peak)
@@ -5537,6 +5610,29 @@ class MSTab(TabBase):
                 pass
         wx.CallAfter(go)
 
+    def keep_in_view(self, wins):
+        """Scroll the column of tiles, if one of wins is not wholly in view, so that they are (as much as fits,
+        the most of the tiles above them shown too): a mass selected in a deconvolution shows the spectrum with
+        its charge states."""
+        def go():
+            try:
+                ux, uy = self.scroller.GetScrollPixelsPerUnit()
+                if not uy:
+                    return
+                spans = [(w.GetPosition()[1], w.GetPosition()[1] + w.GetSize()[1]) for w in wins if w and w.IsShown()]
+                if not spans:
+                    return
+                y0, y1 = min(a for a, b in spans), max(b for a, b in spans)
+                vy = self.scroller.GetViewStart()[1] * uy
+                vh = self.scroller.GetClientSize()[1]
+                if y0 >= vy and y1 <= vy + vh:
+                    return
+                top = y0 if y1 - y0 > vh else max(0, y1 - vh)
+                self.scroller.Scroll(0, max(0, int(top / uy)))
+            except RuntimeError:
+                pass
+        wx.CallAfter(go)
+
     def set_extra(self, key, row=None, table=None, weight=3.4):
         """Show (or with row and table None, hide) the result rows of the
         deconvolution or calibration, plus the table in the bottom row. row
@@ -5590,6 +5686,22 @@ class MSTab(TabBase):
         # the tile of the chromatograms and the one of the spectra (reveal, tests)
         self.row_main, self.row_spec = self._chrom_tiles()[0] if n else None, self._spec_tiles()[0] if n else None
         self._layout_rows()
+
+    def _fit_share(self, pane):
+        """"Plots fill the window": (share, pixels for the title and axes) of a plot tile (a tile of both
+        polarities: a share per plot), None for the tables below."""
+        if not self.data or pane is self.bottom:
+            return None
+        if "dec" in self.extras:
+            # of several deconvolution results only the one shown in the table (the others below)
+            rows = _extra_rows(self.extras["dec"][0])
+            if pane in rows:
+                act = next((getattr(getattr(p, "active", None), "row", None) for p in self.panels
+                            if getattr(p, "active", None) is not None), None)
+                return (1.0, self.FromDIP(100)) if pane is (act if act in rows else rows[0]) else None
+        if isinstance(pane, PairCard):
+            return float(len(pane.cards) or 1), self.FromDIP(55)
+        return 1.0, self.FromDIP(100)
 
     def _chrom_tiles(self):
         return [self.chrom_tile] if getattr(self, "chrom_tile", None) else [c["view"].card for c in self.cols]
@@ -6226,7 +6338,9 @@ class MSTab(TabBase):
                     continue
                 i = int(np.argmax(np.where(sel, y, -np.inf)))
                 st = g.get("states") or []
-                txt = (tr["mass_name"] + ", " if tr.get("mass_name") else "") + "%.1f Da" % g["mass"] + (
+                ms = g.get("masses") or [g["mass"]]  # (a wide window can hold several species)
+                txt = (tr["mass_name"] + ", " if tr.get("mass_name") else "") + (
+                    " and ".join("%.1f" % m for m in ms) + " Da") + (
                     ", z %d to %d" % (min(st), max(st)) if st else "")
                 ann = ax.annotate(txt, (tr["t"][i], y[i]), xytext=(8, -2), textcoords="offset points", fontsize=8,
                                   color=col, va="top", zorder=6)
@@ -6300,7 +6414,10 @@ class MSTab(TabBase):
         if a == b or any(c.get("range") == (a, b) for c in self.cols):
             for col in self.cols:
                 if col["e"] == view.key and col["spec"] is not None:
-                    col["smark"] = {"M": float(r["M"]), "c": float(r["c"]), "w": float(r["w"]),
+                    # marked at the mass found (inside a wide window it is not the typed mass), the marks as
+                    # narrow as the profile of the search
+                    col["smark"] = {"M": float((g.get("masses") or [g.get("mass", r["M"])])[0]), "c": float(r["c"]),
+                                    "w": min(float(r["w"]), 5.0),
                                     "zs": [int(z) for z in r["zs"]], "on": [int(z) for z in g.get("states") or []],
                                     "colour": tr["color"], "sign": -1 if r.get("polarity") == "-" else 1,
                                     "name": tr.get("mass_name") or ""}
@@ -6752,7 +6869,11 @@ class MSTab(TabBase):
                                  card.pair is not None else [col])
         apex = self.APEX_LABELS and bool(getattr(self.data, "has_profile", False))
         sm = col.get("smark")  # the charge states of a found mass (Find mass: a found region clicked)
-        card.label_room_pt = 26.0 if sm else 16.0
+        # room above the peaks for the charge tags of a found mass or of the mass selected in a deconvolution
+        # (inside the frame in a tile of both polarities, which has no room above it)
+        dmarks = card.pair is not None and any(getattr(p, "marks_for", lambda c: False)(col) for p in self.panels)
+        card.label_room_pt = 26.0 if (sm or dmarks) else 16.0
+        card.top_tags = dmarks
         auto = draw_spectrum(card, spec, (lo, hi), self.spec_style.GetSelection() == 1, view, 0 if sm else 8,
                              self.MZ_FMT, self.apex_fn if apex else None, color=self.ev_colour(e))
         draw_spec_marks(ax, col, auto, self.PIN_FMT, lambda m: self._peak_height(col, m))
@@ -7159,6 +7280,12 @@ class PDATab(TabBase):
         self.scroller = RowScroller(self)
         self.rows = StackBox(self.scroller)
         self.rows.shape = tile_shape
+        # by default the map, the chromatogram and UV spectrum and the mass spectra fill the window, the table
+        # below (its own setting: the MS view keeps its choice)
+        self.rows.fit_share = self._fit_share
+        self.rows.fit_label = "Plots fill the window"
+        self.rows.fit_floor = 60  # (plots lower than this: a very small window scrolls instead)
+        self.rows.mode_key, self.rows.default_mode = "pda_tile_mode", "two"
         self.row2 = SplitBox(self.rows, wx.HORIZONTAL, min_size=200)
         self.map_card = MapCard(self.rows, self.on_cross, self.step_cross)
         self.map_card.on_menu = self.map_menu
@@ -7611,6 +7738,30 @@ class PDATab(TabBase):
         defaults = [7, 5] + [self.MS_WEIGHT] * len(ms) + [2.2]
         self.rows.set_panes(panes, [self.rows.weight_of(p, w) for p, w in zip(panes, defaults)])
         self.scroller.refit()
+
+    # the tiles that fill the window ("Plots fill the window"): (plots, DIP for the title, sliders and axes);
+    # each tile gets its DIP and a part of the rest for each plot in it, so the plots are about as high
+    FIT_SHARES = {"map": (1.0, 125), "row2": (1.0, 110), "ms_pair": (2.0, 55), "ms": (1.0, 100)}
+
+    def _fit_share(self, pane):
+        if self.pda is None:
+            return None  # (no PDA data: the view is not shown; the tiles as before)
+        if pane is self.map_card:
+            key = "map"
+        elif pane is self.row2:
+            key = "row2"
+        elif pane in self._ms_tiles():
+            key = "ms_pair" if isinstance(pane, PairCard) else "ms"
+        else:
+            return None
+        share, dip = self.FIT_SHARES[key]
+        return share, self.FromDIP(dip)
+
+    def old_heights(self, old):
+        """Tile layouts of an analysis saved before the plots filled the window (ms_project.set_views): the
+        heights the tiles were dragged to then are left out (they would push the mass spectra out of the
+        window again); closed tiles stay closed."""
+        return [dict(st, frac={}) if i == 0 else st for i, st in enumerate(old)]
 
     def old_layouts(self, old, version=1):
         """Tile layouts of an analysis saved before (ms_project.set_views): 4.5 and older (version 1) had no

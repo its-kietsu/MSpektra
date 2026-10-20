@@ -12,6 +12,7 @@
 // a vendor library calls (the exception cannot pass through the library's frames).
 #pragma once
 #include "common.h"
+#include <atomic>
 #include <memory>
 
 namespace ms {
@@ -49,6 +50,14 @@ public:
     // m/z range; the ScanInfo.event index refers to this list). Empty: events are the polarities.
     virtual const std::vector<ScanInfo>* events() const { return nullptr; }
     virtual bool xic(int /*polarity*/, double /*mz*/, double /*tol*/, std::vector<double>& /*y_per_scan*/) { return false; }
+    // several mass chromatograms in one pass over the scans idx (readers whose xic() sums the points of each
+    // scan): out[w * idx.size() + k] = xic(polarity, mz[w], tol[w]) of scan idx[k], the same values bit for
+    // bit. Polls *stop and returns early when it is set (the caller then throws). false: not provided.
+    virtual bool xic_multi(const std::vector<long>& /*idx*/, const double* /*mz*/, const double* /*tol*/, int /*nw*/,
+                           double* /*out*/, const std::atomic<bool>* /*stop*/) { return false; }
+    // true: spectrum(), centroids() and sum_profiles() without a callback may run in several threads at once
+    // (data in memory, the calls change nothing); file.cpp still holds the reader mutex around such a batch
+    virtual bool concurrent_reads() const { return false; }
     // a reader may sum profile scans on its native axis (TSF/TDF: the digitizer sample
     // axis, converted to m/z with the calibration of the middle scan, as hrms_data does).
     // out = the plain sum (not divided by the count). false: sum spectrum(i) point by point.

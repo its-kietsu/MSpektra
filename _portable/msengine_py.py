@@ -773,6 +773,9 @@ def _declare31(L):
         "ms_subtract_baseline": ([PD, PD, c_long, c_double, c_double, PD], c_int),
         "ms_label_maxima": ([PD, PD, c_long, c_int, c_double, c_double, PL, PL], c_int),
         "ms_xic_multi": ([c_void_p, c_int, PD, PD, c_int, PD, c_long], c_int),
+        # find mass (ms_find_mass): the profile of the charge states in each candidate scan
+        "ms_mass_profile": ([c_void_p, c_int, PD, c_long, c_double, c_double, PI, c_int, c_double, PD, c_long, PD,
+                             PL], c_int),
         # 3.31: the Compare view (lcms_compare_core)
         "ms_cmp_subtract_blank": ([PD, PD, c_long, PD, PD, c_long, PD], c_int),
         "ms_cmp_find_apex": ([PD, PD, c_long, c_double, c_double, c_int, PD], c_int),
@@ -1257,6 +1260,25 @@ def xic_multi(data, event, mzs, tols):
     if L.ms_xic_multi(data.handle, int(event), pc, pw, len(c), po, n):
         return None
     return out.reshape(len(c), n)
+
+
+def mass_profile(data, event, times, M, hw, zs, c, grid):
+    """ms_find_mass._profile of the scan nearest to each time (the spectrum of data.scan_spectrum(event, t)), for
+    all of them in one call (ms_mass_profile, in libraries that have it; m/z as recorded, no calibration in use):
+    (P with one row per time, the number of points of each spectrum: 0 = empty), or None: not available."""
+    L = _lib31("ms_mass_profile")
+    if L is None or not isinstance(data, EngineFile) or data.calibration_for(event) is not None:
+        return None
+    n, G = len(times), np.ascontiguousarray(grid, dtype=np.float64)
+    ta, pt = _d(times)
+    za = np.ascontiguousarray(zs, dtype=np.int32)  # (c_int)
+    out, po = _out(n * len(G))
+    npts = np.zeros(n, dtype=np.int32 if ctypes.sizeof(c_long) == 4 else np.int64)
+    if L.ms_mass_profile(data.handle, int(event), pt, n, float(M), float(hw), za.ctypes.data_as(POINTER(c_int)),
+                         len(za), float(c), G.ctypes.data_as(_PD), len(G), po,
+                         npts.ctypes.data_as(POINTER(c_long))):
+        return None
+    return out.reshape(n, len(G)), npts
 
 
 # ------------------------------------------------------------------ lcms_compare_core (3.31)

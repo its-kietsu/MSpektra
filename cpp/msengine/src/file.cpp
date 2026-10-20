@@ -24,12 +24,14 @@
 //     (MS_BAD_ARG: the reader is busy in the same thread); it may call ms_close.
 #include "file.h"
 #include "fileio.h"
+#include "findmass.h"
 #include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <limits>
 #include <mutex>
 #include <numeric>
@@ -754,7 +756,8 @@ MS_API int ms_xic(ms_file* f, int event, double mz, double tol, const double** y
 
 // Mass chromatograms of several windows in one pass over the scans (hrms_calib.find_calibrant_segment
 // asks for one per calibrant ion: one pass instead of one per window); the same values as n calls of
-// ms_xic (each window sums the centroids in their order).
+// ms_xic (each window sums the centroids in their order). Readers whose own chromatogram sums the points
+// of each scan (Shimadzu, arrays) compute every window in one pass, parallel over the scans (Reader::xic_multi).
 MS_API int ms_xic_multi(ms_file* f, int event, const double* mz, const double* tol, int nw, double* out, long n_out) {
     return ms::guarded([&] {
         FileRef ref(f);
@@ -772,6 +775,15 @@ MS_API int ms_xic_multi(ms_file* f, int event, const double* mz, const double* t
         if (nw == 0) return;
         ms::Reader& r = *ref->reader;
         const size_t nall = r.scans().size();
+        bool multi;
+        {
+            std::lock_guard<std::mutex> lk(ref->reader_mu);
+            multi = r.xic_multi(ev.idx, mz, tl.data(), nw, out, &ref->closing);
+        }
+        if (multi) {
+            closed_cancel(ref);   // (the reader stopped early: the file is being closed)
+            return;
+        }
         std::vector<double> yy;
         bool own;
         {
@@ -816,6 +828,162 @@ MS_API int ms_xic_multi(ms_file* f, int event, const double* mz, const double* t
                     if (std::fabs(cm[j] - mz[w]) <= tl[w]) s += ci[j];
                 out[(size_t)w * ne + k] = s;
             }
+        }
+    });
+}
+
+// Find mass (ms_find_mass.search): the profile of each scan nearest to t[k] (as ms_scan), see msengine.h.
+// Readers whose data can be read by several threads at once (Shimadzu, arrays): the scans are summed and
+// profiled in parallel while the reader mutex is held; other readers: the scans are read one by one as
+// ms_scan reads them (the mutex per reader call), a block at a time, and the profiles of a block computed in
+// parallel.
+MS_API int ms_mass_profile(ms_file* f, int event, const double* t, long n, double M, double hw, const int* zs, int nz,
+                           double carrier, const double* grid, long ngrid, double* out, long* npts) {
+    return ms::guarded([&] {
+        FileRef ref(f);
+        ref.require("ms_mass_profile");
+        if (n < 0 || nz < 0 || ngrid < 0) throw std::invalid_argument("ms_mass_profile: negative count");
+        if (n > 0 && (!t || !out || !npts)) throw std::invalid_argument("ms_mass_profile: null argument");
+        if (nz > 0 && !zs) throw std::invalid_argument("ms_mass_profile: null charge states");
+        if (ngrid > 0 && !grid) throw std::invalid_argument("ms_mass_profile: null grid");
+        if (nz == 0 || ngrid == 0) throw std::invalid_argument("ms_mass_profile: no charge states or no grid");
+        if (!std::isfinite(M) || !std::isfinite(hw) || hw < 0 || !std::isfinite(carrier))
+            throw std::invalid_argument("ms_mass_profile: the mass, the width (>= 0) and the carrier must be finite numbers");
+        for (int k = 0; k < nz; k++)
+            if (zs[k] < 1) throw std::invalid_argument("ms_mass_profile: the charge states must be 1 or more");
+        for (long g = 0; g < ngrid; g++)
+            if (!std::isfinite(grid[g])) throw std::invalid_argument("ms_mass_profile: the grid must be finite numbers");
+        if ((double)nz * (double)ngrid > 1e8) throw std::invalid_argument("ms_mass_profile: too many charge states x grid points");
+        for (long k = 0; k < n; k++)
+            if (std::isnan(t[k])) throw std::invalid_argument("ms_mass_profile: a time is not a number");
+        const ms_file::Event& ev = event_of(ref.get(), event);
+        if (n == 0) return;
+        if (ev.idx.empty()) throw ms::Error("ms_mass_profile: this scan event has no scans");
+        // the scan of each time: the nearest one, the first of equals (as ms_scan)
+        std::vector<long> scan((size_t)n);
+        for (long k = 0; k < n; k++) {
+            size_t best = 0;
+            for (size_t j = 1; j < ev.rt.size(); j++)
+                if (std::fabs(ev.rt[j] - t[k]) < std::fabs(ev.rt[best] - t[k])) best = j;
+            scan[(size_t)k] = ev.idx[best];
+        }
+        std::vector<double> klo, khi;
+        ms::mass_profile_keys(M, hw, zs, nz, carrier, grid, ngrid, klo, khi);
+        ms::Reader& r = *ref->reader;
+        const int nt = ms::threads();
+        (void)nt;
+        // ---- readers that may be read in parallel
+        bool concurrent;
+        {
+            std::lock_guard<std::mutex> lk(ref->reader_mu);
+            concurrent = r.concurrent_reads();
+        }
+        if (concurrent) {
+            std::atomic<bool> stop{false}, not_own{false};
+            std::exception_ptr err;
+            {
+                std::lock_guard<std::mutex> lk(ref->reader_mu);
+#ifdef _OPENMP
+#pragma omp parallel num_threads(nt) if (n > 1)
+#endif
+                {
+                    ms::Spectrum sp;
+                    std::vector<double> cs;
+                    std::vector<long> ilo, ihi, one(1);
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic, 1)
+#endif
+                    for (long k = 0; k < n; k++) {
+                        if (stop.load(std::memory_order_relaxed)) continue;
+                        if (ref->closing.load(std::memory_order_relaxed)) { stop = true; continue; }
+                        try {
+                            one[0] = scan[(size_t)k];
+                            // (sum_scans of one scan for these readers: the reader's own sum)
+                            if (!r.sum_profiles(one, sp, nullptr, nullptr)) { not_own = true; stop = true; continue; }
+                            const long m = (long)std::min(sp.mz.size(), sp.it.size());
+                            npts[k] = m;
+                            if (m > 0)
+                                ms::mass_profile_row(sp.mz.data(), sp.it.data(), m, klo, khi, nz, ngrid, cs, ilo, ihi,
+                                                     out + (size_t)k * ngrid);
+                            else
+                                std::fill(out + (size_t)k * ngrid, out + (size_t)(k + 1) * ngrid, 0.0);
+                        } catch (...) {
+#ifdef _OPENMP
+#pragma omp critical(ms_mass_profile_err)
+#endif
+                            {
+                                if (!err) err = std::current_exception();
+                            }
+                            stop = true;
+                        }
+                    }
+                }
+            }
+            if (err) std::rethrow_exception(err);
+            closed_cancel(ref);
+            if (!not_own) return;
+            // (a reader without its own sums: below, as ms_scan)
+        }
+        // ---- other readers: read one by one as ms_scan, a block of scans at a time (at most 64 scans or
+        // 8 million points), the profiles of a block in parallel
+        Progress pr;
+        pr.f = ref.get();
+        const long block = std::max(16L, 4L * nt);
+        std::vector<std::vector<double>> bmz((size_t)block), bit((size_t)block);
+        try {
+            for (long k0 = 0; k0 < n;) {
+                long k1 = k0;
+                size_t points = 0;
+                while (k1 < n && k1 - k0 < block && points < 8000000) {
+                    closed_cancel(ref);
+                    const std::vector<long> one(1, scan[(size_t)k1]);
+                    std::vector<double>& x = bmz[(size_t)(k1 - k0)];
+                    std::vector<double>& y = bit[(size_t)(k1 - k0)];
+                    sum_scans(ref.get(), one, progress_wrap, &pr, x, y);
+                    points += x.size();
+                    k1++;
+                }
+                std::exception_ptr err;
+#ifdef _OPENMP
+#pragma omp parallel num_threads(nt) if (k1 - k0 > 1)
+#endif
+                {
+                    std::vector<double> cs;
+                    std::vector<long> ilo, ihi;
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic, 1)
+#endif
+                    for (long k = k0; k < k1; k++) {
+                        try {
+                            const std::vector<double>& x = bmz[(size_t)(k - k0)];
+                            const std::vector<double>& y = bit[(size_t)(k - k0)];
+                            const long m = (long)std::min(x.size(), y.size());
+                            npts[k] = m;
+                            if (m > 0)
+                                ms::mass_profile_row(x.data(), y.data(), m, klo, khi, nz, ngrid, cs, ilo, ihi,
+                                                     out + (size_t)k * ngrid);
+                            else
+                                std::fill(out + (size_t)k * ngrid, out + (size_t)(k + 1) * ngrid, 0.0);
+                        } catch (...) {
+#ifdef _OPENMP
+#pragma omp critical(ms_mass_profile_err)
+#endif
+                            {
+                                if (!err) err = std::current_exception();
+                            }
+                        }
+                    }
+                }
+                if (err) std::rethrow_exception(err);
+                for (long k = k0; k < k1; k++) {   // (memory of a block of large profiles)
+                    std::vector<double>().swap(bmz[(size_t)(k - k0)]);
+                    std::vector<double>().swap(bit[(size_t)(k - k0)]);
+                }
+                k0 = k1;
+            }
+        } catch (const ms::Cancelled&) {
+            closed_cancel(ref);
+            throw;
         }
     });
 }

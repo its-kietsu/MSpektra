@@ -1,4 +1,4 @@
-MSpektra 4.52 - portable Windows package   (19.10.2026)
+MSpektra 4.53 - portable Windows package   (20.10.2026)
 ========================================================
 
 Analysis of LC-MS and HRMS data, with deconvolution:
@@ -39,6 +39,20 @@ The version is shown on the start screen, in the help window (?) of LCMS
 and HRMS Analysis, and in the first line of each log file. It went up by
 0.1 with every update until 3.3. Since 3.31 a small change adds 0.01, a
 large change 0.1 and a big change 1.0.
+
+4.53 (20.10.2026)
+Faster Find mass and plots that fill the window.
+* Find mass is about 15 to 20 times faster (well under a second per
+  mass) with the same results, and a wide window (such as 18300 +- 100
+  Da) now finds every species inside it.
+* LCMS Analysis: the plots fill the window. MS view: the chromatograms,
+  the mass spectra and the deconvolution result shown; PDA view: the
+  wavelength map, chromatogram, UV spectrum and mass spectra. The tables
+  follow below.
+* After a deconvolution, the charge states and the fit of the selected
+  mass show on the spectrum again, and that spectrum comes into view.
+* Mass spectra: the m/z range set with "m/z range..." is kept (double
+  click and new spectra stay in it) until "Full m/z range".
 
 4.52 (19.10.2026)
 Find mass in LCMS Analysis and fewer antivirus false alarms.

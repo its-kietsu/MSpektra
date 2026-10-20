@@ -1808,6 +1808,10 @@ class DeconvPanel(object):
         self._ensure_table()
         self._fill_table(ent)
         self._mark_rows()
+        rows = getattr(self.tab, "rows", None)
+        if getattr(rows, "fit_share", None) is not None:  # ("Plots fill the window": the active result's tile)
+            rows.relayout()
+            self.tab.scroller.refit()
         events = {ent.res["e"]}
         if old is not None:
             events.add(old.res["e"])
@@ -2199,7 +2203,7 @@ class DeconvPanel(object):
         if fit is not None and len(fit):
             ln = U.plot_trace(ax, fit[:, 0], fit[:, 1], color="#E0602F", lw=U.LW_TRACE, alpha=0.85, zorder=3)
             ln._no_scale = True
-        if self.sel is None or res.get("tag") == "isodec" or self.sel >= len(res["peaks"]):
+        if not self.marks_for(col):
             return
         q = res["peaks"][self.sel]
         colr = U.PAL[self.sel % len(U.PAL)]
@@ -2208,6 +2212,9 @@ class DeconvPanel(object):
         x0, x1 = ax.get_xlim()
         gap = (x1 - x0) / 45.0
         last = None
+        # a plot of a tile of both polarities has no title row: no room above its frame (the tags were cut off
+        # there since 4.51); they go inside, over the room kept free above the peaks (plot_spec: label_room_pt)
+        shared = getattr(col.get("spec_card"), "pair", None) is not None
         for z, mz in sorted(self._charges_in_range(q["mass"], res), key=lambda t: t[1]):
             if not (x0 <= mz <= x1):
                 continue
@@ -2217,12 +2224,22 @@ class DeconvPanel(object):
                 # charge tags just above the frame, where they cannot cover the
                 # m/z labels of the peaks (near the left edge, where the
                 # exponent of the axis sits, inside the frame instead)
-                inside = (mz - x0) / ((x1 - x0) or 1.0) < 0.1
+                inside = shared or (mz - x0) / ((x1 - x0) or 1.0) < 0.1
                 ax.text(mz, 0.97 if inside else 1.012, "%d+" % z if res["params"].get("sign", 1) > 0 else "%d−" % z,
                         transform=tr, ha="center", va="top" if inside else "bottom", fontsize=7.5, color=colr,
                         zorder=6, clip_on=False,
                         bbox=dict(boxstyle="round,pad=0.12", fc="white", ec="none", alpha=0.85))
                 last = mz
+
+    def marks_for(self, col):
+        """True when the charge states of the selected mass are drawn on the spectrum of col (overlay)."""
+        res = self.result
+        if res is None or col["e"] != res["e"] or self.sel is None or res.get("tag") == "isodec":
+            return False
+        key = res.get("spec_key")
+        if key is not None and key != _spec_key(col["e"], col.get("spec")):
+            return False
+        return self.sel < len(res.get("peaks") or [])
 
     def _subtitle(self, ent, mark=True, quality=True):
         """Method, spectrum and mass range of a result (the rows are told
@@ -2768,6 +2785,21 @@ class DeconvPanel(object):
         self.sel = i
         self.plot_results()
         self._replot_spec()
+        self._show_marks()
+
+    def _show_marks(self):
+        """The spectrum with the fit and charge states of the selected mass scrolled into view, with the result
+        (a tile of both polarities may have it out of view: + and - one below the other since 4.51)."""
+        res = self.result
+        keep = getattr(self.tab, "keep_in_view", None)
+        if res is None or keep is None:
+            return
+        col = next((c for c in self.tab.cols if c["e"] == res["e"]), None)
+        if col is None or col.get("spec_card") is None:
+            return
+        card = col["spec_card"]
+        tile = card.pair if getattr(card, "pair", None) is not None else card
+        keep([tile] + ([self.active.row] if self.active is not None and self.active.row is not None else []))
 
     # ------------------------------------------------- masses added by hand
     # (on the active result)
@@ -2893,6 +2925,7 @@ class DeconvPanel(object):
             self.sel = i
             self.plot_results()
             self._replot_spec()
+            self._show_marks()
             q = res["peaks"][i]
             if _grouped(res) and "apex" in q:
                 self.status("Selected isotope %.4f Da; centroid %.3f Da%s: %.1f %% of the largest species" % (

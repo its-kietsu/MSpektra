@@ -16,7 +16,7 @@ import wx
 import ms_project_store as S
 import unidec_theme as T
 
-DISPLAY_KEYS=('show_charge_states','tile_mode','hrms_tile_mode','tile_scale')
+DISPLAY_KEYS=('show_charge_states','tile_mode','hrms_tile_mode','pda_tile_mode','lcms_tile_mode','tile_scale')
 OLD_SHORTCUT='Resume analysis.cmd'  # written by 3.4 to 3.55; removed when the folder is saved again
 
 def _walk(root):
@@ -36,17 +36,22 @@ def views(page):
                                 frac={i:v for i,p in enumerate(w.all_panes) if (v:=getattr(w,'frac',{}).get(p)) is not None}))
     sc=getattr(page,'scroller',None)
     # tiles 3: the plots of the scan events in shared tiles (4.5 and older: rows side by side; 2: a tile per plot;
-    # see old_layouts)
-    return dict(cards=cards,layouts=layouts,scroll=list(sc.GetViewStart()) if sc else None,tiles=3)
+    # see old_layouts); 4: the plots of the PDA view fill the window (old_heights)
+    return dict(cards=cards,layouts=layouts,scroll=list(sc.GetViewStart()) if sc else None,tiles=4)
 
 def set_views(page,state):
     import unilcms as U
     cards=[w for w in _walk(page) if hasattr(w,'ax') and hasattr(w,'canvas')]
     layouts=[w for w in _walk(page) if isinstance(w,(U.SplitBox,U.StackBox))]
-    saved=state.get('layouts',[])
-    if state.get('tiles',1)<3 and hasattr(page,'old_layouts'):
+    saved=state.get('layouts',[]);tiles=state.get('tiles',1)
+    if tiles<3 and hasattr(page,'old_layouts'):
         # saved before: the layouts as the tiles are now (a layout that cannot be told is left as it is)
-        try:saved=page.old_layouts(saved,state.get('tiles',1))
+        try:saved=page.old_layouts(saved,tiles)
+        except Exception:saved=[]
+    fresh=tiles<4 and hasattr(page,'old_heights')
+    if fresh:
+        # saved before the plots filled the window: the tile heights of then are not used (closed tiles stay)
+        try:saved=page.old_heights(saved)
         except Exception:saved=[]
     for w,st in zip(layouts,saved):
         if len(st['weights'])!=len(w.all_panes):continue
@@ -70,7 +75,7 @@ def set_views(page,state):
         w.title=st['title'];w.subtitle=st['subtitle']
         w.ax.set_xlim(st['x']);w.ax.set_ylim(st['y']);w.canvas.draw_idle()
     sc=getattr(page,'scroller',None)
-    if sc and state.get('scroll') is not None:sc.refit();sc.Scroll(*state['scroll'])
+    if sc and state.get('scroll') is not None and not fresh:sc.refit();sc.Scroll(*state['scroll'])
 
 def capture(frame,docs):
     import undo as Z
@@ -102,7 +107,7 @@ def _display(saved):
     out={}
     for k,v in (saved.items() if isinstance(saved,dict) else ()):
         if k=='show_charge_states' and isinstance(v,bool):out[k]=v
-        elif k in ('tile_mode','hrms_tile_mode') and isinstance(v,str) and len(v)<40:out[k]=v
+        elif k in ('tile_mode','hrms_tile_mode','pda_tile_mode','lcms_tile_mode') and isinstance(v,str) and len(v)<40:out[k]=v
         elif k=='tile_scale' and isinstance(v,(int,float)) and not isinstance(v,bool) and 0<v<100:out[k]=v
     return out
 

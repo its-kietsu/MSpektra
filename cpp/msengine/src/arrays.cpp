@@ -7,6 +7,7 @@
 // ShimadzuReader does it (LCDFile._binned + _fill, LCDFile.chromatogram "xic"),
 // so that both give the same values as the Python reference bit for bit.
 #include "file.h"
+#include "f32scans.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -92,6 +93,14 @@ public:
         }
         return true;
     }
+
+    // one pass for several windows, parallel over the scans (the values of xic() above, bit for bit)
+    bool xic_multi(const std::vector<long>& idx, const double* mz, const double* tol, int nw, double* out,
+                   const std::atomic<bool>* stop) override {
+        xic_multi_f32(mz_, it_, offsets_, idx, mz, tol, nw, out, stop);
+        return true;
+    }
+    bool concurrent_reads() const override { return true; }   // arrays in memory, read only
 
     // LCDFile._binned + _fill: the plain sum per bin (file.cpp divides by the scan
     // count), bin m/z = intensity weighted mean, empty bins of the grid at zero

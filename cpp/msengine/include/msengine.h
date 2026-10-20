@@ -626,6 +626,21 @@ MS_API ms_file* ms_open_vendor(const char* kind, const char* instrument, long n_
 MS_API int ms_lzf_decompress(const unsigned char* in, long n_in, unsigned char* out, long cap, long* n_out);
 /* ---- end of the 4.1 additions ---- */
 
+/* ---- Find mass of LCMS Analysis (ms_find_mass.py) ----
+ * For each time t[k] (k < n), the scan of the event nearest to it (the first of equals, as ms_scan) and its
+ * spectrum as ms_scan gives it (Shimadzu and arrays: binned with the bin width set by ms_file_set_bin_width);
+ * then the summed signal of the charge states zs[0..nz) of the neutral mass M over the masses M + grid[g]
+ * (g < ngrid) as ms_find_mass._profile computes it, bit for bit: cs = [0, cumsum(intensities)], for each state
+ * z the window centre ((M + grid[g]) + z * carrier) / z +- hw / z, and out[k * ngrid + g] = the sum over the
+ * states (in their order) of cs[searchsorted(mz, centre + hw / z)] - cs[searchsorted(mz, centre - hw / z)]
+ * (numpy's searchsorted, side 'left'). npts[k] = the number of points of the spectrum (0: empty, its row is
+ * zeros). No calibration is applied (the m/z as recorded). Parallel over the scans; a file closed meanwhile
+ * gives MS_CANCELLED. MS_BAD_ARG: null pointers, negative counts, nz or ngrid 0, zs < 1, hw < 0, values that are
+ * not finite, a time that is NaN. */
+MS_API int ms_mass_profile(ms_file* f, int event, const double* t, long n, double M, double hw, const int* zs, int nz,
+                           double carrier, const double* grid, long ngrid, double* out, long* npts);
+/* ---- end of the find mass additions ---- */
+
 #ifdef __cplusplus
 }
 #endif

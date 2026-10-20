@@ -37,6 +37,7 @@ set(SOURCES
   src/compare.cpp
   src/adducts.cpp
   src/shifts.cpp
+  src/findmass.cpp
   src/vendor.cpp
   third_party/miniz.c
   third_party/sqlite3.c)
@@ -53,6 +54,8 @@ set_source_files_properties(third_party/sqlite3.c PROPERTIES COMPILE_OPTIONS "-w
 set_source_files_properties(src/udengine/udengine.cpp src/udengine/udscore.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 # the mass shift finder: the arithmetic of its Python reference (ms_shifts.py), no fused multiply add
 set_source_files_properties(src/shifts.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+# find mass (ms_mass_profile): the arithmetic of its Python reference (ms_find_mass._profile), no fused multiply add
+set_source_files_properties(src/findmass.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 target_compile_options(msengine_obj PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-O3 -Wall -Wextra>)
 if(NOT WIN32)
   # only the ms_* functions are exported (MS_API): otherwise the vendor libraries loaded later
