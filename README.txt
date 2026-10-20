@@ -1,4 +1,4 @@
-MSpektra 4.53 - portable Windows package   (20.10.2026)
+MSpektra 4.54 - portable Windows package   (20.10.2026)
 ========================================================
 
 Analysis of LC-MS and HRMS data, with deconvolution:
@@ -39,6 +39,15 @@ The version is shown on the start screen, in the help window (?) of LCMS
 and HRMS Analysis, and in the first line of each log file. It went up by
 0.1 with every update until 3.3. Since 3.31 a small change adds 0.01, a
 large change 0.1 and a big change 1.0.
+
+4.54 (20.10.2026)
+Updates install reliably.
+* After Install, MSpektra no longer stays waiting with nothing on screen:
+  parts of MSpektra left running without a window are closed, windows
+  still open are named, and Cancel starts MSpektra again (the update is
+  installed the next time).
+* Files held for a moment by OneDrive or a virus scanner no longer stop
+  the update.
 
 4.53 (20.10.2026)
 Faster Find mass and plots that fill the window.

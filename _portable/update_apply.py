@@ -26,6 +26,17 @@ OLD = os.path.join(UPD, "old")
 PENDING = os.path.join(UPD, "pending.json")
 K32 = ctypes.windll.kernel32
 U32 = ctypes.windll.user32
+K32.OpenProcess.restype = W.HANDLE
+K32.OpenProcess.argtypes = [W.DWORD, W.BOOL, W.DWORD]
+K32.CloseHandle.argtypes = [W.HANDLE]
+K32.WaitForSingleObject.argtypes = [W.HANDLE, W.DWORD]
+K32.TerminateProcess.argtypes = [W.HANDLE, W.UINT]
+K32.QueryFullProcessImageNameW.argtypes = [W.HANDLE, W.DWORD, W.LPWSTR, ctypes.POINTER(W.DWORD)]
+U32.GetWindowThreadProcessId.argtypes = [W.HWND, ctypes.POINTER(W.DWORD)]
+U32.IsWindowVisible.argtypes = [W.HWND]
+U32.GetWindowTextLengthW.argtypes = [W.HWND]
+U32.GetWindowTextW.argtypes = [W.HWND, W.LPWSTR, ctypes.c_int]
+LOCKED = (5, 32, 33)  # access denied, sharing violation, lock violation: a file held by another program
 
 
 def log(*a):
@@ -51,17 +62,19 @@ def read_json(path):
         return None
 
 
-def replace(src, dst, tries=40):
-    """os.replace, tried again for up to 10 s while another program holds a file for a moment: OneDrive syncing
-    a folder on the OneDrive Desktop, or a virus scanner (15.10.2026: "Access is denied" on journal.json at the
-    102nd move of the update to 4.36, which then was undone)."""
+def replace(src, dst, tries=240):
+    """os.replace, tried again for up to a minute while another program holds a file for a moment: OneDrive
+    syncing a folder on the OneDrive Desktop, or a virus scanner (15.10.2026: "Access is denied" on journal.json
+    at the 102nd move of the update to 4.36, which then was undone; a sharing violation is an OSError too)."""
     for i in range(tries):
         try:
             os.replace(src, dst)
             return
-        except PermissionError:
-            if i == tries - 1:
+        except OSError as ex:
+            if i == tries - 1 or not (isinstance(ex, PermissionError) or getattr(ex, "winerror", None) in LOCKED):
                 raise
+            if i in (8, 80):
+                log("waiting for a file held by another program:", dst, ex)
             time.sleep(0.25)
 
 
@@ -99,24 +112,89 @@ def processes_in_folder():
     return out
 
 
-def wait_closed():
+def image_name(pid):
+    h = K32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return "?"
+    try:
+        buf = ctypes.create_unicode_buffer(1024)
+        size = W.DWORD(1024)
+        return buf.value if K32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)) else "?"
+    finally:
+        K32.CloseHandle(h)
+
+
+def windows_of(pids):
+    """{pid: [titles of its visible windows]} for the processes pids."""
+    out = {p: [] for p in pids}
+    proc = ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
+
+    def each(hwnd, lp):
+        try:
+            if U32.IsWindowVisible(hwnd):
+                pid = W.DWORD()
+                U32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                if pid.value in out:
+                    n = U32.GetWindowTextLengthW(hwnd)
+                    buf = ctypes.create_unicode_buffer(n + 1)
+                    U32.GetWindowTextW(hwnd, buf, n + 1)
+                    out[pid.value].append(buf.value or "MSpektra")
+        except Exception:
+            pass
+        return True
+    U32.EnumWindows(proc(each), 0)
+    return out
+
+
+def end_process(pid):
+    """Ends a process of the MSpektra folder that has no window left (the MSpektra that asked for the update
+    and did not end, or a helper of it): nothing of the user's is open in it."""
+    h = K32.OpenProcess(0x0001 | 0x00100000, False, pid)  # PROCESS_TERMINATE | SYNCHRONIZE
+    if not h:
+        return False
+    try:
+        ok = bool(K32.TerminateProcess(h, 1))
+        K32.WaitForSingleObject(h, 5000)
+        return ok
+    finally:
+        K32.CloseHandle(h)
+
+
+def wait_closed(grace=15.0, poll=0.5):
     """Waits until MSpektra and its other processes (deconvolution, other windows) have closed: their files
-    are locked while they run. False when the user gives up."""
+    are locked while they run. Processes of the MSpektra folder without any window (the MSpektra that asked for
+    the update but did not end, a helper) are ended after grace seconds; MSpektra windows still open are named
+    in a message (Retry: wait again). False when the user gives up (Cancel).
+    (20.10.2026: on another PC the window closed, nothing came back and "Close every MSpektra window" showed,
+    with no window to close: a process left without a window kept the installer waiting.)"""
     if PID:
         h = K32.OpenProcess(0x00100000, False, PID)  # SYNCHRONIZE
         if h:
-            K32.WaitForSingleObject(h, 120000)
+            K32.WaitForSingleObject(h, 10000)
             K32.CloseHandle(h)
+    t0 = time.time()
     while True:
-        t0 = time.time()
-        while time.time() - t0 < 45:
-            if not processes_in_folder():
-                time.sleep(0.5)  # (files are released a moment after the process ends)
-                return True
-            time.sleep(0.5)
-        log("still running:", processes_in_folder())
-        if not message("Close every MSpektra window to finish the update.", retry=True):
-            return False
+        procs = processes_in_folder()
+        if not procs:
+            time.sleep(0.5)  # (files are released a moment after the process ends)
+            return True
+        wins = windows_of(procs)
+        hidden = [p for p in procs if not wins.get(p)]
+        shown = sorted({t for p in procs for t in wins.get(p) or []})
+        waited = time.time() - t0
+        if hidden and waited > grace:
+            for p in hidden:
+                log("ended a process without a window:", p, image_name(p), end_process(p))
+            continue
+        if shown and waited > grace:
+            log("windows still open:", shown)
+            if not message("These MSpektra windows are still open:\n\n    %s\n\nClose them, then press Retry to finish "
+                           "the update. Cancel starts MSpektra again without the update (it is installed the next "
+                           "time)." % "\n    ".join(shown[:8]), retry=True):
+                return False
+            t0 = time.time()
+            continue
+        time.sleep(poll)
 
 
 def move(src, dst, journal):
@@ -222,7 +300,11 @@ def rollback(reason):
 
 def main():
     if not wait_closed():
-        log("cancelled: MSpektra still open")
+        log("cancelled: MSpektra still open; started again without the update (it stays ready)")
+        try:
+            subprocess.Popen([os.path.join(ROOT, "MSpektra.exe")], cwd=ROOT, close_fds=True)
+        except OSError as ex:
+            log("could not start MSpektra:", ex)
         return
     if "--rollback" in ARGS:
         if rollback("chosen in About"):

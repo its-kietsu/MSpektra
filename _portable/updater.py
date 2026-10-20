@@ -345,6 +345,27 @@ def _close_all():
         except Exception:
             pass
 
+    def finish():
+        # a window closed but still there hidden (or a helper frame) keeps MSpektra running, and the installer
+        # waited for it (20.10.2026: nothing came back after Install): with no window left in view, the rest goes
+        try:
+            if any(w.IsShown() for w in wx.GetTopLevelWindows()):
+                return  # (a window the user still has open: the installer names it)
+            for w in list(wx.GetTopLevelWindows()):
+                try:
+                    w.Destroy()
+                except Exception:
+                    pass
+            app = wx.GetApp()
+            if app is not None:
+                app.ExitMainLoop()
+        except Exception:
+            pass
+    try:
+        wx.CallLater(4000, finish)
+    except Exception:
+        pass
+
 
 def mark_started():
     """The first window of a new version is up: the installer does not put the old version back."""
