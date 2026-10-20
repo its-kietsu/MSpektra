@@ -16,4 +16,9 @@ void mass_profile_row(const double* mz, const double* it, long n, const std::vec
                       const std::vector<double>& hi, int nz, long ng, std::vector<double>& cs, std::vector<long>& ilo,
                       std::vector<long>& ihi, double* P);
 
+// The m/z calibration of ms_calibration_apply on n values (calib.cpp; out may be mz): ms_mass_profile_cal
+// calibrates each spectrum so, as the window does (hrms_calib.Calibration calls ms_calibration_apply).
+void calibration_apply_n(int model, const double* coef, int ncoef, double m_lo, double m_hi, const double* mz,
+                         double* out, long n);
+
 }  // namespace ms

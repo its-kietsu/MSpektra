@@ -628,6 +628,68 @@ public:
         return true;
     }
 
+    // several windows in one call of the SDK (one pass over the frames; find mass asks for hundreds): the jobs
+    // and the sums of xic(), job w + 1 for window w
+    bool xic_many(int polarity, const double* mz, const double* tol, int nw, std::vector<std::vector<double>>& y) override {
+        if (!tdf_) return false;
+        struct Ctx {
+            std::vector<TimsChromJob> jobs;
+            size_t next = 0;
+            std::vector<std::vector<int64_t>> frames;
+            std::vector<std::vector<double>> values;
+            bool failed = false;
+        } ctx;
+        ctx.jobs.resize((size_t)std::max(nw, 0));
+        ctx.frames.resize(ctx.jobs.size());
+        ctx.values.resize(ctx.jobs.size());
+        for (int w = 0; w < nw; w++) {
+            const double lo = mz[w] - tol[w], hi = mz[w] + tol[w];
+            ctx.jobs[(size_t)w] = {(int64_t)w + 1, -1.0, time_s_.back() + 1e6, std::min(lo, hi), std::max(lo, hi), 0.0, 1e3};
+        }
+        tims_job_gen gen = [](TimsChromJob* job, void* user) -> uint32_t {
+            Ctx* c = (Ctx*)user;
+            if (c->next >= c->jobs.size()) return 2;
+            *job = c->jobs[c->next++];
+            return 1;
+        };
+        tims_chrom_sink sink = [](int64_t id, uint32_t n, const int64_t* frames, const uint64_t* values, void* user) -> uint32_t {
+            Ctx* c = (Ctx*)user;
+            try {   // no exception may pass through the frames of the SDK
+                if (id < 1 || id > (int64_t)c->jobs.size()) return 1;
+                if (n && frames && values) {
+                    c->frames[(size_t)(id - 1)].assign(frames, frames + n);
+                    std::vector<double>& v = c->values[(size_t)(id - 1)];
+                    v.resize(n);
+                    for (uint32_t i = 0; i < n; i++) v[i] = (double)values[i];
+                }
+            } catch (...) { c->failed = true; return 0; }
+            return 1;
+        };
+        if (nw > 0) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!sdk_->tims_extract_chromatograms(handle_, gen, sink, &ctx)) throw Error(ctx.failed ? "out of memory" : sdk_error());
+            if (ctx.failed) throw std::bad_alloc();
+        }
+        if (frame_index_.empty())
+            for (size_t i = 0; i < ids_.size(); i++) frame_index_.emplace(ids_[i], (long)i);
+        y.assign(ctx.jobs.size(), std::vector<double>());
+        for (size_t w = 0; w < ctx.jobs.size(); w++) {
+            std::vector<double>& yw = y[w];
+            yw.assign(scans_.size(), 0.0);
+            const std::vector<int64_t>& fr = ctx.frames[w];
+            const std::vector<double>& va = ctx.values[w];
+            for (size_t k = 0; k < fr.size(); k++) {
+                auto f = frame_index_.find(fr[k]);
+                if (f == frame_index_.end()) continue;
+                if (scans_[f->second].polarity != polarity) continue;
+                yw[f->second] += va[k];
+            }
+            std::vector<int64_t>().swap(ctx.frames[w]);
+            std::vector<double>().swap(ctx.values[w]);
+        }
+        return true;
+    }
+
 protected:
     void read_lines(long i, std::vector<double>& mz, std::vector<double>& it) override {
         mz.clear();

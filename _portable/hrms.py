@@ -106,7 +106,8 @@ class HRMSTab(U.MSTab):
     PICK_MIN = 0.004
     TOL_DEFAULT = "0.02"
     FULL_WINDOW = False  # HRMS data are deconvoluted in the settings window only
-    FIND_MASS = False  # (Find mass: LCMS Analysis)
+    MASS_STEP = 0.1  # Find mass: masses found to 0.1 Da (resolved isotopes)
+    PLOTS_FILL = False  # (its own tile heights: fit_first, hrms_tile_mode)
     OPEN_HINT = "Open a .d or .raw folder, a .raw file or an mzML file"
     TOOL_HINTS = dict(U.MSTab.TOOL_HINTS)
     TOOL_HINTS["formula"] = "Formula: click a peak to find formulas"
@@ -1791,6 +1792,8 @@ msconvert.
 Chromatograms and spectra
   * Drag on a chromatogram to average a range; Shift + drag for the
     background. Right click > Add for a mass chromatogram.
+  * Right click a chromatogram > Find mass: where the charge states of a
+    mass appear in the run. Click a shaded region for its spectrum.
 
 Calibration
   1. Drag across the calibrant peak (sodium formate; found and marked
@@ -1994,6 +1997,7 @@ class HRMSFrame(U.PostrunFrame):
             if col.get("overlay"):
                 ms.check_formula()
                 break
+        ms.redo_searches()  # (Find mass: the windows are in calibrated m/z)
 
 
 def open_window(path=None):

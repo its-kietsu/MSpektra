@@ -784,6 +784,30 @@ MS_API int ms_xic_multi(ms_file* f, int event, const double* mz, const double* t
             closed_cancel(ref);   // (the reader stopped early: the file is being closed)
             return;
         }
+        {   // readers with chromatograms of their own that extract several in one pass (timsTOF)
+            std::vector<std::vector<double>> ys;
+            bool many;
+            {
+                std::lock_guard<std::mutex> lk(ref->reader_mu);
+                many = r.xic_many(ev.polarity, mz, tl.data(), nw, ys);
+            }
+            if (many) {
+                if (ys.size() != (size_t)nw) throw ms::Error("reader chromatograms: wrong number");
+                for (int w = 0; w < nw; w++) {
+                    const std::vector<double>& yw = ys[(size_t)w];
+                    double* o = out + (size_t)w * ne;
+                    if (yw.size() == nall && nall != ne) {
+                        for (size_t k = 0; k < ne; k++) o[k] = yw[ev.idx[k]];
+                    } else if (yw.size() == ne) {
+                        std::copy(yw.begin(), yw.end(), o);
+                    } else {
+                        throw ms::Error("reader chromatogram of the wrong length");
+                    }
+                }
+                closed_cancel(ref);
+                return;
+            }
+        }
         std::vector<double> yy;
         bool own;
         {
@@ -836,12 +860,16 @@ MS_API int ms_xic_multi(ms_file* f, int event, const double* mz, const double* t
 // Readers whose data can be read by several threads at once (Shimadzu, arrays): the scans are summed and
 // profiled in parallel while the reader mutex is held; other readers: the scans are read one by one as
 // ms_scan reads them (the mutex per reader call), a block at a time, and the profiles of a block computed in
-// parallel.
-MS_API int ms_mass_profile(ms_file* f, int event, const double* t, long n, double M, double hw, const int* zs, int nz,
-                           double carrier, const double* grid, long ngrid, double* out, long* npts) {
+// parallel. cal_model >= 0: each spectrum's m/z calibrated first as ms_calibration_apply does (ms_mass_profile_cal).
+static int mass_profile_run(ms_file* f, int event, const double* t, long n, double M, double hw, const int* zs, int nz,
+                            double carrier, const double* grid, long ngrid, int cal_model, const double* cal_coef,
+                            int cal_ncoef, double cal_lo, double cal_hi, double* out, long* npts) {
     return ms::guarded([&] {
         FileRef ref(f);
         ref.require("ms_mass_profile");
+        const bool cal = cal_model >= 0;
+        if (cal)   // (the checks of ms_calibration_apply)
+            ms::calibration_apply_n(cal_model, cal_coef, cal_ncoef, cal_lo, cal_hi, nullptr, nullptr, 0);
         if (n < 0 || nz < 0 || ngrid < 0) throw std::invalid_argument("ms_mass_profile: negative count");
         if (n > 0 && (!t || !out || !npts)) throw std::invalid_argument("ms_mass_profile: null argument");
         if (nz > 0 && !zs) throw std::invalid_argument("ms_mass_profile: null charge states");
@@ -902,6 +930,9 @@ MS_API int ms_mass_profile(ms_file* f, int event, const double* t, long n, doubl
                             if (!r.sum_profiles(one, sp, nullptr, nullptr)) { not_own = true; stop = true; continue; }
                             const long m = (long)std::min(sp.mz.size(), sp.it.size());
                             npts[k] = m;
+                            if (cal && m > 0)
+                                ms::calibration_apply_n(cal_model, cal_coef, cal_ncoef, cal_lo, cal_hi, sp.mz.data(),
+                                                        sp.mz.data(), m);
                             if (m > 0)
                                 ms::mass_profile_row(sp.mz.data(), sp.it.data(), m, klo, khi, nz, ngrid, cs, ilo, ihi,
                                                      out + (size_t)k * ngrid);
@@ -955,10 +986,13 @@ MS_API int ms_mass_profile(ms_file* f, int event, const double* t, long n, doubl
 #endif
                     for (long k = k0; k < k1; k++) {
                         try {
-                            const std::vector<double>& x = bmz[(size_t)(k - k0)];
+                            std::vector<double>& x = bmz[(size_t)(k - k0)];
                             const std::vector<double>& y = bit[(size_t)(k - k0)];
                             const long m = (long)std::min(x.size(), y.size());
                             npts[k] = m;
+                            if (cal && m > 0)
+                                ms::calibration_apply_n(cal_model, cal_coef, cal_ncoef, cal_lo, cal_hi, x.data(),
+                                                        x.data(), m);
                             if (m > 0)
                                 ms::mass_profile_row(x.data(), y.data(), m, klo, khi, nz, ngrid, cs, ilo, ihi,
                                                      out + (size_t)k * ngrid);
@@ -986,6 +1020,23 @@ MS_API int ms_mass_profile(ms_file* f, int event, const double* t, long n, doubl
             throw;
         }
     });
+}
+
+MS_API int ms_mass_profile(ms_file* f, int event, const double* t, long n, double M, double hw, const int* zs, int nz,
+                           double carrier, const double* grid, long ngrid, double* out, long* npts) {
+    return mass_profile_run(f, event, t, n, M, hw, zs, nz, carrier, grid, ngrid, -1, nullptr, 0, 0.0, 0.0, out, npts);
+}
+
+MS_API int ms_mass_profile_cal(ms_file* f, int event, const double* t, long n, double M, double hw, const int* zs,
+                               int nz, double carrier, const double* grid, long ngrid, int cal_model,
+                               const double* cal_coef, int cal_ncoef, double cal_lo, double cal_hi, double* out,
+                               long* npts) {
+    if (cal_model < 0) {   // (a model is required here; ms_mass_profile is the call without calibration)
+        ms::set_error("ms_mass_profile_cal: model must be 0..5");
+        return MS_BAD_ARG;
+    }
+    return mass_profile_run(f, event, t, n, M, hw, zs, nz, carrier, grid, ngrid, cal_model, cal_coef, cal_ncoef,
+                            cal_lo, cal_hi, out, npts);
 }
 
 MS_API int ms_average(ms_file* f, int event, double t0, double t1, const double* bg, int n_bg,

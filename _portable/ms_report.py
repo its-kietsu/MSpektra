@@ -520,6 +520,8 @@ def figure_options(frame, kind):
             out.append(("dec", "Deconvolution", True))
         if msd is not None and getattr(msd, "calib", None) is not None:
             out.append(("cal", "Calibration errors", True))
+        for s in getattr(tab, "searches", None) or []:  # Find mass: the tiles of the searches
+            out.append(("search%d" % s["id"], "Mass search, %s" % _search_masses(s), True))
         out.append(("shade", "Shade the time ranges on the chromatograms", True))
     elif kind == "deconv":
         out += [("spec", "Mass spectrum with the fit", True), ("mass", "Zero charge mass spectrum", True)]
@@ -1104,7 +1106,8 @@ def build_hrms(frame, fields, tmp):
         # the chromatogram tiles as HRMS Analysis shows them (zoom, traces, mass chromatograms, shading)
         imgs = [p for p in (_tile_png(getattr(v, "card", None), os.path.join(tmp, "a_chrom%d.png" % i), W_FULL, 4.4,
                                       **_mark_opts(mark))
-                            for i, v in enumerate(getattr(st["tab"], "views", []) or []))
+                            for i, v in enumerate(getattr(st["tab"], "views", []) or [])
+                            if getattr(v, "kind", "") != "search")  # (mass searches: their own section)
                 if p]
         if imgs:
             rep.add("section", "Chromatograms")
@@ -1114,6 +1117,7 @@ def build_hrms(frame, fields, tmp):
             rep.add("section", "Chromatograms")
             rep.add("figure", _chrom_fig(os.path.join(tmp, "a_chrom.png"), st["traces"],
                                          st["ranges"] if mark else ()), W_FULL)
+    _search_figures(rep, st["tab"], fields, tmp, mark, table=True)
     ev = st["data"].events[st["e"]] if hasattr(st["data"], "events") else {}
     lo = ev.get("mz_low") or float(spec[0, 0])
     hi = ev.get("mz_high") or float(spec[-1, 0])
@@ -1442,8 +1446,9 @@ def _search_masses(s):
     return U.search_text(s, 6)
 
 
-def _search_figures(rep, ms_tab, fields, tmp, mark):
-    """Find mass: the search tiles as shown (one figure per plot), each with a caption."""
+def _search_figures(rep, ms_tab, fields, tmp, mark, table=False):
+    """Find mass: the search tiles as shown (one figure per plot), each with a caption; table (HRMS reports,
+    which have no captions): with a table of the masses instead."""
     import unilcms as U
     import ms_find_mass as F
     searches = [s for s in (getattr(ms_tab, "searches", None) or []) if want(fields, "search%d" % s["id"])]
@@ -1467,19 +1472,27 @@ def _search_figures(rep, ms_tab, fields, tmp, mark):
                     ax.set_xlabel("Time (min)", fontsize=7.5, labelpad=1.5)
                 p = _one_fig(path, draw)
             rep.add("figure", p, W_FULL)
-            bits = []
+            bits, rows = [], []
             res = s.get("res", {}).get(v.key) or []
             for (M, w, nm), r in zip(U.search_rows(s), res):
                 what = "%s%s ± %g Da" % (nm + ", " if nm else "", U._mass_text(M), w)
                 g = F.best_region(r)
                 if g is None:
                     bits.append("%s not found" % what)
+                    rows.append([esc(nm or U._mass_text(M)), "± %g" % w,
+                                 "too few charge states" if r.get("few") else "not found", "–", "–"])
                 else:
                     st = g.get("states") or []
                     a, b = F.core(r, g, 0.1)
                     bits.append("%s found at %.2f to %.2f min, mass %.1f Da%s" % (
                         what, a, b, g["mass"],
                         ", z %d to %d" % (min(st), max(st)) if st else ""))
+                    rows.append([esc(nm or U._mass_text(M)), "± %g" % w, "%.2f to %.2f min" % (a, b),
+                                 " and ".join("%.1f" % m for m in (g.get("masses") or [g["mass"]])),
+                                 "%d to %d" % (min(st), max(st)) if st else "–"])
+            if table and rows:
+                rep.add("table", ["Mass searched (Da)", "Window (Da)", "Found", "Mass (Da)", "z"], rows,
+                        [3.6, 2.2, 3.6, 3.4, 1.8], None)
             note = ms_tab._search_note(s, v.key) if hasattr(ms_tab, "_search_note") else ""
             cap = "Mass search %s: %s." % (ms_tab.ev_short(v.key), "; ".join(bits))
             if note:

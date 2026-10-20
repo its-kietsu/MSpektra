@@ -349,6 +349,15 @@ class Calibration(object):
             return np.concatenate([[self.base.x0, self.base.s], self.base.coef, self.hpc])
         return np.concatenate([[self.x0, self.s], self.coef])
 
+    def engine_spec(self):
+        """The arguments of ms_calibration_apply that __call__ gives the library (its model number, the
+        coefficients, lo, hi), or None when __call__ computes in Python (find mass then reads the spectra in
+        Python too)."""
+        E = _lib()
+        if E is None or E._lib31("ms_calibration_apply") is None:
+            return None
+        return _C_MODEL[self.model], self._lib_coef(), self.lo, self.hi
+
     def __call__(self, mz):
         E = _lib()
         if E is not None:

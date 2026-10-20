@@ -426,6 +426,31 @@ bool peak_near(const double* mz, const double* it, long n, double target, double
 }
 
 }  // namespace
+
+// ms_calibration_apply; also ms_mass_profile_cal (the spectra calibrated as the window calibrates them). out may
+// be mz.
+void calibration_apply_n(int model, const double* coef, int ncoef, double m_lo, double m_hi, const double* mz,
+                         double* out, long n) {
+    if (!coef || (n > 0 && (!mz || !out))) throw std::invalid_argument("ms_calibration_apply: null argument");
+    if (model < 0 || model > 5) throw std::invalid_argument("ms_calibration_apply: model must be 0..5");
+    const int need = model == 4 ? 6 : (model == 3 ? 5 : (model == 5 ? 3 : model + 4));
+    if (ncoef < need) throw std::invalid_argument("ms_calibration_apply: too few coefficients for this model");
+    if (ncoef > 16) throw std::invalid_argument("ms_calibration_apply: more than 16 coefficients");
+    Cal c;
+    c.model = model;
+    c.x0 = coef[0];
+    c.s = coef[1];
+    c.lo = m_lo;
+    c.hi = m_hi;
+    const int nc = model == 4 ? 3 : need - 2;
+    c.coef.assign(coef + 2, coef + 2 + nc);
+    if (model == 4) {
+        c.hpc.assign(coef + 5, coef + ncoef);
+        c.order = ncoef - 6;
+    }
+    for (long i = 0; i < n; i++) out[i] = c(mz[i]);
+}
+
 }  // namespace ms
 
 extern "C" {
@@ -440,26 +465,7 @@ MS_API int ms_calibration_fit(int model, int order, const double* measured, cons
 MS_API int ms_calibration_apply(int model, int order, const double* coef, int ncoef, double m_lo, double m_hi,
                                 const double* mz, double* out, long n) {
     (void)order;
-    return ms::guarded([&] {
-        if (!coef || (n > 0 && (!mz || !out))) throw std::invalid_argument("ms_calibration_apply: null argument");
-        if (model < 0 || model > 5) throw std::invalid_argument("ms_calibration_apply: model must be 0..5");
-        const int need = model == 4 ? 6 : (model == 3 ? 5 : (model == 5 ? 3 : model + 4));
-        if (ncoef < need) throw std::invalid_argument("ms_calibration_apply: too few coefficients for this model");
-        if (ncoef > 16) throw std::invalid_argument("ms_calibration_apply: more than 16 coefficients");
-        ms::Cal c;
-        c.model = model;
-        c.x0 = coef[0];
-        c.s = coef[1];
-        c.lo = m_lo;
-        c.hi = m_hi;
-        const int nc = model == 4 ? 3 : need - 2;
-        c.coef.assign(coef + 2, coef + 2 + nc);
-        if (model == 4) {
-            c.hpc.assign(coef + 5, coef + ncoef);
-            c.order = ncoef - 6;
-        }
-        for (long i = 0; i < n; i++) out[i] = c(mz[i]);
-    });
+    return ms::guarded([&] { ms::calibration_apply_n(model, coef, ncoef, m_lo, m_hi, mz, out, n); });
 }
 
 MS_API int ms_find_calibrants(const double* mz, const double* it, long n, int profile, const double* reference, long nref,

@@ -578,6 +578,22 @@ def schedule(win):
         m.schedule()
 
 
+def rebase_tab(win, tab):
+    """The state of the view tab becomes its reference without a step (results brought up to date, such as the
+    mass searches done again after a calibration: the calibration is the step)."""
+    m = manager(win)
+    if m is None:
+        return
+    keys = []
+    for k, d in list(m.domains.items()):
+        try:
+            if k.startswith("ms:") and d.tab is not None and d.tab() is tab:
+                keys.append(k)
+        except Exception:
+            pass
+    m.rebase(keys)
+
+
 class action(object):
     """with undo.action(window, "apply preset X"): ...  -> the changes made inside are one step with this name."""
 

@@ -1,4 +1,4 @@
-MSpektra 4.54 - portable Windows package   (20.10.2026)
+MSpektra 4.55 - portable Windows package   (20.10.2026)
 ========================================================
 
 Analysis of LC-MS and HRMS data, with deconvolution:
@@ -39,6 +39,13 @@ The version is shown on the start screen, in the help window (?) of LCMS
 and HRMS Analysis, and in the first line of each log file. It went up by
 0.1 with every update until 3.3. Since 3.31 a small change adds 0.01, a
 large change 0.1 and a big change 1.0.
+
+4.55 (20.10.2026)
+Find mass in HRMS Analysis.
+* HRMS Analysis: right click a chromatogram (or Chromatogram > Find
+  mass...) to find where the charge states of one or more masses appear
+  in the run, as in LCMS Analysis. The mass found is given to 0.1 Da,
+  and the calibration in use is applied.
 
 4.54 (20.10.2026)
 Updates install reliably.

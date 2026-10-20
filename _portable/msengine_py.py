@@ -776,6 +776,9 @@ def _declare31(L):
         # find mass (ms_find_mass): the profile of the charge states in each candidate scan
         "ms_mass_profile": ([c_void_p, c_int, PD, c_long, c_double, c_double, PI, c_int, c_double, PD, c_long, PD,
                              PL], c_int),
+        # find mass in HRMS Analysis: the profiles of calibrated spectra (and timsTOF windows in one pass)
+        "ms_mass_profile_cal": ([c_void_p, c_int, PD, c_long, c_double, c_double, PI, c_int, c_double, PD, c_long,
+                                 c_int, PD, c_int, c_double, c_double, PD, PL], c_int),
         # 3.31: the Compare view (lcms_compare_core)
         "ms_cmp_subtract_blank": ([PD, PD, c_long, PD, PD, c_long, PD], c_int),
         "ms_cmp_find_apex": ([PD, PD, c_long, c_double, c_double, c_int, PD], c_int),
@@ -1242,15 +1245,22 @@ def label_maxima(x, y, n, sep, rel):
 
 
 def xic_multi(data, event, mzs, tols):
-    """Mass chromatograms of the windows mzs[k] +- tols[k] (m/z as recorded, no calibration in use)
-    in one pass over the scans of an EngineFile (ms_xic_multi, in libraries that have it): the values
-    of data.chromatogram(event, "xic", mz, tol) for each window, as rows; None: not available."""
+    """Mass chromatograms of the windows mzs[k] +- tols[k] in one pass over the scans of an EngineFile
+    (ms_xic_multi, in libraries that have it): the values of data.chromatogram(event, "xic", mz, tol) for each
+    window, as rows (with a calibration in use: each window's ends in measured m/z as chromatogram finds them);
+    None: not available. timsTOF data (xic_fast False): only with a library that extracts the windows in one
+    pass (the one with ms_mass_profile_cal; an older one would extract them one by one)."""
     L = _lib31("ms_xic_multi")
-    if L is None or not isinstance(data, EngineFile) or data.calibration_for(event) is not None or not data.xic_fast:
+    if L is None or not isinstance(data, EngineFile):
         return None
+    if not data.xic_fast and _lib31("ms_mass_profile_cal") is None:
+        return None
+    cal = data.calibration_for(event)
     c, w = [], []
     for m, t in zip(mzs, tols):
         lo, hi = float(m) - float(t), float(m) + float(t)   # as EngineFile.chromatogram
+        if cal is not None:
+            lo, hi = data._uncal(lo, cal), data._uncal(hi, cal)
         c.append(0.5 * (lo + hi))
         w.append(0.5 * abs(hi - lo))
     n = len(data.event_scans(event))
@@ -1264,19 +1274,37 @@ def xic_multi(data, event, mzs, tols):
 
 def mass_profile(data, event, times, M, hw, zs, c, grid):
     """ms_find_mass._profile of the scan nearest to each time (the spectrum of data.scan_spectrum(event, t)), for
-    all of them in one call (ms_mass_profile, in libraries that have it; m/z as recorded, no calibration in use):
-    (P with one row per time, the number of points of each spectrum: 0 = empty), or None: not available."""
-    L = _lib31("ms_mass_profile")
-    if L is None or not isinstance(data, EngineFile) or data.calibration_for(event) is not None:
+    all of them in one call (ms_mass_profile, in libraries that have it): (P with one row per time, the number of
+    points of each spectrum: 0 = empty), or None: not available. With a calibration in use the spectra are
+    calibrated in the library as the calibration calibrates them (its engine_spec(): the arguments it gives
+    ms_calibration_apply; ms_mass_profile_cal); other calibrations: None."""
+    if not isinstance(data, EngineFile):
+        return None
+    cal = data.calibration_for(event)
+    spec = None
+    if cal is not None:
+        f = getattr(cal, "engine_spec", None)
+        spec = f() if f is not None else None
+        if spec is None:
+            return None
+    L = _lib31("ms_mass_profile" if spec is None else "ms_mass_profile_cal")
+    if L is None:
         return None
     n, G = len(times), np.ascontiguousarray(grid, dtype=np.float64)
     ta, pt = _d(times)
     za = np.ascontiguousarray(zs, dtype=np.int32)  # (c_int)
     out, po = _out(n * len(G))
     npts = np.zeros(n, dtype=np.int32 if ctypes.sizeof(c_long) == 4 else np.int64)
-    if L.ms_mass_profile(data.handle, int(event), pt, n, float(M), float(hw), za.ctypes.data_as(POINTER(c_int)),
-                         len(za), float(c), G.ctypes.data_as(_PD), len(G), po,
-                         npts.ctypes.data_as(POINTER(c_long))):
+    args = (data.handle, int(event), pt, n, float(M), float(hw), za.ctypes.data_as(POINTER(c_int)), len(za),
+            float(c), G.ctypes.data_as(_PD), len(G))
+    if spec is None:
+        rc = L.ms_mass_profile(*(args + (po, npts.ctypes.data_as(POINTER(c_long)))))
+    else:
+        model, coef, lo, hi = spec
+        ka, pk = _d(coef)
+        rc = L.ms_mass_profile_cal(*(args + (int(model), pk, len(ka), float(lo), float(hi), po,
+                                             npts.ctypes.data_as(POINTER(c_long)))))
+    if rc:
         return None
     return out.reshape(n, len(G)), npts
 

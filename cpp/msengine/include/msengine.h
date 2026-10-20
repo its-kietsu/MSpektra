@@ -639,6 +639,15 @@ MS_API int ms_lzf_decompress(const unsigned char* in, long n_in, unsigned char* 
  * not finite, a time that is NaN. */
 MS_API int ms_mass_profile(ms_file* f, int event, const double* t, long n, double M, double hw, const int* zs, int nz,
                            double carrier, const double* grid, long ngrid, double* out, long* npts);
+/* Find mass in HRMS Analysis: ms_mass_profile on calibrated spectra. The m/z of each spectrum are first mapped
+ * as ms_calibration_apply(cal_model, 0, cal_coef, cal_ncoef, cal_lo, cal_hi, ...) maps them (the calibration the
+ * window applies to its spectra), then profiled as above. MS_BAD_ARG also for a model outside 0..5 and for the
+ * coefficients ms_calibration_apply refuses. Since this function, ms_xic_multi extracts the windows of timsTOF
+ * data in one pass of the TDF SDK (before: one pass per window). */
+MS_API int ms_mass_profile_cal(ms_file* f, int event, const double* t, long n, double M, double hw, const int* zs,
+                               int nz, double carrier, const double* grid, long ngrid, int cal_model,
+                               const double* cal_coef, int cal_ncoef, double cal_lo, double cal_hi, double* out,
+                               long* npts);
 /* ---- end of the find mass additions ---- */
 
 #ifdef __cplusplus

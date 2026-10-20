@@ -1,4 +1,4 @@
-"""Find mass (LCMS Analysis): where in the run does the charge state pattern of a neutral mass appear?
+"""Find mass (LCMS and HRMS Analysis): where in the run does the charge state pattern of a neutral mass appear?
 
 1. the charge states of M with m/z >= mzmin (500) inside the m/z range of the scan event, each a mass chromatogram of
    the window (M +- w + z*carrier)/z (negative ions: the carrier is a lost proton, (M +- w - z*1.007276)/z);
@@ -11,6 +11,11 @@
 4. found regions: runs of >= 8 found scans (gaps of 2 allowed);
 5. trace: the sum over the states of (state - decoy median), clipped at 0;
 6. harmonic note: M x 1/2, 2, 3/2, 2/3 whose charge states share most of M's m/z while M's own states are weak.
+
+HRMS Analysis (step 0.1): the same search on the 1 Da grid; the mass of a found scan is then the highest point of
+the profile on a 0.1 Da grid within 1 Da of the 1 Da peak (close to the average mass of a protein whose isotopes are
+resolved), and the mass of a region their median to 0.1 Da. With a calibration in use the windows and spectra are in
+calibrated m/z, as everywhere in the window.
 
 The mass chromatograms and the scans are read by msengine (one pass for all windows: ms_xic_multi), and the profiles
 of step 3 are computed there for a block of candidate scans at a time (ms_mass_profile, the values of _profile); the
@@ -80,6 +85,20 @@ def grid(w):
     return GRID if r <= 150 + 5 else np.arange(-r, r + 1, 1.0)
 
 
+def fine_grid(w, step):
+    """Mass offsets in steps of step (< 1 Da) over every offset a found peak of the 1 Da grid can lie within 1 Da
+    of (|offset| <= max(w, 3) + 1)."""
+    n = int(round((np.ceil(max(float(w), 3.0)) + 1.0) / step))
+    return np.round(np.arange(-n, n + 1) * step, 6)
+
+
+def _finer(G, Gf, Pf, k):
+    """The offset of the highest point of the fine profile Pf (offsets Gf) within 1 Da of G[k]."""
+    sel = np.abs(Gf - G[k]) <= 1.0 + 1e-9
+    j = int(np.argmax(np.where(sel, Pf, -np.inf)))
+    return float(Gf[j])
+
+
 def _profiles(f, e, times, M, w, zs, c, G):
     """_profile of the scans nearest to times (the spectra of f.scan_spectrum) in one msengine call: (rows, number
     of points of each spectrum), or None (then _profile on each spectrum)."""
@@ -135,9 +154,10 @@ def _runs(mask, min_len=8, gap=2):
     return [(int(a), int(b)) for a, b in segs if b - a + 1 >= min_len]
 
 
-def search(f, e, M, w, carrier="H+", mzmin=MZMIN, harmonics=True, cancel=None, progress=None):
+def search(f, e, M, w, carrier="H+", mzmin=MZMIN, harmonics=True, cancel=None, progress=None, step=1.0):
     """Search scan event e of the file f (EngineFile) for the neutral mass M (window +- w Da). cancel() -> True
-    stops it (Cancelled); progress(fraction). Returns a dict of plain values and arrays (see the keys at the end)."""
+    stops it (Cancelled); progress(fraction). step < 1 (HRMS): the masses found to that step (see above).
+    Returns a dict of plain values and arrays (see the keys at the end)."""
     def check():
         if cancel is not None and cancel():
             raise Cancelled()
@@ -185,6 +205,10 @@ def search(f, e, M, w, carrier="H+", mzmin=MZMIN, harmonics=True, cancel=None, p
     cand = np.where(run >= NEED)[0]
     G = grid(w)
     near = np.abs(G) <= max(w, 3)
+    fine = float(step) < 1.0
+    Gf = fine_grid(w, float(step)) if fine else np.zeros(0)
+    GG = np.concatenate([G, Gf]) if fine else G  # (one profile over both grids)
+    ng = len(G)
     binw = getattr(f, "_binw", None)  # (the bin width in use: the search does not change it)
     rows = None
     for j, i in enumerate(cand):
@@ -192,7 +216,7 @@ def search(f, e, M, w, carrier="H+", mzmin=MZMIN, harmonics=True, cancel=None, p
             check()
             tell(0.3 + 0.6 * j / max(1, len(cand)))
         if j % BLOCK == 0:
-            rows = _profiles(f, e, t[cand[j:j + BLOCK]], M, w, zs, c, G)
+            rows = _profiles(f, e, t[cand[j:j + BLOCK]], M, w, zs, c, GG)
         if rows is not None:
             if not rows[1][j % BLOCK]:
                 continue
@@ -202,16 +226,18 @@ def search(f, e, M, w, carrier="H+", mzmin=MZMIN, harmonics=True, cancel=None, p
             s = np.asarray(s[0] if isinstance(s, tuple) else s)
             if not len(s):
                 continue
-            P = _profile(s[:, 0], s[:, 1], M, w, zs, c, G)
+            P = _profile(s[:, 0], s[:, 1], M, w, zs, c, GG)
+        if fine:
+            P, Pf = P[:ng], P[ng:]
         med = np.median(P)
         k = int(np.argmax(np.where(near, P, -1)))
         if P[k] >= P[np.abs(G - G[k]) <= 30].max() - 1e-9 and P[k] > 3 * med:
             ok[i] = True
-            best[i] = M + G[k]
+            best[i] = M + (_finer(G, Gf, Pf, k) if fine else G[k])
             if w > 10:
                 js = [j for j in np.where(near & (P >= 0.2 * P[k]) & (P > 3 * med))[0]
                       if P[j] >= P[np.abs(G - G[j]) <= 30].max() - 1e-9]
-                peaks[int(i)] = [float(M + G[j]) for j in js]
+                peaks[int(i)] = [float(M + (_finer(G, Gf, Pf, j) if fine else G[j])) for j in js]
     regions = []
     for a, b in _runs(ok):
         sel = slice(a, b + 1)
@@ -220,6 +246,11 @@ def search(f, e, M, w, carrier="H+", mzmin=MZMIN, harmonics=True, cancel=None, p
                  height=float(trace[sel].max()), states=states)
         if peaks:
             g["masses"] = _species([peaks[i] for i in range(a, b + 1) if i in peaks], g["mass"])
+        if fine:  # (to the step: a median of two values ends in 5)
+            nd = max(0, int(round(-np.log10(float(step)))))
+            g["mass"] = round(g["mass"], nd)
+            if "masses" in g:
+                g["masses"] = [round(m, nd) for m in g["masses"]]
         regions.append(g)
     res.update(trace=trace, ok=ok, regions=regions)
     tell(0.9)

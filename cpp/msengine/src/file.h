@@ -55,6 +55,10 @@ public:
     // bit. Polls *stop and returns early when it is set (the caller then throws). false: not provided.
     virtual bool xic_multi(const std::vector<long>& /*idx*/, const double* /*mz*/, const double* /*tol*/, int /*nw*/,
                            double* /*out*/, const std::atomic<bool>* /*stop*/) { return false; }
+    // readers with chromatograms of their own (xic(): timsTOF) may extract several in one pass over the file:
+    // y[w] = what xic(polarity, mz[w], tol[w]) gives, the same values bit for bit. false: not provided.
+    virtual bool xic_many(int /*polarity*/, const double* /*mz*/, const double* /*tol*/, int /*nw*/,
+                          std::vector<std::vector<double>>& /*y*/) { return false; }
     // true: spectrum(), centroids() and sum_profiles() without a callback may run in several threads at once
     // (data in memory, the calls change nothing); file.cpp still holds the reader mutex around such a batch
     virtual bool concurrent_reads() const { return false; }

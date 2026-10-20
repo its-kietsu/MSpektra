@@ -5476,6 +5476,8 @@ class MSTab(TabBase):
     FULL_WINDOW = True  # offer the separate Deconvolute window (UniDec GUI) for this kind of data
     OPEN_HINT = "Open a data file or drop it here"
     FIND_MASS = True  # Find mass (right click a chromatogram): the mass search tiles
+    MASS_STEP = 1.0  # Find mass: the step of the masses found (HRMS: 0.1 Da)
+    PLOTS_FILL = True  # "Plots fill the window" by default (HRMS Analysis keeps its own tile heights)
 
     def __init__(self, parent, frame):
         TabBase.__init__(self, parent, frame)
@@ -5498,7 +5500,7 @@ class MSTab(TabBase):
         self.rows = StackBox(self.scroller)
         self.rows.on_close_tile = self._close_search_tile
         self.rows.shape = tile_shape
-        if self.FIND_MASS:  # LCMS Analysis (HRMS Analysis keeps its own tile heights)
+        if self.PLOTS_FILL:  # LCMS Analysis (HRMS Analysis keeps its own tile heights)
             # by default every plot tile (chromatograms, spectra, deconvolution, mass searches) fills the window,
             # the tables below: the spectrum with the fit and charge states of a deconvolved mass stays in view
             # next to the deconvolved spectrum (with + and - one below the other, since 4.51, it was scrolled out)
@@ -6429,6 +6431,8 @@ class MSTab(TabBase):
                     hi = ev.get("mz_high") or (card.full[1] if card.full else None)
                     if card.full and hi and hi > lo:
                         set_mz_range(card, lo, hi)
+                    if not self.PLOTS_FILL:  # (HRMS: tiles below each other, the spectrum may be out of view)
+                        self.keep_in_view([card.pair or card])
             if a != b:
                 self.frame.link_time("ms", rng=self.avg)
             self.status("Spectrum of %s, %.2f to %.2f min" % (tr.get("mass_name") or "%s Da" % _mass_text(r["M"]),
@@ -6477,32 +6481,59 @@ class MSTab(TabBase):
         """Search the masses vals["rows"] ([{"M", "w", "name"}]; carrier, mzmin shared) in the scan event
         vals["event"] (-1: every event shown) in a worker thread; the tile is made (or the search replace
         replaced) when it is done. Progress in the status bar and a small window with Cancel."""
-        import ms_find_mass as F
         if self._search_job is not None or not self.data:
             return False
         events = [c["e"] for c in self.cols] if vals["event"] < 0 else [vals["event"]]
         rows = [{"M": float(r["M"]), "w": float(r.get("w", 5.0)), "name": str(r.get("name") or "")}
                 for r in vals["rows"]]
-        data, carrier, mzmin = self.data, vals["carrier"], float(vals["mzmin"])
-        shorts = {e: self.ev_short(e) for e in events}
-        n = max(1, len(events) * len(rows))
-        job = {"vals": dict(vals, rows=rows), "events": events, "replace": replace, "data": data,
-               "cancel": False, "frac": 0.0, "now": "", "done": False, "out": None, "err": None,
+        self._start_searches([{"vals": dict(vals, rows=rows), "events": events, "replace": replace}])
+        return True
+
+    def redo_searches(self):
+        """The mass searches again with the calibration now in use (HRMS Analysis: their windows are in
+        calibrated m/z); the results are replaced without an undo step (the calibration is the step). A search
+        running meanwhile is done again when it ends."""
+        if not self.searches or not self.data:
+            return
+        if self._search_job is not None:
+            self._search_job["stale"] = True
+            return
+        tasks = []
+        for s in self.searches:
+            rows = [{"M": M, "w": w, "name": nm} for M, w, nm in search_rows(s)]
+            tasks.append({"vals": {"rows": rows, "carrier": s.get("carrier", "H+"), "mzmin": float(s.get("mzmin",
+                          500.0)), "event": -1}, "events": list(s.get("events") or []), "replace": s["id"]})
+        self._start_searches(tasks, redo=True)
+
+    def _start_searches(self, tasks, redo=False):
+        """The worker of find_mass and redo_searches: each task {"vals", "events", "replace"}."""
+        import ms_find_mass as F
+        data, step = self.data, self.MASS_STEP
+        shorts = {e: self.ev_short(e) for t in tasks for e in t["events"]}
+        n = max(1, sum(len(t["events"]) * len(t["vals"]["rows"]) for t in tasks))
+        job = {"tasks": tasks, "redo": redo, "data": data, "outs": None,
+               "cancel": False, "frac": 0.0, "now": "", "done": False, "err": None,
                "cancelled": False, "t0": time.time(), "win": None}
+        many = len(self.cols) > 1
 
         def work():
             try:
-                out, k = {}, 0
-                for e in events:
-                    lst = []
-                    for r in rows:
-                        what = r["name"] or "%s Da" % _mass_text(r["M"])
-                        job["now"] = "%s %s" % (what, shorts[e]) if len(self.cols) > 1 else what
-                        lst.append(F.search(data, e, r["M"], r["w"], carrier, mzmin, cancel=lambda: job["cancel"],
-                                            progress=lambda x, k=k: job.__setitem__("frac", (k + x) / n)))
-                        k += 1
-                    out[e] = lst
-                job["out"] = out
+                outs, k = [], 0
+                for t in tasks:
+                    vals, out = t["vals"], {}
+                    for e in t["events"]:
+                        lst = []
+                        for r in vals["rows"]:
+                            what = r["name"] or "%s Da" % _mass_text(r["M"])
+                            job["now"] = "%s %s" % (what, shorts[e]) if many else what
+                            lst.append(F.search(data, e, r["M"], r["w"], vals["carrier"], float(vals["mzmin"]),
+                                                cancel=lambda: job["cancel"],
+                                                progress=lambda x, k=k: job.__setitem__("frac", (k + x) / n),
+                                                step=step))
+                            k += 1
+                        out[e] = lst
+                    outs.append(out)
+                job["outs"] = outs
             except F.Cancelled:
                 job["cancelled"] = True
             except Exception as ex:
@@ -6518,7 +6549,6 @@ class MSTab(TabBase):
             self.Bind(wx.EVT_TIMER, self._search_tick, self._search_timer)
         self._search_timer.Start(120)
         self.status("Find mass …")
-        return True
 
     def _search_tick(self, e=None):
         job = self._search_job
@@ -6549,28 +6579,44 @@ class MSTab(TabBase):
         if job["err"] is not None:
             _report_error(self, "The mass search could not be finished", job["err"])
             return
-        if self.data is not job["data"] or job["out"] is None:
+        if self.data is not job["data"] or job["outs"] is None:
             return  # (another file was read meanwhile)
-        vals = job["vals"]
+        import undo
+        if job["redo"]:
+            if job.get("stale"):  # (the calibration changed again meanwhile)
+                wx.CallAfter(self.redo_searches)
+                return
+            undo.commit(self)  # (changes made meanwhile: their own step)
+            for t, out in zip(job["tasks"], job["outs"]):
+                old = self._search_by_id(t["replace"])
+                if old is not None:
+                    self.searches = [dict(o, res=out) if o is old else o for o in self.searches]
+            self._searches_changed()
+            undo.rebase_tab(self, self)
+            self.status("Mass searches updated")
+            return
+        t, out = job["tasks"][0], job["outs"][0]
+        vals = t["vals"]
         rows = vals["rows"]
-        old = self._search_by_id(job["replace"])
+        old = self._search_by_id(t["replace"])
         sid = old["id"] if old is not None else max([s["id"] for s in self.searches] + [0]) + 1
         s = {"id": sid, "masses": [r["M"] for r in rows], "ws": [r["w"] for r in rows],
              "names": [r["name"] for r in rows], "carrier": vals["carrier"], "mzmin": float(vals["mzmin"]),
-             "events": list(job["events"]), "res": job["out"]}
+             "events": list(t["events"]), "res": out}
         if old is not None:
             self.searches = [s if o is old else o for o in self.searches]
         else:
             self.searches = self.searches + [s]
         self._searches_changed()
         found = [k for k in range(len(rows)) if any(lst[k]["regions"] for lst in s["res"].values())]
-        import undo
         undo.commit(self, ("edit the mass search %s" if old is not None else "find mass %s") % search_text(s))
         if len(rows) == 1:
             self.status("%s %s" % (rows[0]["name"] or "%s Da" % _mass_text(rows[0]["M"]),
                                    "found" if found else "not found"))
         else:
             self.status("%d of %d masses found" % (len(found), len(rows)))
+        if job.get("stale"):  # (searched with the calibration before)
+            wx.CallAfter(self.redo_searches)
 
     def _searches_changed(self):
         self._build_search_rows()
