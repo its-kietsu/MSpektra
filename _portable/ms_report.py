@@ -273,7 +273,8 @@ class Report(object):
         self.blocks.append(b)
 
 
-_TITLES = ("<b>Masses</b>", "<b>Isotope peaks</b>", "<b>Mass shifts</b>", "<b>Degree of conjugation</b>")
+_TITLES = ("<b>Masses</b>", "<b>Isotope peaks</b>", "<b>Mass shifts</b>", "<b>Degree of conjugation</b>",
+           "<b>Charge states</b>")
 
 
 def _plain_report(rep, fields):
@@ -520,6 +521,8 @@ def figure_options(frame, kind):
             out.append(("dec", "Deconvolution", True))
         if msd is not None and getattr(msd, "calib", None) is not None:
             out.append(("cal", "Calibration errors", True))
+        if _polymer_dock(tab) is not None:
+            out.append(("polymer", "Polymer analysis", True))
         for s in getattr(tab, "searches", None) or []:  # Find mass: the tiles of the searches
             out.append(("search%d" % s["id"], "Mass search, %s" % _search_masses(s), True))
         out.append(("shade", "Shade the time ranges on the chromatograms", True))
@@ -1058,6 +1061,60 @@ def _hrms_state(frame):
             "fi": _formula_info(col), "ranges": ranges, "traces": _traces(tab, e)}
 
 
+def _polymer_dock(tab):
+    """The polymer analysis shown in HRMS Analysis with a run, or None."""
+    dock = getattr(tab, "polymer_results", None)
+    if dock is None or not getattr(dock, "visible", False) or not hasattr(dock, "report_data"):
+        return None
+    try:
+        return dock if dock.current() is not None else None
+    except Exception:
+        return None
+
+
+def _polymer_blocks(rep, tab, tmp):
+    """Polymer analysis: the neutral masses (coloured by series), the charge states found and the mass
+    distribution with Mn, Mw and dispersity, as the polymer analysis shows them."""
+    dock = _polymer_dock(tab)
+    if dock is None:
+        return
+    d = dock.report_data()
+    rep.add("section", "Polymer analysis")
+    if d["masses"]:
+        f, ax = new_fig(W_FULL, 5.0)
+        x = [m for m, h, c in d["masses"]]
+        ax.vlines(x, 0, [h for m, h, c in d["masses"]], colors=[c for m, h, c in d["masses"]], lw=0.7)
+        style(ax, "Mass (Da)", "Intensity")
+        headroom(ax, [h for m, h, c in d["masses"]], 0.12)
+        if d["legend"]:
+            from matplotlib.lines import Line2D
+            ax.legend([Line2D([], [], color=c, lw=1.2) for c, n in d["legend"]], [n for c, n in d["legend"]],
+                      fontsize=6.3, frameon=False, loc="upper right")
+        rep.add("figure", save_fig(f, os.path.join(tmp, "a_polymer_masses.png"), left=0.08, right=0.98, top=0.95,
+                                   bottom=0.2), W_FULL)
+    rows = [[esc(str(v)) for v in r] for r in d["rows"]]
+    if rows:
+        rep.add("small", "<b>Charge states</b>")
+        rep.add("table", ["Mass (Da)", "z", "m/z", "Height", "Isotopes", "Series"], rows,
+                [3.0, 1.2, 3.0, 2.2, 1.8, 6.0], None)
+    dist = d["distribution"]
+    if dist:
+        f, ax = new_fig(11.0, 5.0)
+        x = np.asarray(dist["mass"], float)
+        step = float(np.median(np.diff(np.sort(x)))) if len(x) > 1 else 1.0
+        w = max(step * 0.36, 1e-3)
+        ax.bar(x - w / 2, dist["number"], width=w, color=dist["colour"], label="Number fraction")
+        ax.bar(x + w / 2, dist["weight"], width=w, color="#E39A3B", label="Mass fraction")
+        style(ax, "Mass (Da)", "Fraction")
+        ax.legend(fontsize=6.3, frameon=False, loc="upper right")
+        figp = save_fig(f, os.path.join(tmp, "a_polymer_distribution.png"), left=0.13, right=0.97, top=0.95,
+                        bottom=0.2)
+        res = [["Mn", "%.1f Da" % dist["mn"]], ["Mw", "%.1f Da" % dist["mw"]], ["Đ", "%.4f" % dist["dispersity"]],
+               ["Masses", "%d" % dist["used"]]]
+        rep.add("pair", [("figure", figp, 11.0)],
+                [("table", ["Mass distribution", esc(dist["scope"])], res, [2.6, 3.8], None)], 6.6)
+
+
 def build_hrms(frame, fields, tmp):
     st = _hrms_state(frame)
     si = sample_info(frame)
@@ -1166,6 +1223,8 @@ def build_hrms(frame, fields, tmp):
             rep.add("section", "Deconvolution")
             rep.add("figure", _mass_fig(os.path.join(tmp, "a_dec.png"), dec, selected=getattr(st["tab"].dec, "sel", None)), W_FULL)
             _result_table(rep, dec, selected=getattr(st["tab"].dec, "sel", None))
+    if want(fields, "polymer"):
+        _polymer_blocks(rep, st["tab"], tmp)
     if cal is not None and want(fields, "cal"):
         rep.add("section", "Calibration")
         f, ax = new_fig(8.6, 4.8)

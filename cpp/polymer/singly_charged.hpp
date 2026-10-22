@@ -126,8 +126,10 @@ inline std::vector<DirectPeak> calculate(const double* x, const double* y, int n
         }
         double mz=p.mass_mode==0?peaks[i].mz:p.mass_mode==1?peaks[strongest].mz:double(first/area);
         double mass=mz-p.carrier;
-        if (!std::isfinite(mass) || mass<=0)
-            throw std::runtime_error("Carrier subtraction gives a nonpositive mass; check the adduct and range");
+        if (!std::isfinite(mass))
+            throw std::runtime_error("Carrier subtraction gives an invalid mass; check the adduct and range");
+        // A peak below the carrier mass cannot be a species: it is left out, the others stay.
+        if (mass<=0) continue;
         if (!std::isfinite(double(area))) throw std::runtime_error("Signal exceeds the supported numerical range");
         out.push_back({mass,mz,double(area),peaks[strongest].height,
                        peaks[i].mz,peaks[group.back()].mz,int(group.size())});
@@ -142,6 +144,7 @@ inline std::vector<DirectPeak> calculate(const double* x, const double* y, int n
         if (out.size()>5000)
             throw std::runtime_error("More than 5000 species: raise the peak threshold or narrow the m/z range");
     }
+    if (out.empty()) throw std::runtime_error("No peaks above the carrier mass; check the adduct and range");
     std::sort(out.begin(),out.end(),[](const DirectPeak& a,const DirectPeak& b){return a.mass<b.mass;});
     if (members) {
         std::map<double,int> indices;

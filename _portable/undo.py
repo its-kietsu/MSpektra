@@ -1061,7 +1061,9 @@ def polymer_get(tab):
     dock=getattr(tab,'polymer_results',None)
     if callable(getattr(dock,'undo_state',None)):
         return dock.undo_state()
-    return dict(kind='polymer_workspace',series=[],method=dict(getattr(tab,'_polymer_method',{})),visible=False)
+    from ms_polymer_workspace import default_method
+    return dict(kind='polymer_workspace',series=[],method=default_method(tab),visible=False,active=None,chain=None,
+                charge='All charges',family=0,page=0)
 
 def polymer_set(tab,state):
     from ms_polymer_workspace import ensure_workspace

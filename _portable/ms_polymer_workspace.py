@@ -1,4 +1,5 @@
-"""One native HRMS polymer workspace. Numerical processing is in C++ libraries."""
+"""The polymer analysis of HRMS Analysis: a tile below the mass spectrum (the column of tiles fits the window
+while it is open). Numerical processing is in C++ libraries."""
 import copy
 import math
 import threading
@@ -8,15 +9,89 @@ import numpy as np
 import unilcms as U
 import ms_polymer as N
 import ms_polymer_charge as Q
+import ms_polymer_widgets as PW
 from unidec_theme import C,ui_font
-from deconv_tab import TableCard
-from ms_polymer_results import PolymerResults,capture_source,file_key,FOCUS
-from ms_polymer_direct import POSITIVE,NEGATIVE,MASS_NAMES
+from ms_polymer_results import PolymerResults,capture_source,file_key,same_file,rebind,FOCUS
 
-COLOURS=(C['accent'],'#168579','#9D58B1','#9B6A20')
+COLOURS=(C['accent'],'#168579','#9D58B1','#9B6A20')  # charges +1, +2, +3, +4 (and on)
+SERIES_COLOURS=('#2A62C4','#D97706','#7C3AED','#0E9F6E','#DB2777','#0891B2','#65A30D','#9B6A20')
+GREY='#AEB6C2'
+SECTIONS=('Charge states','Repeat units','Mass distribution')
+MASS_NAMES=['First isotope peak','Tallest isotope peak','Mean of the isotope peaks']
+
+def charge_colour(z):return COLOURS[(abs(int(z))-1)%len(COLOURS)] if z else GREY
 def number(value):
     return '%.4f'%value if isinstance(value,(float,np.floating)) and math.isfinite(value) else '—' if value is None else str(value)
-def signed(z):return '%+d'%z if z else '—'
+def signed(z):return ('+%d'%z if z>0 else '−%d'%-z) if z else '—'
+def height_text(v):return '%.1e'%v if v else '0'
+
+def carriers(sign):
+    """Charge carriers as in the deconvolution settings (Na⁺, ...): [(label, mass per charge)], then Custom mass."""
+    import deconv_tab as D
+    return [(label,mass) for label,mass in D.carriers(sign)]
+
+# carrier names of 4.56 (saved analyses and presets): the same carrier by its mass
+def carrier_index(choices,label,mass=None):
+    i=next((i for i,(l,m) in enumerate(choices) if l==label),None)
+    if i is None and mass is not None:
+        i=next((i for i,(l,m) in enumerate(choices) if m is not None and abs(m-float(mass))<1e-6),None)
+    return i
+
+# Known repeat units and end groups (sum of both ends, Da) for the names of series.
+REPEATS=[(44.0262147,'PEG'),(58.0418648,'PPG'),(74.0187569,'PDMS'),(72.0211294,'PLA'),(114.0680795,'PCL'),
+         (100.0524295,'PMMA'),(104.0626,'PS'),(86.0367794,'PMA'),(56.0626,'PB'),(42.04695,'PP'),(28.0313,'PE')]
+ENDS=[(18.0105647,'H / OH'),(32.0262147,'CH₃ / OH'),(46.0418648,'C₂H₅ / OH'),(2.0156501,'H / H'),
+      (16.0313001,'CH₃ / H'),(30.0469502,'CH₃ / CH₃'),(60.0211294,'H / OCOCH₃'),
+      (62.0367794,'CH₃ / OCH₂OH')]
+
+def series_name(repeat,ends,taken=()):
+    """'PEG · H / OH' for a known repeat unit and end groups (ends counted modulo the repeat), otherwise the
+    masses."""
+    base=next((name for m,name in REPEATS if abs(m-repeat)<.006),None)
+    end=None
+    if repeat>0:
+        r=(ends%repeat)
+        end=next((name for m,name in ENDS if min(abs(r-m%repeat),repeat-abs(r-m%repeat))<.01),None)
+    if base=='PEG' and end=='CH₃ / OH':base='mPEG'
+    name=('%s · %s'%(base,end) if base and end else '%s · ends %.2f Da'%(base,ends) if base else
+          '%.2f Da · ends %.2f Da'%(repeat,ends))
+    out,k=name,2
+    while out in taken:out='%s (%d)'%(name,k);k+=1
+    return out
+
+FIELD_DEFAULTS=dict(repeat='',ends='',tolerance='0.05',search_min='10',search_max='1000')
+FIELD_KEYS=('repeat','ends','tolerance','search_min','search_max')
+
+def _method_dict(options,carrier_chosen,profile_explicit,charge_min,charge_max,fields,weight,basis):
+    """The method values (presets, undo) of the workspace state given."""
+    out={k:v for k,v in options.items() if k in Q.DEFAULTS and k!='profile'}
+    out.update(carrier_label=options['carrier_label'] if carrier_chosen else '',
+               spectrum_type=('profile' if options['profile'] else 'centroid') if profile_explicit else 'auto',
+               charge_min=int(charge_min),charge_max=int(charge_max),weight=int(weight),basis=int(basis))
+    out.update({k:fields[k] for k in FIELD_KEYS})
+    return out
+
+def _method_parts(values,options=None,profile_explicit=False):
+    """(options, values, profile explicit) after method values were applied."""
+    values=dict(values);options=dict(Q.DEFAULTS if options is None else options)
+    if 'spectrum_type' in values:
+        profile_explicit=values['spectrum_type']!='auto'
+        if profile_explicit:values['profile']=values['spectrum_type']=='profile'
+        else:values.pop('profile',None)
+    if 'profile' in values:profile_explicit=True
+    options.update({k:v for k,v in values.items() if k in Q.DEFAULTS})
+    return options,values,profile_explicit
+
+def default_method(tab):
+    """The method of a workspace as it opens on this tab: undo compares it with the state before the workspace
+    existed, so opening it is no step."""
+    saved=dict(getattr(tab,'_polymer_method',{}))
+    options,values,explicit=_method_parts(saved,profile_explicit='profile' in saved)
+    fields={k:str(values[k]) if k in values else FIELD_DEFAULTS[k] for k in FIELD_KEYS}
+    choice=lambda k:values[k] if values.get(k) in (0,1) else 0
+    zmin=min(100,max(1,int(options['charge_min'])));zmax=min(100,max(1,int(options['charge_max'])))
+    return _method_dict(options,bool(saved.get('carrier_label')),explicit,zmin,zmax,fields,choice('weight'),choice('basis'))
+
 def method_get(tab):
     dock=getattr(tab,'polymer_results',None)
     if isinstance(dock,PolymerWorkspace):return dock.method_values()
@@ -37,89 +112,210 @@ def ensure_workspace(tab):
     dock=PolymerWorkspace(tab);tab.polymer_results=dock
     tab.extras['polymer']=(dock,None,3.5);tab.panels.append(dock)
     if legacy:dock.import_legacy(legacy)
+    else:
+        try:  # (its state as it opens is the reference: no undo step)
+            import undo
+            m=undo.manager(tab)
+            if m is not None:m.rebase([k for k,d in m.domains.items() if k.startswith('polymer:') and d.tab and d.tab() is tab])
+        except Exception:pass
     return dock
 
 def open_workspace(tab,page=0,use_deconvolution=False):
     try:
         dock=ensure_workspace(tab)
-        dock.visible=True;dock.refresh_inputs();dock.book.SetSelection(page)
-        dock._watch();tab._layout_rows();dock.Show();dock._keep_visible()
+        dock.visible=True;dock.refresh_inputs();dock.set_page(page)
+        dock._watch();dock.fit_layout(True);tab._layout_rows();dock.Show()
+        dock.refill();dock.redraw()
         if use_deconvolution:dock.use_deconvolution()
         return dock
     except (ValueError,RuntimeError,OSError) as ex:
         tab.status(str(ex));return None
 
+
+ROW_FLOATS=('mass','mz','area','height','first_mz','last_mz','spacing_error','response')
+ROW_INTS=('charge','isotopes','state','alternate','include','deconv_index')
+
+def pack_rows(rows):
+    """Rows of a run as arrays (a project holds these as data files, not in its description: a run of 5000
+    rows with their isotope peaks fits easily)."""
+    n=len(rows);f=np.full((n,len(ROW_FLOATS)),np.nan);g=np.full((n,len(ROW_INTS)),-1,dtype=np.int64)
+    members=[];extra=[];none_mz=[]
+    for i,q in enumerate(rows):
+        for j,k in enumerate(ROW_FLOATS):
+            v=q.get(k)
+            if v is None:
+                if k=='mz':none_mz.append(i)
+                continue
+            f[i,j]=float(v)
+        for j,k in enumerate(ROW_INTS):
+            if k in q and q[k] is not None:g[i,j]=int(bool(q[k])) if k=='include' else int(q[k])
+        for m in q.get('members') or []:
+            members.append((i,m.get('isotope',0),m['mz'],m['area'],m['height']))
+        more={k:v for k,v in q.items() if k not in ROW_FLOATS and k not in ROW_INTS and k!='members'}
+        if more:extra.append([i,more])
+    return dict(kind='packed_rows',floats=f,ints=g,members=np.asarray(members,dtype=np.float64).reshape(-1,5),
+                extra=extra,none_mz=none_mz)
+
+def unpack_rows(packed):
+    if not isinstance(packed,dict) or packed.get('kind')!='packed_rows':return packed
+    f=np.asarray(packed['floats'],dtype=np.float64);g=np.asarray(packed['ints'],dtype=np.int64);rows=[]
+    for i in range(len(f)):
+        q={k:float(f[i,j]) for j,k in enumerate(ROW_FLOATS) if not np.isnan(f[i,j])}
+        for j,k in enumerate(ROW_INTS):
+            if g[i,j]>=0 or k in ('charge','alternate'):
+                q[k]=bool(g[i,j]) if k=='include' else int(g[i,j])
+        q['members']=[]
+        rows.append(q)
+    for i in packed.get('none_mz',[]):rows[int(i)]['mz']=None
+    for m in np.asarray(packed['members'],dtype=np.float64).reshape(-1,5):
+        rows[int(m[0])]['members'].append(dict(isotope=int(m[1]),mz=float(m[2]),area=float(m[3]),height=float(m[4])))
+    for i,more in packed.get('extra',[]):rows[int(i)].update(more)
+    return rows
+
+def pack_matches(matches):
+    keys=sorted(int(k) for k in matches)
+    get=lambda k:matches[k] if k in matches else matches[str(k)]
+    return dict(kind='packed_matches',rows=np.asarray(keys,dtype=np.int64),
+                n=np.asarray([int(get(k)['n']) for k in keys],dtype=np.int64),
+                values=np.asarray([(get(k)['delta'],get(k)['ppm']) for k in keys],dtype=np.float64).reshape(-1,2))
+
+def unpack_matches(m):
+    if isinstance(m,dict) and m.get('kind')=='packed_matches':
+        return {int(i):dict(n=int(n),delta=float(d),ppm=float(p)) for i,n,(d,p) in zip(m['rows'],m['n'],np.asarray(m['values']).reshape(-1,2))}
+    return {int(i):v for i,v in (m or {}).items()}
+
+def pack_groups(groups):
+    rows=[r for g in groups for r in g.get('rows',[])];ends=np.cumsum([len(g.get('rows',[])) for g in groups]) if groups else []
+    return dict(kind='packed_groups',values=np.asarray([(g['mass'],g['area'],g['height']) for g in groups],dtype=np.float64).reshape(-1,3),
+                counts=np.asarray([(g.get('count',0),g.get('representative',-1)) for g in groups],dtype=np.int64).reshape(-1,2),
+                rows=np.asarray(rows,dtype=np.int64),ends=np.asarray(ends,dtype=np.int64))
+
+def unpack_groups(groups):
+    if not(isinstance(groups,dict) and groups.get('kind')=='packed_groups'):return groups
+    out=[];start=0
+    for (m,a,h),(c,r),end in zip(np.asarray(groups['values']).reshape(-1,3),np.asarray(groups['counts']).reshape(-1,2),groups['ends']):
+        out.append(dict(mass=float(m),area=float(a),height=float(h),count=int(c),representative=int(r),
+                        rows=[int(i) for i in groups['rows'][start:int(end)]]));start=int(end)
+    return out
+
+def pack_run(run,shared):
+    """A run for a project: arrays instead of long lists; a spectrum kept once (shared: the spectra already
+    stored, the file's own included)."""
+    out=dict(run);out.pop('chains',None)
+    out['rows']=pack_rows(run['rows'])
+    out['families']=[dict(f,matches=pack_matches(f['matches'])) for f in run.get('families',[])]
+    d=run.get('distribution')
+    if d:out['distribution']=dict(d,groups=pack_groups(d['groups']))
+    source=dict(run['source']);columns=[]
+    for c in source.get('columns',[]):
+        spec=c.get('spec')
+        if isinstance(spec,np.ndarray):
+            same=next((a for a in shared if a.shape==spec.shape and a.dtype==spec.dtype and np.array_equal(a,spec)),None)
+            if same is None:shared.append(spec)
+            else:c=dict(c,spec=same)
+        columns.append(c)
+    source['columns']=columns;out['source']=source
+    return out
+
+def unpack_run(run):
+    run=dict(run);run['rows']=unpack_rows(run['rows']);run['chains']=run['rows']
+    run['families']=[dict(f,matches=unpack_matches(f.get('matches'))) for f in run.get('families',[])]
+    d=run.get('distribution')
+    if d:run['distribution']=dict(d,groups=unpack_groups(d['groups']))
+    return run
+
+
 class Settings(wx.Dialog):
-    def __init__(self,parent,options):
-        super().__init__(parent,title='Polymer settings',style=wx.DEFAULT_DIALOG_STYLE|wx.RESIZE_BORDER)
+    """Settings of Find species. inputs: the spectra shown (a choice when there are several)."""
+    def __init__(self,parent,options,inputs=(),index=0,search=('10','1000')):
+        super().__init__(parent,title='Polymer settings',style=wx.DEFAULT_DIALOG_STYLE)
         self.options=dict(options);self.controls={}
-        self.SetFont(ui_font(10));self.SetBackgroundColour(C['bg'])
-        panel=wx.ScrolledWindow(self,style=wx.VSCROLL);panel.SetScrollRate(0,self.FromDIP(15))
-        grid=wx.FlexGridSizer(cols=2,hgap=self.FromDIP(12),vgap=self.FromDIP(10));grid.AddGrowableCol(1)
-        fields=[('mz_min','m/z from'),('mz_max','m/z to'),('threshold_percent','Minimum height (%)'),
-                ('isotope_tolerance','Spacing tolerance (m/z)'),('min_isotopes','Minimum isotope peaks'),
-                ('merge_da','Mass matching (Da)'),('merge_ppm','Mass matching (ppm)')]
+        self.SetFont(ui_font(9));self.SetBackgroundColour(C['bg'])
+        grid=wx.FlexGridSizer(cols=2,hgap=self.FromDIP(12),vgap=self.FromDIP(9));grid.AddGrowableCol(1)
+        self.inputs=list(inputs);self.spectrum=None
+        if len(self.inputs)>1:
+            self.spectrum=wx.Choice(self,choices=[d['label'] for d in self.inputs])
+            self.spectrum.SetSelection(min(max(0,index),len(self.inputs)-1))
+            grid.Add(wx.StaticText(self,label='Spectrum'),0,wx.ALIGN_CENTER_VERTICAL);grid.Add(self.spectrum,1,wx.EXPAND)
+        fields=[('mz_min','m/z from'),('mz_max','m/z to'),('threshold_percent','Smallest peak (% of the tallest)'),
+                ('min_isotopes','Isotope peaks needed'),('isotope_tolerance','Peak position tolerance (m/z)'),
+                ('merge_da','Same mass within (Da)'),('merge_ppm','Same mass within (ppm)')]
         for key,label in fields:
-            c=wx.TextCtrl(panel,value='%.15g'%options[key]);self.controls[key]=c
-            grid.Add(wx.StaticText(panel,label=label),0,wx.ALIGN_CENTER_VERTICAL);grid.Add(c,1,wx.EXPAND)
-        self.profile=wx.Choice(panel,choices=['Profile','Centroid']);self.profile.SetSelection(0 if options['profile'] else 1)
-        self.mass=wx.Choice(panel,choices=MASS_NAMES);self.mass.SetSelection(options['mass_mode'])
-        for label,c in [('Spectrum',self.profile),('Mass basis',self.mass)]:
-            grid.Add(wx.StaticText(panel,label=label),0,wx.ALIGN_CENTER_VERTICAL);grid.Add(c,1,wx.EXPAND)
-        box=wx.BoxSizer(wx.VERTICAL);box.Add(grid,1,wx.EXPAND|wx.ALL,self.FromDIP(14));panel.SetSizer(box)
-        layout=wx.BoxSizer(wx.VERTICAL);layout.Add(panel,1,wx.EXPAND)
-        layout.Add(self.CreateButtonSizer(wx.OK|wx.CANCEL),0,wx.EXPAND|wx.ALL,self.FromDIP(12));self.SetSizer(layout)
-        self.SetSize(self.FromDIP(wx.Size(480,520)));self.SetMinSize(self.FromDIP(wx.Size(350,300)));self.CentreOnParent()
+            c=wx.TextCtrl(self,value='%.15g'%options[key],size=self.FromDIP(wx.Size(120,-1)));self.controls[key]=c
+            grid.Add(wx.StaticText(self,label=label),0,wx.ALIGN_CENTER_VERTICAL);grid.Add(c,1,wx.EXPAND)
+        self.search=[wx.TextCtrl(self,value=str(v),size=self.FromDIP(wx.Size(120,-1))) for v in search]
+        for label,c in zip(('Repeat units from (Da)','Repeat units to (Da)'),self.search):
+            grid.Add(wx.StaticText(self,label=label),0,wx.ALIGN_CENTER_VERTICAL);grid.Add(c,1,wx.EXPAND)
+        self.profile=wx.Choice(self,choices=['Profile','Centroid']);self.profile.SetSelection(0 if options['profile'] else 1)
+        self.mass=wx.Choice(self,choices=MASS_NAMES);self.mass.SetSelection(int(options['mass_mode']))
+        for label,c in [('Data',self.profile),('Mass from',self.mass)]:
+            grid.Add(wx.StaticText(self,label=label),0,wx.ALIGN_CENTER_VERTICAL);grid.Add(c,1,wx.EXPAND)
+        box=wx.BoxSizer(wx.VERTICAL);box.Add(grid,0,wx.EXPAND|wx.ALL,self.FromDIP(16))
+        box.Add(self.CreateButtonSizer(wx.OK|wx.CANCEL),0,wx.EXPAND|wx.LEFT|wx.RIGHT|wx.BOTTOM,self.FromDIP(14))
+        self.SetSizerAndFit(box);self.CentreOnParent()
     def values(self):
         out=dict(self.options)
         for key,c in self.controls.items():
-            v=float(c.GetValue())
+            try:v=float(c.GetValue().replace(',','.'))
+            except ValueError:raise ValueError('Enter numbers in the settings')
             if not math.isfinite(v):raise ValueError('Enter finite settings')
             if key=='min_isotopes':
-                if not v.is_integer():raise ValueError('Isotope count must be a whole number')
+                if not v.is_integer():raise ValueError('Isotope peaks needed must be a whole number')
                 v=int(v)
             out[key]=v
         out['profile']=self.profile.GetSelection()==0;out['mass_mode']=self.mass.GetSelection()
         if out['mz_min']<0 or out['mz_max']<=out['mz_min']:raise ValueError('Check the m/z range')
-        if not 0<out['threshold_percent']<=100:raise ValueError('Minimum height must be above 0 and at most 100')
-        if not 0<out['isotope_tolerance']<.25:raise ValueError('Spacing tolerance must be above 0 and below 0.25')
+        if not 0<out['threshold_percent']<=100:raise ValueError('The smallest peak must be above 0 and at most 100 %')
+        if not 0<out['isotope_tolerance']<.25:raise ValueError('The peak position tolerance must be above 0 and below 0.25')
         if not 2<=out['min_isotopes']<=20:raise ValueError('Choose 2 to 20 isotope peaks')
-        if not 0<=out['merge_da']<=1 or not 0<=out['merge_ppm']<=1000:raise ValueError('Check the mass matching tolerance')
+        if not 0<=out['merge_da']<=1 or not 0<=out['merge_ppm']<=1000:raise ValueError('Check the same mass tolerance')
+        self.search_range()
         return out
+    def search_range(self):
+        try:lo,hi=[float(c.GetValue().replace(',','.')) for c in self.search]
+        except ValueError:raise ValueError('Check the range of the repeat units')
+        if not 0<lo<hi:raise ValueError('Check the range of the repeat units')
+        return '%g'%lo,'%g'%hi
+    def input_index(self):
+        return self.spectrum.GetSelection() if self.spectrum is not None else 0
 
 class PeakCharge(wx.Dialog):
-    def __init__(self,parent,mz,sign,spectrum=None):
-        super().__init__(parent,title='Assign polymer charge')
-        self.SetFont(ui_font(10));self.SetBackgroundColour(C['bg'])
-        self.sign=sign;self.choices=(NEGATIVE if sign<0 else POSITIVE)+[('Custom mass',None)]
+    """Assign a charge to a measured peak (Other… of the charge menu)."""
+    def __init__(self,parent,mz,sign,spectrum=None,charge=None,carrier=None):
+        super().__init__(parent,title='Assign charge')
+        self.SetFont(ui_font(9));self.SetBackgroundColour(C['bg'])
+        self.sign=sign;self.choices=carriers(sign)
         grid=wx.FlexGridSizer(cols=2,hgap=self.FromDIP(12),vgap=self.FromDIP(10));grid.AddGrowableCol(1)
-        self.charge=wx.SpinCtrl(self,min=1,max=100,initial=max(1,parent.z0.GetValue()))
-        self.carrier=wx.Choice(self,choices=['Choose carrier…']+[q[0] for q in self.choices])
-        label=parent.options.get('carrier_label') if parent._carrier_chosen else None
-        self.carrier.SetSelection(next((i+1 for i,q in enumerate(self.choices) if q[0]==label),0))
-        self.mass=wx.TextCtrl(self,value='%.15g'%parent.options['carrier'])
+        self.charge=wx.SpinCtrl(self,min=1,max=100,initial=max(1,abs(int(charge or parent.z0.GetValue()))))
+        self.carrier=wx.Choice(self,choices=[q[0] for q in self.choices])
+        label,mass=carrier if carrier else (parent.options.get('carrier_label'),parent.options.get('carrier'))
+        i=carrier_index(self.choices,label,mass)
+        self.carrier.SetSelection(i if i is not None else 0)
+        self.mass=wx.TextCtrl(self,value='%.15g'%(mass if mass is not None else parent.options['carrier']))
         for text,c in [('Charge (%s)'%('−' if sign<0 else '+'),self.charge),('Carrier',self.carrier),('Custom mass (Da)',self.mass)]:
             grid.Add(wx.StaticText(self,label=text),0,wx.ALIGN_CENTER_VERTICAL);grid.Add(c,1,wx.EXPAND)
-        self.target=mz;self.spectrum=spectrum;self.options=dict(parent.options,sign=sign)
-        self.isotopes=wx.CheckBox(self,label='Include isotope group');self.isotopes.SetValue(False)
-        self.preview=wx.StaticText(self,label='This peak only')
-        self.members=wx.ListCtrl(self,style=wx.LC_REPORT|wx.LC_SINGLE_SEL|wx.BORDER_SIMPLE,size=self.FromDIP(wx.Size(350,150)))
-        self.members.InsertColumn(0,'m/z',width=self.FromDIP(150));self.members.InsertColumn(1,'Intensity',width=self.FromDIP(150))
-        self.members.Hide();self.preview_result=None;self.preview_error=None
-        self.carrier.Bind(wx.EVT_CHOICE,self.carrier_changed);self.carrier_changed()
+        self.target=mz;self.spectrum=spectrum;self.options=dict(parent.current()['options'] if parent.current() else parent.options,sign=sign)
+        self.isotopes=wx.CheckBox(self,label='With its isotope peaks');self.isotopes.SetValue(False)
+        self.preview=wx.StaticText(self,label='')
+        self.members=wx.ListCtrl(self,style=wx.LC_REPORT|wx.LC_SINGLE_SEL|wx.BORDER_SIMPLE,size=self.FromDIP(wx.Size(330,140)))
+        self.members.InsertColumn(0,'m/z',wx.LIST_FORMAT_RIGHT,width=self.FromDIP(150))
+        self.members.InsertColumn(1,'Height',wx.LIST_FORMAT_RIGHT,width=self.FromDIP(150))
+        self.preview_result=None;self.preview_error=None
         box=wx.BoxSizer(wx.VERTICAL)
-        box.Add(wx.StaticText(self,label='m/z %.4f'%mz),0,wx.ALL,self.FromDIP(14))
+        box.Add(wx.StaticText(self,label='Peak at m/z %.4f'%mz),0,wx.ALL,self.FromDIP(14))
         box.Add(grid,0,wx.EXPAND|wx.LEFT|wx.RIGHT,self.FromDIP(14))
         box.Add(self.isotopes,0,wx.ALL,self.FromDIP(14))
         box.Add(self.preview,0,wx.EXPAND|wx.LEFT|wx.RIGHT|wx.BOTTOM,self.FromDIP(14))
         box.Add(self.members,1,wx.EXPAND|wx.LEFT|wx.RIGHT|wx.BOTTOM,self.FromDIP(14))
         box.Add(self.CreateButtonSizer(wx.OK|wx.CANCEL),0,wx.EXPAND|wx.ALL,self.FromDIP(14))
-        self.SetSizerAndFit(box);self.SetMinSize(self.FromDIP(wx.Size(390,-1)));self.fit_visible()
+        self.SetSizer(box)
+        self.carrier.Bind(wx.EVT_CHOICE,self.carrier_changed)
         self.isotopes.Bind(wx.EVT_CHECKBOX,self.update_preview)
         self.charge.Bind(wx.EVT_SPINCTRL,self.update_preview);self.mass.Bind(wx.EVT_TEXT,self.update_preview)
+        self.carrier_changed()
     def carrier_changed(self,e=None):
-        self.mass.Enable(self.carrier.GetSelection()==len(self.choices))
-        if hasattr(self,'preview'):self.update_preview()
+        self.mass.Enable(self.choices[self.carrier.GetSelection()][1] is None)
+        self.update_preview()
     def update_preview(self,e=None):
         self.preview_result=None;self.preview_error=None;expanded=self.isotopes.GetValue()
         self.members.DeleteAllItems();self.members.Show(expanded)
@@ -127,173 +323,254 @@ class PeakCharge(wx.Dialog):
         else:
             try:
                 charge,label,carrier,_=self.values()
-                if self.spectrum is None:raise ValueError('Choose a measured spectrum')
-                options=dict(self.options,carrier=carrier)
-                q=Q.pick(self.spectrum,self.target,charge,options,isotopes=True)
+                if self.spectrum is None:raise ValueError('No measured spectrum')
+                q=Q.pick(self.spectrum,self.target,charge,dict(self.options,carrier=carrier),isotopes=True)
                 self.preview_result=q
-                self.preview.SetLabel('%d peaks · m/z %.4f to %.4f'%(q['isotopes'],q['first_mz'],q['last_mz'])
-                    if q['isotopes']>1 else 'No matching group; this peak only')
+                self.preview.SetLabel('%d peaks, m/z %.4f to %.4f'%(q['isotopes'],q['first_mz'],q['last_mz'])
+                    if q['isotopes']>1 else 'No isotope peaks at this charge: this peak only')
                 for m in q['members']:
-                    i=self.members.InsertItem(self.members.GetItemCount(),number(m['mz']))
-                    self.members.SetItem(i,1,number(m['height']))
+                    i=self.members.InsertItem(self.members.GetItemCount(),'%.4f'%m['mz'])
+                    self.members.SetItem(i,1,height_text(m['height']))
             except (ValueError,RuntimeError,OSError) as ex:
                 self.preview_error=str(ex);self.preview.SetLabel(self.preview_error)
-        if self.GetSizer():self.fit_visible()
-    def fit_visible(self):
-        self.GetSizer().Layout();self.Fit()
-        owner=wx.GetTopLevelParent(self.GetParent());rect=owner.GetScreenRect();w,h=self.GetSize()
-        display=wx.Display.GetFromWindow(owner);area=wx.Display(max(0,display)).GetClientArea()
-        x=rect.x+(rect.width-w)//2;y=rect.y+(rect.height-h)//2
-        self.SetPosition((max(area.x,min(x,area.GetRight()+1-w)),max(area.y,min(y,area.GetBottom()+1-h))))
+        self.GetSizer().Layout();self.Fit();self.SetMinSize(self.FromDIP(wx.Size(380,-1)))
     def values(self):
-        i=self.carrier.GetSelection()-1
-        if i<0:raise ValueError('Choose a charge carrier')
-        label,mass=self.choices[i]
-        if mass is None:mass=float(self.mass.GetValue())
+        label,mass=self.choices[self.carrier.GetSelection()]
+        if mass is None:
+            try:mass=float(self.mass.GetValue().replace(',','.'))
+            except ValueError:raise ValueError('Enter the carrier mass')
         if not math.isfinite(mass) or mass==0:raise ValueError('Enter a finite carrier mass')
         return self.sign*self.charge.GetValue(),label,mass,self.isotopes.GetValue()
 
 class PolymerWorkspace(PolymerResults):
     show_empty=True
-    def tile_min_height(self):
-        return max(self.FromDIP(460),self.book.GetPosition().y+self.FromDIP(300))
     def __init__(self,tab):
         wx.Panel.__init__(self,tab.rows,style=wx.BORDER_NONE)
         self.tab=tab;self.SetBackgroundColour(C['bg']);self.SetFont(ui_font(9))
         self.series=[];self.active=None;self.chain=None;self.visible=True;self.outputs=None
         self._bindings={};self._restoring_source=False;self._filling=False;self._busy=False
-        self.inputs=[];self.shown=[];self.groups=[];self.mapping=[];self._source_signature=None
+        self.inputs=[];self.input_index=0;self.shown=[];self.groups=[];self.mapping=[];self._source_signature=None
         self.options=dict(Q.DEFAULTS);self._method=dict(getattr(tab,'_polymer_method',{}))
         self._profile_explicit='profile' in self._method
         self._carrier_chosen=bool(self._method.get('carrier_label'))
-        self._work_token=0;self._exact_fields={}
+        self._work_token=0;self._exact_fields={};self.unavailable='';self._page=0;self._layout=None
+        self._said=None;self.charge_values=[None,'uncertain'];self._plot_groups=[]
+        self.carriers=carriers(1)
+        self._build_header()
+        self.pages=[self._build_charge_page(),self._build_repeat_page(),self._build_dist_page()]
         outer=wx.BoxSizer(wx.VERTICAL)
-        heading=wx.WrapSizer(wx.HORIZONTAL)
-        title=wx.StaticText(self,label='Polymer analysis');title.SetFont(ui_font(10,600))
-        heading.Add(title,0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(14))
-        self.runs=wx.Choice(self);self.runs.SetMinSize(self.FromDIP(wx.Size(300,-1)))
-        heading.Add(self.runs,0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(10))
-        self.export_btn=U.flat(self,'Export Excel',handler=self.export)
-        for c in (U.flat(self,'Use deconvoluted masses',handler=self.use_deconvolution),self.export_btn,
-                  U.flat(self,'Remove analysis',handler=self.remove_analysis),
-                  U.flat(self,'Close',handler=self.hide_results)):
-            heading.Add(c,0,wx.RIGHT,self.FromDIP(6))
-        outer.Add(heading,0,wx.EXPAND|wx.ALL,self.FromDIP(7))
-        self.source=wx.Choice(self);self.source.SetMinSize(self.FromDIP(wx.Size(245,-1)))
-        self.z0=wx.SpinCtrl(self,min=1,max=100,initial=1,size=self.FromDIP(wx.Size(64,-1)))
-        self.z1=wx.SpinCtrl(self,min=1,max=100,initial=3,size=self.FromDIP(wx.Size(64,-1)))
-        self.carrier=wx.Choice(self);self.carrier.SetMinSize(self.FromDIP(wx.Size(150,-1)))
-        self.find_btn=U.flat(self,'Find species','primary',handler=self.find_species)
-        self.settings_btn=U.flat(self,'Settings',handler=self.settings)
-        toolbar=wx.WrapSizer(wx.HORIZONTAL)
-        for label,c in [('Spectrum',self.source),('Charge from',self.z0),('to',self.z1),('Carrier',self.carrier)]:
-            toolbar.Add(wx.StaticText(self,label=label),0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(5))
-            toolbar.Add(c,0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(9))
-        for c in (self.find_btn,self.settings_btn):toolbar.Add(c,0,wx.RIGHT,self.FromDIP(6))
-        outer.Add(toolbar,0,wx.EXPAND|wx.LEFT|wx.RIGHT|wx.BOTTOM,self.FromDIP(7))
-        filters=wx.WrapSizer(wx.HORIZONTAL)
-        self.charge=wx.Choice(self,choices=['All charges','Uncertain']);self.charge.SetSelection(0)
-        self.family=wx.Choice(self,choices=['All species']);self.family.SetSelection(0)
-        for label,c in [('Show charge',self.charge),('Polymer series',self.family)]:
-            filters.Add(wx.StaticText(self,label=label),0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(5))
-            filters.Add(c,0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(10))
-        self.note=wx.StaticText(self,label='');self.note.SetForegroundColour(C['muted'])
-        filters.Add(self.note,0,wx.ALIGN_CENTER_VERTICAL)
-        outer.Add(filters,0,wx.EXPAND|wx.LEFT|wx.RIGHT|wx.BOTTOM,self.FromDIP(7))
-        self.book=wx.Notebook(self)
-        self.peak_page=wx.Panel(self.book);self.repeat_page=wx.Panel(self.book);self.dist_page=wx.Panel(self.book)
-        for page,label in [(self.peak_page,'Charge states'),(self.repeat_page,'Repeat units'),(self.dist_page,'Mass distribution')]:
-            page.SetBackgroundColour(C['bg']);self.book.AddPage(page,label)
-        self.split=U.SplitBox(self.peak_page,wx.HORIZONTAL,min_size=100)
-        self.mass_card=U.PlotCard(self.split,'Neutral mass spectrum','',mode='zoom');self.mass_card.on_pick=self.pick_mass
-        self.mass_card.on_view=self.draw_mass
-        self.chain_table=TableCard(self.split,'Charge assignments',[
-            ('Use',40),('Units (n)',65),('Mass (Da)',110),('Charge',65),('m/z',110),
-            ('Height',85),('Isotopes',65),('Assignment',100)],on_select=self.select_table,on_activate=self.toggle_table,multi=True)
-        self.chain_table.on_delete=self.delete_assignments
-        self.chain_table.list.Bind(wx.EVT_LIST_ITEM_RIGHT_CLICK,self.assignment_context)
-        self.chain_table.extra_menu=lambda:[('Delete selected peaks',self.delete_assignments),
-            ('Include or exclude',self.toggle_selected),('Assign charge…',self.manual_charge),
-            ('Response factor…',self.edit_response),('Export Excel…',self.export)]
-        self.split.set_panes([self.mass_card,self.chain_table],[1.6,1.5])
-        pbox=wx.BoxSizer(wx.VERTICAL);pbox.Add(self.split,1,wx.EXPAND)
-        buttons=wx.WrapSizer(wx.HORIZONTAL)
-        for text,handler in [('Include or exclude',self.toggle_selected),('Assign charge…',self.manual_charge),('Delete selected',self.delete_assignments)]:
-            buttons.Add(U.flat(self.peak_page,text,handler=handler),0,wx.RIGHT,self.FromDIP(6))
-        pbox.Add(buttons,0,wx.ALL,self.FromDIP(6));self.peak_page.SetSizer(pbox)
-        # Repeat finder, end group offsets and assignments share one page.
-        self.repeat=wx.TextCtrl(self.repeat_page,value='',size=self.FromDIP(wx.Size(95,-1)))
-        self.ends=wx.TextCtrl(self.repeat_page,value='',size=self.FromDIP(wx.Size(95,-1)))
-        self.tol=wx.TextCtrl(self.repeat_page,value='.05',size=self.FromDIP(wx.Size(65,-1)))
-        self.lo=wx.TextCtrl(self.repeat_page,value='10',size=self.FromDIP(wx.Size(65,-1)))
-        self.hi=wx.TextCtrl(self.repeat_page,value='1000',size=self.FromDIP(wx.Size(65,-1)))
-        repeatbar=wx.WrapSizer(wx.HORIZONTAL)
-        for label,c in [('Repeat (Da)',self.repeat),('End groups (Da)',self.ends),('Tolerance (Da)',self.tol)]:
-            repeatbar.Add(wx.StaticText(self.repeat_page,label=label),0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(5))
-            repeatbar.Add(c,0,wx.RIGHT,self.FromDIP(8))
-        searchbar=wx.WrapSizer(wx.HORIZONTAL)
-        for label,c in [('Search from',self.lo),('to (Da)',self.hi)]:
-            searchbar.Add(wx.StaticText(self.repeat_page,label=label),0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(5));searchbar.Add(c,0,wx.RIGHT,self.FromDIP(8))
-        for text,handler in [('Find repeat units',self.find_repeats),('Find end groups',self.find_offsets)]:
-            searchbar.Add(U.flat(self.repeat_page,text,handler=handler),0,wx.RIGHT,self.FromDIP(6))
-        self.assign_btn=U.flat(self.repeat_page,'Assign series','primary',handler=self.assign_series)
-        searchbar.Add(self.assign_btn,0,wx.RIGHT,self.FromDIP(6))
-        self.repeat_split=U.SplitBox(self.repeat_page,wx.HORIZONTAL,min_size=100)
-        self.candidates=TableCard(self.repeat_split,'Candidates',[('Mass (Da)',110),('Supported gaps',95),('Single gaps',85)],on_activate=self.use_candidate)
-        self.assign_table=TableCard(self.repeat_split,'Chain assignments',[('Units (n)',75),('Mass (Da)',110),('Error (Da)',100)],on_select=self.select_assignment)
-        self.candidates.extra_menu=lambda:[('Use candidate',lambda:self.use_candidate(self.candidates.selected()[0]) if self.candidates.selected() else None)]
-        self.repeat_split.set_panes([self.candidates,self.assign_table],[1.,1.2])
-        rbox=wx.BoxSizer(wx.VERTICAL)
-        for row in (repeatbar,searchbar):rbox.Add(row,0,wx.EXPAND|wx.ALL,self.FromDIP(6))
-        rbox.Add(self.repeat_split,1,wx.EXPAND);self.repeat_page.SetSizer(rbox)
-        self.weight=wx.Choice(self.dist_page,choices=['Peak area','Peak height']);self.weight.SetSelection(0)
-        self.basis=wx.Choice(self.dist_page,choices=['Signal per molecule','Signal per unit mass']);self.basis.SetSelection(0)
-        distbar=wx.WrapSizer(wx.HORIZONTAL)
-        for c in (self.weight,self.basis,U.flat(self.dist_page,'Calculate','primary',handler=self.calculate_distribution)):
-            distbar.Add(c,0,wx.RIGHT,self.FromDIP(8))
-        self.dist_split=U.SplitBox(self.dist_page,wx.HORIZONTAL,min_size=100)
-        self.dist_card=U.PlotCard(self.dist_split,'Mass distribution','',mode='zoom')
-        self.summary=TableCard(self.dist_split,'Results',[('Measure',100),('Value',125)])
-        self.dist_split.set_panes([self.dist_card,self.summary],[3.,1.])
-        dbox=wx.BoxSizer(wx.VERTICAL);dbox.Add(distbar,0,wx.EXPAND|wx.ALL,self.FromDIP(6));dbox.Add(self.dist_split,1,wx.EXPAND);self.dist_page.SetSizer(dbox)
-        outer.Add(self.book,1,wx.EXPAND)
-        self.detail=wx.StaticText(self,label='');outer.Add(self.detail,0,wx.EXPAND|wx.ALL,self.FromDIP(6))
-        self.SetSizer(outer);self.SetMinSize(self.FromDIP(wx.Size(100,300)))
-        self.source.Bind(wx.EVT_CHOICE,self.source_changed)
+        outer.Add(self.header,0,wx.EXPAND|wx.BOTTOM,self.FromDIP(10))
+        for p in self.pages:outer.Add(p,1,wx.EXPAND)
+        self.SetSizer(outer);self.SetMinSize(self.FromDIP(wx.Size(100,200)))
+        self.set_method(self._method);self.refresh_inputs();self._watch();self.set_page(0);self.Hide()
+
+    # ------------------------------------------------------------------ building
+    def _build_header(self):
+        h=self.header=PW.Card(self);gap=self.FromDIP(8)
+        title=PW.label(h,'Polymer analysis',bold=True)
+        self.runs=wx.Choice(h);self.runs.SetMinSize(self.FromDIP(wx.Size(170,-1)))
+        self.z0=wx.SpinCtrl(h,min=1,max=100,initial=1,size=self.FromDIP(wx.Size(54,-1)))
+        self.z1=wx.SpinCtrl(h,min=1,max=100,initial=3,size=self.FromDIP(wx.Size(54,-1)))
+        self.carrier=wx.Choice(h);self.carrier.SetMinSize(self.FromDIP(wx.Size(96,-1)))
+        self.find_btn=U.flat(h,'Find species','primary',handler=self.find_species)
+        self.settings_btn=U.flat(h,'⚙',handler=self.settings,tooltip='Settings',padx=10)
+        self.more_btn=U.flat(h,'•••',handler=lambda e:self.more_menu(),tooltip='More',padx=10)
+        row=wx.BoxSizer(wx.HORIZONTAL)
+        row.Add(title,0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(14))
+        row.Add(self.runs,0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(18))
+        for w,space in [(PW.label(h,'Charges'),6),(self.z0,6),(PW.label(h,'to'),6),(self.z1,18),
+                        (PW.label(h,'Carrier'),6),(self.carrier,14),(self.find_btn,0)]:
+            row.Add(w,0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(space))
+        row.AddStretchSpacer(1)
+        row.Add(self.settings_btn,0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(6))
+        row.Add(self.more_btn,0,wx.ALIGN_CENTER_VERTICAL)
+        self.section=U.Segmented(h,list(SECTIONS),self.section_changed,points=9,weights=(400,400))
+        self.charge=wx.Choice(h,choices=['All charges','Uncertain']);self.charge.SetSelection(0)
+        self.family=wx.Choice(h,choices=['All series']);self.family.SetSelection(0)
+        for c in (self.charge,self.family):c.SetMinSize(self.FromDIP(wx.Size(110,-1)))
+        self.note=PW.label(h,'',muted=True)
+        row2=wx.BoxSizer(wx.HORIZONTAL)
+        row2.Add(self.section,0,wx.ALIGN_CENTER_VERTICAL)
+        row2.AddStretchSpacer(1)
+        for w,space in [(PW.label(h,'Show',muted=True),6),(self.charge,6),(self.family,12),(self.note,0)]:
+            row2.Add(w,0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(space))
+        box=wx.BoxSizer(wx.VERTICAL)
+        box.Add(row,0,wx.EXPAND|wx.LEFT|wx.RIGHT|wx.TOP,self.FromDIP(12))
+        box.Add(row2,0,wx.EXPAND|wx.LEFT|wx.RIGHT|wx.TOP|wx.BOTTOM,self.FromDIP(10))
+        h.SetSizer(box)
         self.carrier.Bind(wx.EVT_CHOICE,self.carrier_changed)
         self.runs.Bind(wx.EVT_CHOICE,lambda e:self.select_series(self.runs.GetSelection()))
         self.charge.Bind(wx.EVT_CHOICE,self.filter_changed);self.family.Bind(wx.EVT_CHOICE,self.filter_changed)
-        self.weight.Bind(wx.EVT_CHOICE,self.invalidate_distribution);self.basis.Bind(wx.EVT_CHOICE,self.invalidate_distribution)
+        for c in (self.z0,self.z1):c.Bind(wx.EVT_SPINCTRL,self.charges_changed)
+
+    def _build_charge_page(self):
+        page=wx.Panel(self);page.SetBackgroundColour(C['bg'])
+        self.split=U.SplitBox(page,wx.HORIZONTAL,min_size=120)
+        self.mass_card=U.PlotCard(self.split,'Neutral masses','',mode='zoom');self.mass_card.no_tile_menu=True
+        self.mass_card.on_pick=self.pick_mass;self.mass_card.on_view=self.draw_mass
+        self.mass_card.on_menu=lambda x,y:[('Show all masses',self.mass_card.reset_view)]
+        self.mass_card.image_name=lambda:self.image_name('neutral_masses')
+        C_=PW.Column
+        self.chain_table=PW.Table(self.split,'Charge assignments',[
+            C_('use','Use','center',30,0,check=True),C_('mass','Mass (Da)','right',70,.6),C_('z','z','center',34,.2),
+            C_('mz','m/z','right',70,.6),C_('height','Height','right',56,.3),C_('iso','Isotopes','right',62,.2),
+            C_('series','Series','left',110,3.,swatch=True),C_('n','Units (n)','right',56,.4,shown=False,optional=True),
+            C_('area','Area','right',60,.6,shown=False,optional=True),
+            C_('response','Response factor','right',70,.5,shown=False,optional=True),
+            C_('state','Assignment','left',80,.8,shown=False,optional=True)],
+            multi=True,empty='Find species to list their charge states')
+        t=self.chain_table
+        t.on_select=self.select_table;t.on_check=self.check_row;t.on_cell=self.table_cell;t.on_delete=self.delete_assignments
+        t.on_activate=lambda n:self.open_charge_menu_for_row(self.shown[n]) if 0<=n<len(self.shown) else None
+        t.extra_menu=lambda:[('Set charge',self.charge_items(self.chain)) if self.chain is not None else ('Set charge',None),
+            ('Include or exclude',self.toggle_selected),('Response factor…',self.edit_response),(None,None),
+            ('Delete selected peaks',self.delete_assignments),('Export Excel…',self.export)]
+        self.split.set_panes([self.mass_card,self.chain_table],[1.15,1.])
+        s=wx.BoxSizer(wx.VERTICAL);s.Add(self.split,1,wx.EXPAND);page.SetSizer(s)
+        return page
+
+    def _build_repeat_page(self):
+        page=wx.Panel(self);page.SetBackgroundColour(C['bg'])
+        self.repeat_split=U.SplitBox(page,wx.HORIZONTAL,min_size=120)
+        card=self.series_card=PW.Card(self.repeat_split,'Find series',top=30);card.no_tile_menu=True
+        F=FIELD_DEFAULTS;size=self.FromDIP(wx.Size(84,-1))
+        self.repeat=wx.TextCtrl(card,value=F['repeat'],size=size);self.ends=wx.TextCtrl(card,value=F['ends'],size=size)
+        self.tol=wx.TextCtrl(card,value=F['tolerance'],size=size)
+        self.lo=wx.TextCtrl(card,value=F['search_min'],size=self.FromDIP(wx.Size(60,-1)))
+        self.hi=wx.TextCtrl(card,value=F['search_max'],size=self.FromDIP(wx.Size(60,-1)))
+        # three rows (a field and its button each): it fits a low tile; the range searched for repeat units
+        # is set in the settings
+        self.assign_btn=U.flat(card,'Assign series','primary',height=28,handler=self.assign_series)
+        grid=wx.FlexGridSizer(cols=3,hgap=self.FromDIP(10),vgap=self.FromDIP(7))
+        for text,c,b in [('Repeat unit (Da)',self.repeat,U.flat(card,'Find',height=28,handler=self.find_repeats,tooltip='Find repeat units')),
+                         ('End groups (Da)',self.ends,U.flat(card,'Find',height=28,handler=self.find_offsets,tooltip='Find end groups')),
+                         ('Tolerance (Da)',self.tol,self.assign_btn)]:
+            grid.Add(PW.label(card,text),0,wx.ALIGN_CENTER_VERTICAL);grid.Add(c,0,wx.ALIGN_CENTER_VERTICAL)
+            grid.Add(b,0,wx.EXPAND)
+        for c in (self.lo,self.hi):c.Hide()
+        box=wx.BoxSizer(wx.VERTICAL);box.AddSpacer(self.FromDIP(34))
+        box.Add(grid,0,wx.LEFT|wx.RIGHT|wx.BOTTOM,self.FromDIP(14));card.SetSizer(box)
+        C_=PW.Column
+        self.candidates=PW.Table(self.repeat_split,'Candidates',[C_('mass','Mass (Da)','right',80,1.),
+            C_('support','Gaps','right',50,.5),C_('single','Single gaps','right',70,.5)],empty='Find repeat units first')
+        self.candidates.on_activate=self.use_candidate
+        self.candidates.extra_menu=lambda:[('Use this mass',lambda:self.use_candidate(self.candidates.selected()[0]) if self.candidates.selected() else None)]
+        self.assign_table=PW.Table(self.repeat_split,'Series',[C_('series','Series','left',90,2.,swatch=True),C_('n','Units (n)','right',56,.4),
+            C_('mass','Mass (Da)','right',80,1.),C_('error','Error (Da)','right',66,.6)],empty='Assign a series to list its chains')
+        self.assign_table.on_select=self.select_assignment
+        self.assign_table.extra_menu=lambda:[('Remove this series',self.remove_series)] if self.family.GetSelection()>0 else []
+        self.repeat_split.set_panes([card,self.candidates,self.assign_table],[.95,.8,1.25])
+        s=wx.BoxSizer(wx.VERTICAL);s.Add(self.repeat_split,1,wx.EXPAND);page.SetSizer(s)
         for c in (self.repeat,self.ends,self.tol,self.lo,self.hi):c.Bind(wx.EVT_TEXT,self.fields_changed)
         for c in (self.repeat,self.ends):c.Bind(wx.EVT_KILL_FOCUS,self.format_field)
-        self.book.Bind(wx.EVT_NOTEBOOK_PAGE_CHANGED,lambda e:(self.Layout(),e.Skip()))
-        self.set_method(self._method);self.refresh_inputs();self._watch();self.Hide()
+        return page
 
+    def _build_dist_page(self):
+        page=wx.Panel(self);page.SetBackgroundColour(C['bg'])
+        self.dist_split=U.SplitBox(page,wx.HORIZONTAL,min_size=120)
+        card=self.dist_card=U.PlotCard(self.dist_split,'Mass distribution','',mode='zoom');card.no_tile_menu=True
+        card.on_menu=lambda x,y:[('Show all masses',card.reset_view)]
+        card.image_name=lambda:self.image_name('mass_distribution')
+        bar=self.dist_bar=wx.Panel(card);bar.SetBackgroundColour(PW.WHITE)
+        self.weight=wx.Choice(bar,choices=['Peak area','Peak height']);self.weight.SetSelection(0)
+        self.basis=wx.Choice(bar,choices=['Signal per molecule','Signal per mass']);self.basis.SetSelection(0)
+        row=wx.BoxSizer(wx.HORIZONTAL)
+        for w,space in [(PW.label(bar,'Abundance from',muted=True),6),(self.weight,14),(PW.label(bar,'Count',muted=True),6),
+                        (self.basis,14),(U.flat(bar,'Calculate',height=26,handler=self.calculate_distribution),0)]:
+            row.Add(w,0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(space))
+        bar.SetSizer(row)
+        card.Bind(wx.EVT_SIZE,lambda e:(self._place_dist_bar(),e.Skip()))
+        self.summary=PW.ResultCard(self.dist_split);self.summary.no_tile_menu=True
+        self.dist_split.set_panes([card,self.summary],[2.6,1.])
+        s=wx.BoxSizer(wx.VERTICAL);s.Add(self.dist_split,1,wx.EXPAND);page.SetSizer(s)
+        self.weight.Bind(wx.EVT_CHOICE,self.invalidate_distribution);self.basis.Bind(wx.EVT_CHOICE,self.invalidate_distribution)
+        return page
+
+    def _place_dist_bar(self):
+        card,bar=self.dist_card,self.dist_bar
+        dc=wx.ClientDC(card);dc.SetFont(ui_font(10,700))
+        x=self.FromDIP(14)+dc.GetTextExtent(card.title)[0]+self.FromDIP(18)
+        w,h=bar.GetBestSize();bar.SetSize(x,self.FromDIP(3),min(w,max(0,card.GetClientSize()[0]-x-self.FromDIP(10))),h)
+
+    def image_name(self,what):
+        s=self.current()
+        base=self.tab._spec_name(s['source']['event']) if s and self.tab.data else 'polymer'
+        return '%s_%s'%(base,what)
+
+    # ------------------------------------------------------------------ layout in HRMS Analysis
+    def fit_layout(self,on):
+        """While the analysis is open the column of tiles fits the window: a low chromatogram, the spectrum and
+        this tile. Closing it gives back the tile heights of before."""
+        rows=self.tab.rows
+        keys=('frac','fit_share','fit_first','fit_floor','fit_label','mode_key','default_mode')
+        if on and self._layout is None:
+            self._layout={k:copy.copy(getattr(rows,k)) for k in keys}
+            rows.frac={};rows.fit_share=self._fit_share;rows.fit_floor=0
+            rows.fit_label='Polymer analysis fills the window'
+            rows.mode_key,rows.default_mode='polymer_tile_mode','two'
+        elif not on and self._layout is not None:
+            for k,v in self._layout.items():setattr(rows,k,v)
+            self._layout=None
+        elif on:
+            rows.frac={}  # (tile heights of another layout, such as those of a saved analysis)
+        try:rows.relayout();self.tab.scroller.refit();self.tab.scroller.Scroll(0,0)
+        except (RuntimeError,AttributeError):pass
+    def _fit_share(self,pane):
+        """(share, pixels) of the tiles that fill the window: a low chromatogram, the spectrum, this tile."""
+        tab=self.tab;H=max(1,tab.rows.view_h)
+        if pane is self:
+            return 1.6,self.header.GetBestSize()[1]+self.FromDIP(120)
+        chroms=tab._chrom_tiles();specs=tab._spec_tiles()
+        n=len(getattr(pane,'cards',[]) or [1])
+        if pane in chroms:
+            return 1e-4,max(tab.rows.min,min(self.FromDIP(140),int(.2*H)))*n
+        if pane in specs:
+            return 1.0*n,max(tab.rows.min,self.FromDIP(120))*n
+        return None
+    def tile_min_height(self):
+        return self.header.GetBestSize()[1]+self.FromDIP(160)
+
+    # ------------------------------------------------------------------ sections
+    def page(self):return self._page
+    def set_page(self,i):
+        self._page=min(2,max(0,int(i)))
+        for k,p in enumerate(self.pages):p.Show(k==self._page)
+        self.section.set_active(self._page)
+        if self._page==2:self.draw_distribution()
+        self.Layout()
+    def section_changed(self,i):
+        self.set_page(i)
+        if i==2 and self.current() and not self.current().get('distribution') and self.scoped_groups():
+            self.calculate_distribution()
+        self._changed()
+
+    # ------------------------------------------------------------------ state
     def current(self):
         return self.series[self.active] if self.active is not None and 0<=self.active<len(self.series) else None
+    def say(self,text):
+        """A short message in the status bar, cleared after a while (no old texts stay)."""
+        self.tab.status(text);self._said=text
+        def clear():
+            try:
+                bar=self.tab.frame.GetStatusBar()
+                if bar and self._said==text and bar.GetStatusText(0)==text:self.tab.status('')
+            except (RuntimeError,AttributeError):pass
+        try:wx.CallLater(9000,clear)
+        except Exception:pass
     def fail(self,ex):
-        self.tab.status(str(ex));return None
+        self.say(str(ex));return None
     def _changed(self):
         super()._changed()
         import undo
         undo.schedule(self.tab)
     def method_values(self):
-        return {**{k:v for k,v in self.options.items() if k not in ('mz_min','mz_max','source_label','source_event')},
-                'carrier_label':self.options['carrier_label'] if self._carrier_chosen else '',
-                'spectrum_type':('profile' if self.options['profile'] else 'centroid') if self._profile_explicit else 'auto',
-                'charge_min':self.z0.GetValue(),'charge_max':self.z1.GetValue(),
-                'repeat':self.field_text(self.repeat),'ends':self.field_text(self.ends),'tolerance':self.tol.GetValue(),
-                'search_min':self.lo.GetValue(),'search_max':self.hi.GetValue(),
-                'weight':self.weight.GetSelection(),'basis':self.basis.GetSelection()}
+        fields=dict(zip(FIELD_KEYS,(self.field_text(self.repeat),self.field_text(self.ends),self.tol.GetValue(),
+                                    self.lo.GetValue(),self.hi.GetValue())))
+        return _method_dict(self.options,self._carrier_chosen,self._profile_explicit,self.z0.GetValue(),
+                            self.z1.GetValue(),fields,self.weight.GetSelection(),self.basis.GetSelection())
     def set_method(self,values):
-        values=dict(values)
-        if 'spectrum_type' in values:
-            self._profile_explicit=values['spectrum_type']!='auto'
-            if self._profile_explicit:values['profile']=values['spectrum_type']=='profile'
-            else:values.pop('profile',None)
-        if 'profile' in values:self._profile_explicit=True
         if 'carrier_label' in values:self._carrier_chosen=bool(values['carrier_label'])
-        self.options.update({k:v for k,v in values.items() if k in Q.DEFAULTS})
+        self.options,values,self._profile_explicit=_method_parts(values,self.options,self._profile_explicit)
         self.z0.SetValue(int(self.options['charge_min']));self.z1.SetValue(int(self.options['charge_max']))
         for key,c in [('repeat',self.repeat),('ends',self.ends),('tolerance',self.tol),('search_min',self.lo),('search_max',self.hi)]:
             if key in values:self.set_field(c,values[key])
@@ -301,6 +578,10 @@ class PolymerWorkspace(PolymerResults):
             if values.get(key) in (0,1):c.SetSelection(values[key])
         self._method=self.method_values();self.tab._polymer_method=dict(self._method)
         if self.inputs:self.set_carriers()
+    def charges_changed(self,e=None):
+        self.options.update(charge_min=self.z0.GetValue(),charge_max=self.z1.GetValue())
+        self.tab._polymer_method=self.method_values()
+        if e:e.Skip()
     def fields_changed(self,e=None):
         if e:self._exact_fields.pop(e.GetEventObject(),None)
         self.tab._polymer_method=self.method_values()
@@ -321,14 +602,16 @@ class PolymerWorkspace(PolymerResults):
     def format_field(self,e):
         c=e.GetEventObject();self.set_field(c,self.field_text(c));e.Skip()
     def field_values(self):return [self.field_text(c) for c in (self.repeat,self.ends,self.tol,self.lo,self.hi)]
+
+    # ------------------------------------------------------------------ input spectrum and carrier
     def refresh_inputs(self):
-        selected=self.source.GetStringSelection()
-        self.inputs=list(self.tab.deconv_inputs());self.source.SetItems([d['label'] for d in self.inputs])
-        if self.inputs:self.source.SetSelection(next((i for i,d in enumerate(self.inputs) if d['label']==selected),0))
+        old=self.inputs[self.input_index]['label'] if 0<=self.input_index<len(self.inputs) else None
+        self.inputs=list(self.tab.deconv_inputs())
+        self.input_index=next((i for i,d in enumerate(self.inputs) if d['label']==old),0)
         self.source_changed()
     def source_changed(self,e=None):
-        if self.inputs and self.source.GetSelection()>=0:
-            d=self.inputs[self.source.GetSelection()];spec=d['spec']
+        if self.inputs:
+            d=self.inputs[min(self.input_index,len(self.inputs)-1)];spec=d['spec']
             self.options.update(mz_min=float(spec[0,0]),mz_max=float(spec[-1,0]))
             if self.options['mz_max']==self.options['mz_min']:
                 self.options['mz_min']=max(0.,self.options['mz_min']-.01);self.options['mz_max']+=.01
@@ -337,44 +620,75 @@ class PolymerWorkspace(PolymerResults):
             if not self._profile_explicit:self.options['profile']=bool(profile)
             self.set_carriers()
         self.find_btn.Enable(bool(self.inputs) and not self._busy)
+    def input(self):
+        return self.inputs[min(self.input_index,len(self.inputs)-1)] if self.inputs else None
+    def deconvolution_carrier(self,sign):
+        """The carrier of the deconvolution settings (the one chosen for these data), or None."""
+        try:
+            cfg=self.tab.dec.cfg;lst=carriers(sign)
+            k=int(cfg.get('adduct_neg' if sign<0 else 'adduct',0) or 0)
+            return lst[k] if 0<=k<len(lst) and lst[k][1] is not None else None
+        except Exception:return None
     def set_carriers(self):
-        sign=self.inputs[self.source.GetSelection()].get('sign',1)
-        self.carriers=(NEGATIVE if sign<0 else POSITIVE)+[('Custom mass',None)]
-        self.carrier.SetItems(['Choose carrier…']+[q[0] for q in self.carriers])
-        label=self._method.get('carrier_label') if self._carrier_chosen else None
-        self.carrier.SetSelection(next((i+1 for i,q in enumerate(self.carriers) if q[0]==label),0))
+        sign=(self.input() or {}).get('sign',1)
+        self.carriers=carriers(sign)
+        self.carrier.SetItems([q[0] if q[1] is not None else 'Custom mass…' for q in self.carriers])
+        if self._carrier_chosen:
+            i=carrier_index(self.carriers,self._method.get('carrier_label',self.options.get('carrier_label')),self.options.get('carrier'))
+            if i is None or self.carriers[i][1] is None:
+                i=len(self.carriers)-1  # (a custom mass)
+        else:
+            q=self.deconvolution_carrier(sign) or self.carriers[0]
+            i=carrier_index(self.carriers,q[0],q[1]) or 0
+            self.options.update(carrier=self.carriers[i][1],carrier_label=self.carriers[i][0])
+        self.carrier.SetSelection(i)
+        self.carrier.SetMinSize(wx.Size(max(self.FromDIP(96),self.carrier.GetBestSize()[0]),-1));self.header.Layout()
+        self.carrier.SetToolTip('%.6f Da per charge'%self.options['carrier'] if self.carriers[i][1] is None else '')
     def carrier_changed(self,e=None):
-        i=self.carrier.GetSelection()-1
+        i=self.carrier.GetSelection()
         if i<0:return
         label,value=self.carriers[i]
         if value is None:
-            with wx.TextEntryDialog(self,'Carrier mass per charge (Da, signed)','Charge carrier',str(self.options['carrier'])) as dlg:
-                if dlg.ShowModal()!=wx.ID_OK:self.carrier.SetSelection(0);return
-                try:value=float(dlg.GetValue());assert math.isfinite(value) and value!=0
-                except (ValueError,AssertionError):self.carrier.SetSelection(0);self.fail('Enter a finite carrier mass');return
+            with wx.TextEntryDialog(self,'Carrier mass per charge (Da, with its sign)','Charge carrier','%.6f'%self.options['carrier']) as dlg:
+                if dlg.ShowModal()!=wx.ID_OK:self.set_carriers();return
+                try:value=float(dlg.GetValue().replace(',','.'));assert math.isfinite(value) and value!=0
+                except (ValueError,AssertionError):self.set_carriers();self.fail('Enter a finite carrier mass');return
         self._carrier_chosen=True
         self.options.update(carrier=value,carrier_label=label);self._method.update(carrier=value,carrier_label=label)
         self.tab._polymer_method=self.method_values()
     def settings(self,e=None):
-        if not self.inputs:return self.fail('Choose a spectrum first')
-        dlg=Settings(self,self.options)
+        if not self.inputs:return self.fail('Show a spectrum first')
+        dlg=Settings(self,self.options,self.inputs,self.input_index,(self.field_text(self.lo),self.field_text(self.hi)))
         try:
             while dlg.ShowModal()==wx.ID_OK:
-                try:self.options=dlg.values();self._profile_explicit=True;self._method=self.method_values();self.tab._polymer_method=dict(self._method);self._changed();break
+                try:
+                    self.options=dlg.values();self.input_index=dlg.input_index();self._profile_explicit=True
+                    lo,hi=dlg.search_range();self.set_field(self.lo,lo);self.set_field(self.hi,hi);self.fields_changed()
+                    self._method=self.method_values();self.tab._polymer_method=dict(self._method);self.set_carriers();self._changed();break
                 except ValueError as ex:wx.MessageBox(str(ex),'Polymer settings',wx.OK|wx.ICON_INFORMATION,dlg)
         finally:dlg.Destroy()
+    def more_items(self):
+        s=self.current()
+        return [('Use deconvoluted masses',self.use_deconvolution),(None,None),
+                ('Export Excel…',self.export if s else None),('Remove analysis',self.remove_analysis if s else None),
+                (None,None),('Close',self.hide_results)]
+    def more_menu(self):
+        m=U.build_menu(self,self.more_items());U.popup_menu(self.more_btn,m,wx.Point(0,self.more_btn.GetSize()[1]));m.Destroy()
     def analysis_options(self):
-        if not self.inputs:raise ValueError('Choose a spectrum first')
-        if self.carrier.GetSelection()<1:raise ValueError('Choose a charge carrier')
-        d=self.inputs[self.source.GetSelection()]
+        d=self.input()
+        if d is None:raise ValueError('Show a spectrum first')
         options=dict(self.options,charge_min=self.z0.GetValue(),charge_max=self.z1.GetValue(),
                      source_label=d['label'],source_event=int(d.get('e',0)),sign=d.get('sign',1))
-        if options['charge_max']<options['charge_min']:raise ValueError('Check the charge range')
+        if options['charge_max']<options['charge_min']:raise ValueError('Check the charges')
         return d,options
+
+    # ------------------------------------------------------------------ runs
     def find_species(self,e=None,synchronous=False):
         if self._busy:return None
         if len(self.series)>=100:return self.fail('Keep at most 100 polymer analyses in one file')
         if callable(getattr(self.tab,'busy_averaging',None)) and self.tab.busy_averaging():return self.fail('Wait for the spectrum to load')
+        message=Q.available()
+        if message:return self.fail(message)
         try:
             self.refresh_source_only();d,options=self.analysis_options()
             source=capture_source(self.tab,options);spec=np.array(d['spec'],copy=True);sign=d.get('sign',1)
@@ -389,24 +703,24 @@ class PolymerWorkspace(PolymerResults):
         if synchronous:return work()
         threading.Thread(target=work,name='Polymer charges',daemon=True).start()
     def refresh_source_only(self):
-        current=list(self.tab.deconv_inputs());label=self.source.GetStringSelection()
+        current=list(self.tab.deconv_inputs())
         if [d['label'] for d in current]!=[d['label'] for d in self.inputs]:
-            self.refresh_inputs();raise ValueError('Spectrum changed. Choose it again')
+            self.refresh_inputs();raise ValueError('The spectrum changed. Find species again')
         self.inputs=current
     def _set_busy(self,busy):
         self._busy=busy
-        for c in (self.source,self.z0,self.z1,self.carrier,self.find_btn,self.settings_btn):c.Enable(not busy)
+        for c in (self.z0,self.z1,self.carrier,self.find_btn,self.settings_btn):c.Enable(not busy)
     def _finished(self,token,source,options,rows,error):
         if not self or self.IsBeingDeleted() or token!=self._work_token:return None
         self._set_busy(False)
         if error:return self.fail(error)
-        if source['file']!=file_key(self.tab):return self.fail('The source file changed. Run again')
+        if not same_file(self.tab,source['file']):return self.fail('The data file changed. Find species again')
         col=next((c for c in self.tab.cols if c['e']==source['event']),None)
         saved=next((c['spec'] for c in source['columns'] if c['e']==source['event']),None)
-        if col is None or col.get('spec') is None or not np.array_equal(col['spec'],saved):return self.fail('The spectrum changed. Run again')
+        if col is None or col.get('spec') is None or not np.array_equal(col['spec'],saved):return self.fail('The spectrum changed. Find species again')
         record=dict(id=uuid.uuid4().hex,source=source,options=options,rows=rows,chains=rows,
                     families=[],fields=self.field_values(),weight=self.weight.GetSelection(),basis=self.basis.GetSelection())
-        # Re-running identical settings on the identical source replaces that run.
+        # Running the same settings on the same spectrum again replaces that run.
         old=next((i for i,s in enumerate(self.series) if s['options']==options and
                   s['source']['kind']=='direct' and s['source']['event']==source['event'] and
                   all(np.array_equal(a['spec'],b['spec']) for a,b in zip(s['source']['columns'],source['columns']))),None)
@@ -415,7 +729,8 @@ class PolymerWorkspace(PolymerResults):
         self.chain=None
         self.visible=True;self._bindings.clear();self.charge.SetSelection(0);self.family.SetSelection(0)
         self._changed();self.select_series(self.active);self.tab._layout_rows()
-        self.tab.status('%d charge assignments'%len(rows));return rows
+        n=sum(q['state'] in (0,3) for q in rows)
+        self.say('%d species with a charge, %d peaks without'%(n,len(rows)-n));return rows
     def use_deconvolution(self,e=None):
         if self._busy:return None
         if len(self.series)>=100:return self.fail('Keep at most 100 polymer analyses in one file')
@@ -425,8 +740,8 @@ class PolymerWorkspace(PolymerResults):
             options=dict(self.options);params=source['result'].get('params',{})
             if 'adduct_mass' in params:
                 options['carrier']=float(params['adduct_mass'])
-                choices=NEGATIVE if params.get('sign',1)<0 else POSITIVE
-                options['carrier_label']=next((label for label,value in choices if abs(value-options['carrier'])<1e-8),'Custom mass')
+                lst=carriers(params.get('sign',1));i=carrier_index(lst,None,options['carrier'])
+                options['carrier_label']=lst[i][0] if i is not None else 'Custom mass'
             if params.get('z_range'):
                 a,b=params['z_range'];options.update(charge_min=min(abs(int(a)),abs(int(b))),charge_max=max(abs(int(a)),abs(int(b))))
             options['sign']=params.get('sign',1)
@@ -436,64 +751,112 @@ class PolymerWorkspace(PolymerResults):
             self.series.append(record);self.active=len(self.series)-1;self.visible=True;self.chain=None
             self._changed();self.select_series(self.active);self.tab._layout_rows();return rows
         except (ValueError,RuntimeError) as ex:return self.fail(ex)
+    def run_label(self,i,run):
+        label=run['source'].get('label','') or ''
+        what=label.split(': ',1)[-1]
+        if len(self.inputs)>1 or len(getattr(self.tab,'cols',[]))>1:
+            what='(%s) %s'%('−' if run['options'].get('sign',run['source'].get('sign',1))<0 else '+',what)
+        if run['source'].get('kind')!='direct':what+=' · deconvoluted'
+        return 'Run %d · %s'%(i+1,what)
     def select_series(self,index):
         if self._filling or not 0<=index<len(self.series):return
         self.active=index;self.chain=None;self._bindings.clear();s=self.current()
-        self.options.update(s['options'])
+        self.options.update({k:v for k,v in s['options'].items() if k not in ('source_label','source_event')})
         self._profile_explicit=True;self._carrier_chosen=True
-        self.z0.SetValue(self.options.get('charge_min',1));self.z1.SetValue(self.options.get('charge_max',3))
+        self.z0.SetValue(int(self.options.get('charge_min',1)));self.z1.SetValue(int(self.options.get('charge_max',3)))
         self._method.update({k:v for k,v in self.options.items() if k in Q.DEFAULTS})
         for c,v in zip((self.repeat,self.ends,self.tol,self.lo,self.hi),s.get('fields',[])):self.set_field(c,v)
         self.weight.SetSelection(s.get('weight',0));self.basis.SetSelection(s.get('basis',0))
         self.show_source();self.refresh_inputs()
-        label=s['options'].get('source_label',s['source']['label'])
-        self.source.SetSelection(next((i for i,d in enumerate(self.inputs) if d['label']==label),0) if self.inputs else wx.NOT_FOUND)
-        self.options.update(s['options'])
+        self.input_index=next((i for i,d in enumerate(self.inputs) if d.get('e',0)==s['source'].get('event',0)),self.input_index)
         if self.inputs:self.set_carriers()
         self.rebuild_filters();self.refill();self.draw_distribution();self.redraw()
+    def family_name(self,s,i):
+        f=s['families'][i];names=[]
+        for k,g in enumerate(s['families'][:i]):names.append(series_name(g['repeat'],g['ends'],names))
+        return series_name(f['repeat'],f['ends'],names)
+    def family_colour(self,i):return SERIES_COLOURS[i%len(SERIES_COLOURS)]
     def rebuild_filters(self):
         s=self.current();old=self.charge.GetStringSelection();family=self.family.GetSelection()
-        charges=sorted({q['charge'] for q in s['rows'] if q['charge']}) if s else []
+        charges=sorted({q['charge'] for q in s['rows'] if q['charge'] and q['state'] in (0,3)},key=abs) if s else []
         self.charge_values=[None]+charges+['uncertain']
         labels=['All charges']+[signed(z) for z in charges]+['Uncertain']
         self.charge.SetItems(labels);self.charge.SetSelection(labels.index(old) if old in labels else 0)
-        self.family.SetItems(['All species']+['Series %d · %.4f Da'%(i+1,f['repeat']) for i,f in enumerate(s['families'] if s else [])])
+        self.family.SetItems(['All series']+[self.family_name(s,i) for i in range(len(s['families']))] if s else ['All series'])
         self.family.SetSelection(min(max(0,family),self.family.GetCount()-1))
-    def charge_value(self):return self.charge_values[self.charge.GetSelection()] if hasattr(self,'charge_values') else None
+    def charge_value(self):
+        i=self.charge.GetSelection()
+        return self.charge_values[i] if 0<=i<len(self.charge_values) else None
     def family_rows(self):
         s=self.current();i=self.family.GetSelection()-1
         return set(s['families'][i]['matches']) if s and 0<=i<len(s['families']) else None
     def filter_changed(self,e=None):
-        self.refill();self.redraw();self.invalidate_distribution();self._changed()
+        self.refill();self.redraw();self._changed()
+    def merge(self,rows,options,charge=None):
+        """Q.merge, or no masses (and the message) when the native library cannot be loaded: the saved rows
+        are shown all the same."""
+        try:
+            groups,mapping=Q.merge(rows,options.get('merge_da',.02),options.get('merge_ppm',5.),charge=charge)
+            self.unavailable='';return groups,mapping
+        except Q.Unavailable as ex:
+            self.unavailable=str(ex);return [],[-1]*len(rows)
+    def groups_for(self,s,charge=None,family=0):
+        """Neutral masses of run s: included rows of that charge (None all, 'uncertain' none) and series
+        (0 all, else the series number)."""
+        if not s or charge=='uncertain':return []
+        f=s['families'][family-1] if 0<family<=len(s['families']) else None
+        matches=set(f['matches']) if f else None
+        rows=[dict(q,include=bool(q.get('include')) and (matches is None or i in matches)) for i,q in enumerate(s['rows'])]
+        return self.merge(rows,s['options'],charge)[0]
     def scoped_groups(self,include_family=True):
-        s=self.current()
-        if not s or self.charge_value()=='uncertain':return []
-        family=self.family_rows() if include_family else None
-        rows=[dict(q,include=bool(q.get('include')) and (family is None or i in family)) for i,q in enumerate(s['rows'])]
-        return Q.merge(rows,s['options'].get('merge_da',.02),s['options'].get('merge_ppm',5.),charge=self.charge_value())[0]
+        return self.groups_for(self.current(),self.charge_value(),self.family.GetSelection() if include_family else 0)
+    def mass_text(self,s,mass):
+        if not mass or mass<=0:return '—'
+        if s['source'].get('kind')!='direct':
+            import deconv_tab as D
+            p=(s['source'].get('result') or {}).get('params',{})
+            return D._mass_fmt(mass,float(p.get('mass_step',1.) or 1.))
+        return '%.4f'%mass
+    def row_series(self,s,i):
+        for k,f in enumerate(s['families']):
+            if i in f['matches']:return k,f['matches'][i]
+        return None,None
+    def table_row(self,s,i):
+        q=s['rows'][i];k,match=self.row_series(s,i)
+        uncertain=q['state'] in (1,2,5)
+        cells=['',self.mass_text(s,q['mass']),signed(q['charge']) if q['state'] in (0,3) else '—',
+               number(q.get('mz')) if q.get('mz') else '—',height_text(q['height']),
+               q['isotopes'] if q.get('isotopes') else '—',
+               self.family_name(s,k) if k is not None else ('uncertain' if q['state']==1 else ''),
+               match['n'] if match else '—','%.3g'%q.get('area',0),'%.3g'%q.get('response',1.),Q.STATES.get(q['state'],'')]
+        colours={2:charge_colour(q['charge'])} if q['state'] in (0,3) else {}
+        if k is not None:colours[6]=self.family_colour(k)
+        return dict(cells=cells,colours=colours,muted=uncertain,check=bool(q.get('include')),check_disabled=uncertain)
     def refill(self):
         self._filling=True
         try:
-            s=self.current();self.runs.SetItems(['%d · %s'%(i+1,r['source']['label']) for i,r in enumerate(self.series)])
-            if self.active is not None:self.runs.SetSelection(self.active)
-            self.shown=[];display=[];self.groups=[];self.mapping=[]
+            s=self.current()
+            self.runs.SetItems([self.run_label(i,r) for i,r in enumerate(self.series)] or ['No run yet'])
+            self.runs.SetSelection(self.active if self.active is not None else 0)
+            self.runs.SetMinSize(wx.Size(max(self.FromDIP(170),self.runs.GetBestSize()[0]),-1))
+            self.shown=[];rows=[];self.groups=[];self.mapping=[]
             if s:
-                self.groups,self.mapping=Q.merge(s['rows'],s['options'].get('merge_da',.02),s['options'].get('merge_ppm',5.))
-                family=self.family_rows();charge=self.charge_value();active_family=self.family.GetSelection()-1
-                matches=s['families'][active_family]['matches'] if active_family>=0 else {}
+                self.groups,self.mapping=self.merge(s['rows'],s['options'])
+                family=self.family_rows();charge=self.charge_value()
                 for i,q in enumerate(s['rows']):
                     if charge=='uncertain' and q['state'] not in (1,2,5):continue
                     if isinstance(charge,int) and q['charge']!=charge:continue
                     if family is not None and i not in family:continue
-                    self.shown.append(i);match=matches.get(i,matches.get(str(i),{}))
-                    display.append(['Yes' if q.get('include') else 'No',match.get('n','—'),
-                        number(q['mass']) if q['mass']>0 else '—',signed(q['charge']),number(q.get('mz')),
-                        number(q['height']),q['isotopes'],Q.STATES.get(q['state'],'')])
-                self.note.SetLabel('%d assignments · %d masses'%(len(self.shown),len(self.scoped_groups())))
-            else:self.note.SetLabel('')
-            self.chain_table.set_rows(display)
-            if self.chain in self.shown:self.chain_table.select(self.shown.index(self.chain))
-            self.export_btn.Enable(bool(s));self.draw_mass();self.draw_assignments();self.update_detail();self.Layout()
+                    self.shown.append(i);rows.append(self.table_row(s,i))
+                n=len(self.scoped_groups())
+                self.note.SetLabel(self.unavailable or '%d · %d mass%s'%(len(self.shown),n,'' if n==1 else 'es'))
+                info='%d assignments · %d mass%s'%(len(self.shown),n,'' if n==1 else 'es')
+            else:
+                self.note.SetLabel(self.unavailable);info=''
+            self.chain_table.set_rows(rows,info)
+            if self.chain is not None and self.chain not in self.shown:self.chain=None
+            if self.chain is not None:self.chain_table.select(self.shown.index(self.chain))
+            self.header.Layout();self.draw_mass();self.draw_assignments();self.Layout()
         finally:self._filling=False
     def select_table(self,index):
         if not self._filling and 0<=index<len(self.shown):self.select_chain(self.shown[index],preserve_table=True)
@@ -504,125 +867,179 @@ class PolymerWorkspace(PolymerResults):
         try:
             if index in self.shown:self.chain_table.select(self.shown.index(index),only=not preserve_table)
         finally:self._filling=False
-        self.show_source();self.draw_mass();self.redraw();self.update_detail();self._keep_visible()
-    def update_detail(self):
-        s=self.current()
-        if s is None or self.chain is None:self.detail.SetLabel('');return
-        q=s['rows'][self.chain]
-        self.detail.SetLabel('%s%s · m/z %s · %s'%(number(q['mass'])+' Da · ' if q['mass'] else '',
-            signed(q['charge']),number(q.get('mz')),Q.STATES.get(q['state'],'')))
+        self.show_source();self.draw_mass();self.redraw()
     def draw_mass(self):
-        groups=self.scoped_groups();self._plot_groups=groups
-        scope=(self.current()['id'] if self.current() else None,self.charge_value(),self.family.GetSelection(),
-               tuple((g['mass'],g['height']) for g in groups))
-        view=(self.mass_card.ax.get_xlim(),self.mass_card.ax.get_ylim()) if scope==getattr(self,'_mass_scope',None) else None
-        self._mass_scope=scope;self.mass_card.reset()
-        if groups:
-            ax=self.mass_card.ax;x=[q['mass'] for q in groups];y=[q['height'] for q in groups]
-            ax.vlines(x,0,y,color=C['accent'],lw=.75)
-            span=max(x)-min(x);pad=max(1.,span*.07)
-            self.mass_card.full=(min(x)-pad,max(x)+pad);ax.set_xlim(self.mass_card.full)
-            ax.set_ylim(0,max(y)*1.32 if max(y)>0 else 1)
-            if view:ax.set_xlim(view[0]);ax.set_ylim(view[1])
-            # Horizontal labels in measured pixel bounds, with a few vertical
-            # lanes. Dense views omit collisions; zooming reconsiders labels.
-            from matplotlib.font_manager import FontProperties
-            lo,hi=ax.get_xlim();top=ax.get_ylim()[1];placed=[]
-            renderer=self.mass_card.canvas.get_renderer();bounds=ax.bbox
-            scale=self.mass_card.figure.dpi/72. if hasattr(self.mass_card,'figure') else ax.figure.dpi/72.
-            candidates=sorted(groups,key=lambda g:(self.chain not in g['rows'],-g['height']))
-            for g in candidates:
-                if not lo<=g['mass']<=hi or g['height']>top:continue
-                selected=self.chain in g['rows']
-                text='%.4f'%g['mass'];font=FontProperties(size=8.5,weight='bold' if selected else 'normal')
-                width,height,_=renderer.get_text_width_height_descent(text,font,ismath=False)
-                px,py=ax.transData.transform((g['mass'],g['height']));half=width/2
-                center=max(bounds.x0+half+3,min(bounds.x1-half-3,px))
-                for dy in (7,20,33,46):
-                    bottom=py+dy*scale;rect=(center-half-2,bottom-2,center+half+2,bottom+height+3)
-                    if rect[3]>bounds.y1-2 or any(rect[0]<r[2] and rect[2]>r[0] and rect[1]<r[3] and rect[3]>r[1] for r in placed):continue
-                    ax.annotate(text,(g['mass'],g['height']),xytext=((center-px)/scale,dy),textcoords='offset points',ha='center',va='bottom',
-                                fontsize=8.5,rotation=0,color=FOCUS if selected else C['text'],fontweight='bold' if selected else 'normal')
-                    placed.append(rect);break
-            if self.chain is not None:
-                group_id=self.mapping[self.chain] if self.chain<len(self.mapping) else -1
-                g=next((g for g in groups if self.chain in g['rows'] or group_id>=0 and
-                        any(self.mapping[i]==group_id for i in g['rows'])),None)
-                if g:ax.vlines([g['mass']],0,[g['height']],color=FOCUS,lw=1.2)
-        U.style_axes(self.mass_card.ax,'Mass (Da)','Intensity');self.mass_card.draw()
-    def assignment_context(self,e):
-        index=e.GetIndex()
-        if 0<=index<len(self.shown) and index not in self.chain_table.selected():
-            self.chain_table.select(index)
-        e.Skip()
-    def delete_assignments(self,indices=None):
-        s=self.current()
-        if s is None or self._busy:return 0
-        if not isinstance(indices,(list,tuple)):indices=self.chain_table.selected()
-        removed={self.shown[i] for i in indices if isinstance(i,int) and 0<=i<len(self.shown)}
-        if not removed:return 0
-        old=self.chain
-        s['rows']=[q for i,q in enumerate(s['rows']) if i not in removed];s['chains']=s['rows']
-        self.chain=(min(old-sum(i<old for i in removed),len(s['rows'])-1) if old is not None and s['rows'] else None)
-        self.invalidate_tools();self.rebuild_filters();self.refill();self.redraw();self._changed()
-        self.tab.status('Deleted %d peak%s'%(len(removed),'' if len(removed)==1 else 's'))
-        return len(removed)
+        """Neutral masses as sticks in the colour of their series (grey: in no series, orange: selected);
+        labels on the tallest peaks that stand apart."""
+        card=self.mass_card;groups=self.scoped_groups();self._plot_groups=groups;s=self.current()
+        scope=(s['id'] if s else None,self.charge_value(),self.family.GetSelection(),tuple((g['mass'],g['height']) for g in groups))
+        view=(card.ax.get_xlim(),card.ax.get_ylim()) if scope==getattr(self,'_mass_scope',None) and card.full else None
+        self._mass_scope=scope;card.reset();ax=card.ax
+        if not groups:
+            ax.set_axis_off()
+            ax.text(.5,.5,self.unavailable or ('No masses with these choices' if s else 'Find species to see the neutral masses'),
+                    transform=ax.transAxes,ha='center',va='center',fontsize=9,color=C['muted'])
+            card.full=None;card.set_legend([]);card.draw();return
+        families=s['families'];selected=None
+        if self.chain is not None:
+            gid=self.mapping[self.chain] if self.chain<len(self.mapping) else -1
+            selected=next((g for g in groups if self.chain in g['rows'] or gid>=0 and any(self.mapping[i]==gid for i in g['rows'])),None)
+        colours=[]
+        for g in groups:
+            k=next((k for k,f in enumerate(families) if any(i in f['matches'] for i in g['rows'])),None)
+            colours.append(self.family_colour(k) if k is not None else (GREY if families else C['accent']))
+        x=np.array([g['mass'] for g in groups]);y=np.array([g['height'] for g in groups])
+        ax.vlines(x,0,y,colors=colours,lw=1.)
+        if selected is not None:ax.vlines([selected['mass']],0,[selected['height']],color=FOCUS,lw=1.6,zorder=5)
+        span=x.max()-x.min();pad=max(1.,span*.05)
+        card.full=(x.min()-pad,x.max()+pad);ax.set_xlim(card.full);ax.set_ylim(0,y.max()*1.18 if y.max()>0 else 1)
+        if view:ax.set_xlim(view[0]);ax.set_ylim(view[1])
+        U.style_axes(ax,'Mass (Da)','Intensity')
+        self._label_masses(ax,x,y,selected)
+        legend=[(self.family_colour(k),self.family_name(s,k)) for k in range(len(families))]
+        if families:legend.append((GREY,'no series'))
+        legend.append((FOCUS,'selected'))
+        card.set_legend(legend);card.draw()
+    def _label_masses(self,ax,x,y,selected):
+        """Labels (the size of the spectrum's peak labels) on the tallest peaks, each at least a label width
+        from the others and with no taller peak under it: no label covers another at any width."""
+        lo,hi=ax.get_xlim();top=ax.get_ylim()[1]
+        bbox=ax.get_window_extent();px=bbox.width/max(hi-lo,1e-12)
+        if px<=0:return
+        dpi=ax.figure.dpi;char=7*dpi/72.*.6;s=self.current();fmt='%.2f'
+        if s and s['source'].get('kind')!='direct':
+            step=float(((s['source'].get('result') or {}).get('params') or {}).get('mass_step',1.) or 1.)
+            fmt='%.4f' if step<.05 else '%.2f' if step<.5 else '%.1f'  # (the decimals of the deconvolution)
+        inside=np.where((x>=lo)&(x<=hi)&(y<=top))[0]
+        order=sorted(inside,key=lambda i:-y[i])
+        if selected is not None:order=[i for i in order if x[i]==selected['mass']]+[i for i in order if x[i]!=selected['mass']]
+        placed=[];limit=max(1,int(bbox.width/(len(fmt%x.max())*char*1.6)))
+        for i in order:
+            if len(placed)>=limit:break
+            w=len(fmt%x[i])*char/px  # (label width in Da)
+            if x[i]-w*.55<lo or x[i]+w*.55>hi:continue  # (inside the plot)
+            if any(abs(x[i]-x[j])<w*1.15 for j in placed):continue
+            near=(x>x[i]-w*.6)&(x<x[i]+w*.6)
+            if np.any(y[near]>y[i]*1.02):continue
+            if y[i]<.06*top and i not in [k for k in placed]:continue
+            sel=selected is not None and x[i]==selected['mass']
+            t=ax.annotate(fmt%x[i],(x[i],y[i]),xytext=(0,3),textcoords='offset points',ha='center',va='bottom',
+                          fontsize=7,color=FOCUS if sel else C['text'],fontweight='bold' if sel else 'normal')
+            t._no_scale=True;placed.append(i)
     def pick_mass(self,x,y=None):
-        groups=getattr(self,'_plot_groups',[])
+        groups=self._plot_groups
         if not groups:return False
         group=min(groups,key=lambda g:abs(g['mass']-x))
         limits=self.mass_card.ax.get_xlim();pixels=max(1,self.mass_card.ax.bbox.width)
         if abs(group['mass']-x)>max(.002,12*abs(limits[1]-limits[0])/pixels):return False
         self.select_chain(group['rows'][0]);return True
-    def toggle_table(self,index):
-        if 0<=index<len(self.shown):self.chain=self.shown[index];self.toggle_selected()
-    def toggle_selected(self,e=None):
+
+    # ------------------------------------------------------------------ charges
+    def charge_items(self,index=None,col=None,mz=None):
+        """The charge menu of a row (or of a peak of the spectrum without a row): +1 to +4 (or more), not
+        assigned, other; the present one ticked."""
+        s=self.current();sign=(s['options'].get('sign',1) if s else (self.input() or {}).get('sign',1))
+        sign=-1 if sign<0 else 1
+        q=s['rows'][index] if s and index is not None and 0<=index<len(s['rows']) else None
+        now=q['charge'] if q and q['state'] in (0,3) else 0
+        top=max(4,self.z1.GetValue(),abs(now))
+        items=[(signed(sign*z),(lambda z=z:self.set_charge(index,sign*z,col,mz)),now==sign*z) for z in range(1,top+1)]
+        items+=[('Not assigned',lambda:self.set_charge(index,0,col,mz),now==0),(None,None),
+                ('Other…',lambda:self.other_charge(index,col,mz))]
+        return items
+    def spectrum_charge_items(self,col,mz):
+        """The charge menu of the peak at mz of the spectrum (right click on it): of its row, or of the peak."""
         s=self.current()
-        if s is None or self.chain is None:return
-        q=s['rows'][self.chain]
-        if q['state'] in (1,2,5):return self.fail('Assign a charge before including this peak')
-        q['include']=not q.get('include',True);self.invalidate_tools();self._changed();self.refill();self.redraw()
+        if s and (s['source']['kind']!='direct' or not self.source_matches(col,s)):return [('Polymer charge',None)]
+        tol=max(.004,abs(mz)*10e-6)
+        row=next((i for i,q in enumerate(s['rows']) for m in q.get('members',[]) if abs(m['mz']-mz)<=tol),None) if s else None
+        return self.charge_items(row,col,mz)
+    def popup_charge_menu(self,win,items,pos=None):
+        m=U.build_menu(win,items)
+        try:U.popup_menu(win,m,pos)
+        finally:m.Destroy()
+    def table_cell(self,n,key,pos):
+        if key!='z' or not 0<=n<len(self.shown):return False
+        i=self.shown[n];self.select_chain(i)
+        wx.CallAfter(self.popup_charge_menu,self.chain_table.body,self.charge_items(i),pos);return True
+    def open_charge_menu_for_row(self,i):
+        self.select_chain(i);self.popup_charge_menu(self.chain_table.body,self.charge_items(i))
+    def source_column(self,s):
+        col=next((c for c in self.tab.cols if s and c['e']==s['source']['event']),None)
+        return col if col is not None and col.get('spec') is not None and self.source_matches(col,s) else None
+    def set_charge(self,index,z,col=None,mz=None):
+        """The charge of row index (or of the peak at mz without a row): z, or 0 for not assigned."""
+        s=self.current()
+        if index is None:
+            if not z:return None
+            return self.assign_from_spectrum(col,mz,value=z,isotopes=True)
+        if s is None or not 0<=index<len(s['rows']):return None
+        q=s['rows'][index]
+        if not z:
+            q.update(charge=0,state=2,mass=0.,include=False,alternate=0)
+            self.rows_changed(changed=[index]);self.rebuild_filters();self.refill();self.redraw();self._changed()
+            return q
+        if s['source']['kind']!='direct':return self.fail('Deconvoluted masses have no charge to set')
+        col=self.source_column(s)
+        peak=max(q.get('members') or [dict(mz=q.get('mz'),height=1)],key=lambda m:m['height'])['mz']
+        if col is not None and peak:
+            return self.assign_from_spectrum(col,peak,value=z,isotopes=True,run=s)
+        self.chain=index;return self.manual_charge(value=z)
+    def other_charge(self,index=None,col=None,mz=None):
+        s=self.current()
+        if index is not None and s:
+            q=s['rows'][index];col=self.source_column(s)
+            mz=max(q.get('members') or [dict(mz=q.get('mz'),height=1)],key=lambda m:m['height'])['mz']
+        if col is None or mz is None:return self.fail('Show the spectrum of this run first')
+        return self.assign_from_spectrum(col,mz,run=s if index is not None else None)
     def manual_charge(self,e=None,value=None):
         s=self.current()
         if s is None or self.chain is None:return
         q=s['rows'][self.chain]
-        if s['source']['kind']!='direct':return self.fail('Choose measured spectrum input to assign a charge')
-        if value is None:
-            with wx.TextEntryDialog(self,'Signed charge state','Assign charge',str(q['charge'] or 1)) as dlg:
-                if dlg.ShowModal()!=wx.ID_OK:return
-                try:value=int(dlg.GetValue())
-                except ValueError:return self.fail('Choose a whole charge state')
+        if s['source']['kind']!='direct':return self.fail('Deconvoluted masses have no charge to set')
+        if value is None:return self.other_charge(self.chain)
         try:
             sign=1 if s['source'].get('sign',s['options'].get('sign',1))>=0 else -1
-            if value*sign<=0:raise ValueError('Charge sign must match the source spectrum')
+            value=Q.whole(value,'Choose a whole charge')
+            if sign<0 and value>0:value=-value  # (negative ions: 2 is -2)
+            if value*sign<=0:raise ValueError('The charge must have the sign of the spectrum')
             replacement,remaining=Q.resolve(q,value,s['options'])
             s['rows'][self.chain]=replacement;s['rows'].extend(remaining);s['chains']=s['rows']
-            self.invalidate_tools();self._changed();self.rebuild_filters();self.refill();self.redraw();return True
+            self.rows_changed(changed=[self.chain]);self._changed();self.rebuild_filters();self.refill();self.redraw();return True
         except (ValueError,RuntimeError,OSError) as ex:return self.fail(ex)
-    def assign_from_spectrum(self,col,mz,value=None,isotopes=False):
+    def assign_from_spectrum(self,col,mz,value=None,isotopes=False,run=None):
+        """A charge for the peak at mz of the spectrum col (with its isotope peaks when isotopes): into run (its
+        settings), the present run when its settings and spectrum fit, or a new run."""
         if self._busy or callable(getattr(self.tab,'busy_averaging',None)) and self.tab.busy_averaging():
-            return self.fail('Wait for the spectrum to finish')
+            return self.fail('Wait for the spectrum to load')
+        message=Q.available()
+        if message:return self.fail(message)
         try:
+            if col is None or col.get('spec') is None:raise ValueError('Show the spectrum first')
             self.refresh_inputs()
             index=next((i for i,d in enumerate(self.inputs) if d.get('e',0)==col['e']),None)
-            if index is None or col.get('spec') is None:raise ValueError('Choose a measured spectrum')
-            self.source.SetSelection(index);self.source_changed()
+            if index is None:raise ValueError('Show the spectrum first')
+            self.input_index=index;self.source_changed()
             sign=self.inputs[index].get('sign',1)
             if value is None:
-                with PeakCharge(self,mz,sign,spectrum=col['spec']) as dlg:
+                carrier=(run['options'].get('carrier_label'),run['options'].get('carrier')) if run else None
+                with PeakCharge(self,mz,sign,spectrum=col['spec'],carrier=carrier) as dlg:
                     while True:
                         if dlg.ShowModal()!=wx.ID_OK:return None
                         try:value,label,carrier,isotopes=dlg.values();break
-                        except ValueError as ex:wx.MessageBox(str(ex),'Assign polymer charge',wx.OK|wx.ICON_INFORMATION,dlg)
+                        except ValueError as ex:wx.MessageBox(str(ex),'Assign charge',wx.OK|wx.ICON_INFORMATION,dlg)
+                if run is not None and abs(carrier-run['options'].get('carrier',carrier))>1e-9:run=None
                 self._carrier_chosen=True
                 self.options.update(carrier=carrier,carrier_label=label);self._method.update(carrier=carrier,carrier_label=label)
                 self.set_carriers()
-            _,options=self.analysis_options();options['sign']=sign
-            source=capture_source(self.tab,options)
+            if run is not None:options=dict(run['options'])
+            else:_,options=self.analysis_options()
+            options['sign']=sign
+            source=capture_source(self.tab,dict(options,source_label=self.inputs[index]['label'],source_event=int(col['e'])))
             replacement=Q.pick(np.array(col['spec'],copy=True),mz,value,options,isotopes)
-            s=self.current()
+            s=run if run is not None else self.current()
             saved=next((q['spec'] for q in s['source']['columns'] if q['e']==col['e']),None) if s else None
-            same=(s is not None and s['source']['kind']=='direct' and s['source']['file']==source['file'] and
+            same=(s is not None and s['source']['kind']=='direct' and same_file(self.tab,s['source']['file']) and
                   s['source']['event']==source['event'] and np.array_equal(saved,col['spec']) and
                   all(s['options'].get(k,Q.DEFAULTS.get(k))==options.get(k,Q.DEFAULTS.get(k))
                       for k in ('carrier','mass_mode','profile','isotope_tolerance')))
@@ -631,57 +1048,105 @@ class PolymerWorkspace(PolymerResults):
                 rows=[]
                 s=dict(id=uuid.uuid4().hex,source=source,options=options,rows=rows,chains=rows,
                        families=[],fields=self.field_values(),weight=self.weight.GetSelection(),basis=self.basis.GetSelection())
-                self.series.append(s);self.active=len(self.series)-1
-            # Transfer ownership of measured members, leaving unmatched old members available for review.
-            claimed=[m['mz'] for m in replacement['members']];rows=[]
-            for q in s['rows']:
+                self.series.append(s)
+            self.active=self.series.index(s)
+            # The measured peaks go to the new assignment; peaks of an old one that it does not take stay.
+            claimed=[m['mz'] for m in replacement['members']];rows=[];moved={}
+            for old,q in enumerate(s['rows']):
                 members=q.get('members',[])
                 remaining=[m for m in members if not any(abs(m['mz']-x)<1e-7 for x in claimed)]
-                if len(remaining)==len(members):rows.append(q);continue
+                if len(remaining)==len(members):moved[old]=len(rows);rows.append(q);continue
                 for m in remaining:
                     rows.append(dict(mass=0.,mz=m['mz'],area=m['area'],height=m['height'],first_mz=m['mz'],last_mz=m['mz'],
                         spacing_error=0.,response=q.get('response',1.),charge=0,isotopes=1,state=2,alternate=0,
                         members=[dict(m,isotope=0)],include=False))
             rows.append(replacement);s['rows']=s['chains']=rows;self.chain=len(rows)-1
-            self.invalidate_tools();self.charge.SetSelection(0);self.family.SetSelection(0)
-            self._changed();self.refill();self.redraw();self._keep_visible()
-            self.tab.status('Assigned %d peak%s to %s'%(replacement['isotopes'],'' if replacement['isotopes']==1 else 's',signed(value)))
+            self.rows_changed(moved,changed=[self.chain])
+            if self.chain not in self.shown:self.charge.SetSelection(0);self.family.SetSelection(0)
+            self._changed();self.refill();self.redraw()
+            self.say('%d peak%s set to %s'%(replacement['isotopes'],'' if replacement['isotopes']==1 else 's',signed(value)))
             return replacement
         except (ValueError,RuntimeError,OSError) as ex:return self.fail(ex)
+
+    # ------------------------------------------------------------------ rows
+    def delete_assignments(self,indices=None):
+        s=self.current()
+        if s is None or self._busy:return 0
+        if not isinstance(indices,(list,tuple)):indices=self.chain_table.selected()
+        removed={self.shown[i] for i in indices if isinstance(i,int) and 0<=i<len(self.shown)}
+        if not removed:return 0
+        old=self.chain;kept=[i for i in range(len(s['rows'])) if i not in removed]
+        s['rows']=[s['rows'][i] for i in kept];s['chains']=s['rows']
+        self.chain=(min(old-sum(i<old for i in removed),len(s['rows'])-1) if old is not None and old not in removed and s['rows'] else None)
+        self.rows_changed({o:n for n,o in enumerate(kept)})
+        self.refill();self.redraw();self._changed()
+        self.say('Deleted %d peak%s'%(len(removed),'' if len(removed)==1 else 's'))
+        return len(removed)
+    def check_row(self,n):
+        if 0<=n<len(self.shown):self.chain=self.shown[n];self.toggle_selected()
+    def toggle_table(self,index):self.check_row(index)
+    def toggle_selected(self,e=None):
+        s=self.current()
+        if s is None or self.chain is None:return
+        q=s['rows'][self.chain]
+        if q['state'] in (1,2,5):return self.fail('Set a charge before using this peak')
+        q['include']=not q.get('include',True);self.rows_changed();self._changed();self.refill();self.redraw()
     def edit_response(self,e=None):
         s=self.current()
         if s is None or self.chain is None:return
         q=s['rows'][self.chain]
-        with wx.TextEntryDialog(self,'Response factor','Response factor',str(q.get('response',1.))) as dlg:
+        with wx.TextEntryDialog(self,'Response factor','Response factor','%g'%q.get('response',1.)) as dlg:
             if dlg.ShowModal()!=wx.ID_OK:return
             try:
-                value=float(dlg.GetValue())
-                if not math.isfinite(value) or value<=0:raise ValueError('Response factor must be above zero')
-                q['response']=value;self.invalidate_tools();self._changed();self.refill()
+                value=float(dlg.GetValue().replace(',','.'))
+                if not math.isfinite(value) or value<=0:raise ValueError('The response factor must be above zero')
+                q['response']=value;self.rows_changed();self._changed();self.refill()
             except ValueError as ex:self.fail(ex)
-    def invalidate_distribution(self,e=None):
+    def rows_changed(self,moved=None,changed=()):
+        """Rows of the present run edited. moved: {old index: new index} after rows were removed or rebuilt
+        (rows left out are gone); changed: indices of rows whose mass changed. Series matches follow the rows
+        (changed rows are matched again), a calculated mass distribution is calculated again."""
         s=self.current()
-        if s:s['distribution']=None;s['weight']=self.weight.GetSelection();s['basis']=self.basis.GetSelection()
-        self.summary.set_rows([]);self.dist_card.reset();self.dist_card.draw()
-        if e:self._changed();e.Skip()
-    def invalidate_tools(self):
-        s=self.current()
-        if s:s['families']=[];s['candidates']=None
-        self.rebuild_filters();self.candidates.set_rows([]);self.assign_table.set_rows([]);self.invalidate_distribution()
-    def find_repeats(self,e=None):
-        return self._candidates(False)
+        if not s:return
+        for f in s['families']:
+            matches=unpack_matches(f['matches'])
+            if moved is not None:matches={moved[i]:m for i,m in matches.items() if i in moved}
+            for i in changed:
+                matches.pop(i,None)
+                q=s['rows'][i] if 0<=i<len(s['rows']) else None
+                if q is None or not q.get('mass') or q['mass']<=0 or q['state'] not in (0,3,4):continue
+                try:r=N.assign([q['mass']],f['repeat'],f['ends'],f['tolerance'])
+                except (ValueError,RuntimeError,OSError):continue
+                if r['matched'][0]:matches[i]=dict(n=int(r['dp'][0]),delta=float(r['delta'][0]),ppm=float(r['ppm'][0]))
+            f['matches']=matches
+        if s.get('distribution'):self.recalculate_distribution(s,s['distribution'])
+        self.rebuild_filters();self.draw_assignments();self.draw_distribution()
+
+    # ------------------------------------------------------------------ series
+    def find_repeats(self,e=None):return self._candidates(False)
     def find_offsets(self,e=None):return self._candidates(True)
+    def _number(self,control,what):
+        try:v=float(self.field_text(control).replace(',','.'))
+        except ValueError:raise ValueError('Enter the %s'%what)
+        if not math.isfinite(v):raise ValueError('Enter the %s'%what)
+        return v
     def _candidates(self,offset):
         try:
             groups=self.scoped_groups()
-            if not groups:raise ValueError('Include charge assignments first')
-            result=N.candidates([g['mass'] for g in groups],repeat=float(self.field_text(self.repeat)) if offset else None,
-                                lo=float(self.lo.GetValue()),hi=float(self.hi.GetValue()),tolerance=float(self.tol.GetValue()))
+            if not groups:raise ValueError('Find species first')
+            result=N.candidates([g['mass'] for g in groups],repeat=self._number(self.repeat,'repeat unit') if offset else None,
+                                lo=self._number(self.lo,'search range'),hi=self._number(self.hi,'search range'),
+                                tolerance=self._number(self.tol,'tolerance'))
             self.current()['candidates']=dict(kind='offset' if offset else 'repeat',values=result)
-            self.candidates.title='End group offsets' if offset else 'Repeat candidates'
-            self.candidates.set_rows([[number(c['mass']),c['support'],c['single']] for c in result]);self._changed()
-            self.tab.status('%d candidates'%len(result));return result
+            self.draw_candidates();self._changed()
+            self.say('%d %s'%(len(result),'end group masses' if offset else 'repeat units'));return result
         except (ValueError,RuntimeError,OSError) as ex:return self.fail(ex)
+    def draw_candidates(self):
+        s=self.current();c=s.get('candidates') if s else None
+        offset=bool(c and c['kind']=='offset')
+        self.candidates.title='End groups' if offset else 'Repeat units'
+        self.candidates.set_rows([dict(cells=['%.4f'%v['mass'],v['support'],v['single']]) for v in (c['values'] if c else [])],
+                                 'double click to use' if c and c['values'] else '')
     def use_candidate(self,index):
         s=self.current();c=s.get('candidates') if s else None
         if c and 0<=index<len(c['values']):
@@ -689,67 +1154,128 @@ class PolymerWorkspace(PolymerResults):
             self.set_field(control,repr(float(c['values'][index]['mass'])));self.fields_changed()
     def assign_series(self,e=None):
         try:
-            # A display filter must not prevent a revised series from acquiring
-            # previously unmatched rows. Explicit exclusions and charge still apply.
+            # A shown series must not keep a revised series from taking rows it did not match before; excluded
+            # rows and the charge shown still count.
             s=self.current();groups=self.scoped_groups(include_family=False)
-            if not s or not groups:raise ValueError('Include charge assignments first')
-            repeat,ends,tol=[float(self.field_text(c)) for c in (self.repeat,self.ends,self.tol)]
+            if not s or not groups:raise ValueError('Find species first')
+            repeat,ends,tol=self._number(self.repeat,'repeat unit'),self._number(self.ends,'end groups'),self._number(self.tol,'tolerance')
             result=N.assign([g['mass'] for g in groups],repeat,ends,tol);matches={}
             for i,g in enumerate(groups):
                 if result['matched'][i]:
                     for row in g['rows']:matches[row]=dict(n=int(result['dp'][i]),delta=float(result['delta'][i]),ppm=float(result['ppm'][i]))
-            if not matches:raise ValueError('No chains match these settings')
+            if not matches:raise ValueError('No masses fit this series')
             family=dict(repeat=repeat,ends=ends,tolerance=tol,matches=matches)
             old=next((i for i,f in enumerate(s['families']) if f['repeat']==repeat and f['ends']==ends),None)
             if old is None:s['families'].append(family);old=len(s['families'])-1
             else:s['families'][old]=family
-            self.rebuild_filters();self.family.SetSelection(old+1);self.refill();self.redraw();self._changed();return family
+            self.rebuild_filters();self.family.SetSelection(old+1);self.refill();self.redraw();self._changed()
+            self.say('%s: %d masses'%(self.family_name(s,old),len({g['mass'] for g in groups if any(r in matches for r in g['rows'])})))
+            return family
         except (ValueError,RuntimeError,OSError) as ex:return self.fail(ex)
+    def remove_series(self):
+        s=self.current();i=self.family.GetSelection()-1
+        if not s or not 0<=i<len(s['families']):return
+        del s['families'][i]
+        d=s.get('distribution')
+        if d and d.get('family',0)>i:
+            if d['family']==i+1:s['distribution']=None
+            else:d['family']-=1
+        self.family.SetSelection(0);self.rebuild_filters();self.refill();self.redraw();self.draw_distribution();self._changed()
     def draw_assignments(self):
         s=self.current();index=self.family.GetSelection()-1;self._assigned_rows=[];rows=[]
-        if s and 0<=index<len(s['families']):
-            f=s['families'][index]
-            for g in self.scoped_groups():
-                i=next((i for i in g['rows'] if i in f['matches'] or str(i) in f['matches']),None)
-                if i is not None:
-                    q=f['matches'].get(i,f['matches'].get(str(i)));rows.append([q['n'],number(g['mass']),number(q['delta'])]);self._assigned_rows.append(i)
-        self.assign_table.set_rows(rows)
+        families=range(len(s['families'])) if s and index<0 else [index] if s and index<len(s['families']) else []
+        for k in families:
+            f=s['families'][k]
+            for g in self.groups_for(s,self.charge_value(),k+1):
+                i=next((i for i in g['rows'] if i in f['matches']),None)
+                if i is None:continue
+                m=f['matches'][i]
+                rows.append(dict(cells=[self.family_name(s,k),m['n'],self.mass_text(s,g['mass']),'%+.4f'%m['delta']],
+                                 colours={0:self.family_colour(k)}));self._assigned_rows.append(i)
+        n=len(s['families']) if s else 0
+        self.assign_table.set_rows(rows,'%d series'%n if n else '')
+        self.draw_candidates()
     def select_assignment(self,index):
         if not self._filling and 0<=index<len(self._assigned_rows):self.select_chain(self._assigned_rows[index])
+
+    # ------------------------------------------------------------------ mass distribution
+    def invalidate_distribution(self,e=None):
+        """The signal or count choice changed: a calculated distribution is calculated again with it."""
+        s=self.current()
+        if s:
+            s['weight']=self.weight.GetSelection();s['basis']=self.basis.GetSelection()
+            d=s.get('distribution')
+            if d:self.recalculate_distribution(s,dict(d,signal=s['weight'],basis=s['basis']))
+        self.draw_distribution()
+        if e:self._changed();e.Skip()
+    def recalculate_distribution(self,s,d):
+        """The distribution of run s for the choices of d (charge, series, signal, count), or none."""
+        try:
+            groups=self.groups_for(s,d.get('charge'),d.get('family',0))
+            if not groups:raise ValueError('No masses left for the mass distribution')
+            weights=[g['area' if d.get('signal',0)==0 else 'height'] for g in groups]
+            summary,nf,wf=N.distribution([g['mass'] for g in groups],weights,basis=d.get('basis',0))
+            s['distribution']=dict(mn=summary.mn,mw=summary.mw,dispersity=summary.dispersity,used=summary.used,
+                groups=copy.deepcopy(groups),number=nf.copy(),weight=wf.copy(),charge=d.get('charge'),
+                family=d.get('family',0),signal=d.get('signal',0),basis=d.get('basis',0))
+            return s['distribution']
+        except (ValueError,RuntimeError,OSError) as ex:
+            s['distribution']=None;self.say(str(ex));return None
     def calculate_distribution(self,e=None):
         try:
-            groups=self.scoped_groups()
-            if not groups:raise ValueError('Include charge assignments first')
-            weights=[g['area' if self.weight.GetSelection()==0 else 'height'] for g in groups]
-            summary,nf,wf=N.distribution([g['mass'] for g in groups],weights,basis=self.basis.GetSelection())
-            self.current()['distribution']=dict(mn=summary.mn,mw=summary.mw,dispersity=summary.dispersity,
-                used=summary.used,groups=copy.deepcopy(groups),number=nf.copy(),weight=wf.copy(),
-                charge=self.charge_value(),family=self.family.GetSelection(),signal=self.weight.GetSelection(),basis=self.basis.GetSelection())
-            self.draw_distribution();self._changed();return summary
+            s=self.current()
+            if not s or not self.scoped_groups():raise ValueError('Find species first' if not s else 'No masses with these choices')
+            d=self.recalculate_distribution(s,dict(charge=self.charge_value(),family=max(0,self.family.GetSelection()),
+                                                   signal=self.weight.GetSelection(),basis=self.basis.GetSelection()))
+            if d is None:return None
+            self.draw_distribution();self._changed()
+            from types import SimpleNamespace
+            return SimpleNamespace(mn=d['mn'],mw=d['mw'],dispersity=d['dispersity'],used=d['used'])
         except (ValueError,RuntimeError,OSError) as ex:return self.fail(ex)
+    def distribution_scope(self,s,d,masses=True):
+        k=d.get('family',0)
+        what=self.family_name(s,k-1) if 0<k<=len(s['families']) else 'All series'
+        if d.get('charge') not in (None,'uncertain'):what+=' · %s'%signed(d['charge'])
+        return '%s · %d masses'%(what,len(d['groups'])) if masses else what
     def draw_distribution(self):
-        self.dist_card.reset();s=self.current();d=s.get('distribution') if s else None
+        card=self.dist_card;card.reset();card.set_legend([]);s=self.current();d=s.get('distribution') if s else None;ax=card.ax
         if d:
-            x=[g['mass'] for g in d['groups']]
-            self.dist_card.ax.plot(x,d['number'],'o-',color=C['accent'],label='Number fraction')
-            self.dist_card.ax.plot(x,d['weight'],'s-',color=FOCUS,label='Mass fraction')
-            self.dist_card.ax.legend(fontsize=8);self.dist_card.full=(min(x)-.5,max(x)+.5)
-            self.summary.set_rows([['Mₙ (Da)',number(d['mn'])],['M𝑤 (Da)',number(d['mw'])],
-                ['Dispersity',number(d['dispersity'])],['Unique masses',d['used']]],'Signal based')
-        else:self.summary.set_rows([])
-        U.style_axes(self.dist_card.ax,'Mass (Da)','Fraction');self.dist_card.draw()
+            x=np.array([g['mass'] for g in d['groups']]);k=d.get('family',0)
+            colour=self.family_colour(k-1) if 0<k<=len(s['families']) else C['accent']
+            step=np.median(np.diff(np.sort(x))) if len(x)>1 else 1.
+            w=max(step*.36,1e-3)
+            ax.bar(x-w/2,d['number'],width=w,color=colour,label='Number fraction')
+            ax.bar(x+w/2,d['weight'],width=w,color='#E39A3B',label='Mass fraction')
+            ax.legend(fontsize=8,frameon=False,loc='upper right')
+            card.full=(x.min()-step,x.max()+step);ax.set_xlim(card.full)
+            ax.set_ylim(0,max(np.max(d['number']),np.max(d['weight']))*1.1)
+            U.style_axes(ax,'Mass (Da)','Fraction')
+            self.summary.set_values([('Mn','%.1f Da'%d['mn']),('Mw','%.1f Da'%d['mw']),('Đ','%.4f'%d['dispersity']),
+                                     ('Masses','%d'%d['used'])],self.distribution_scope(s,d,masses=False))  # (as in the report)
+        else:
+            ax.set_axis_off()
+            ax.text(.5,.5,'Find species first' if not s else 'Calculate to see the mass distribution',
+                    transform=ax.transAxes,ha='center',va='center',fontsize=9,color=C['muted'])
+            card.full=None;card.set_legend([])
+            self.summary.set_values([],'',note='No result yet' if s else '')
+        card.draw();self._place_dist_bar()
+
+    # ------------------------------------------------------------------ the mass spectrum
     def overlay(self,col,ax):
-        if not self.marks_for(col):return
+        card=col['spec_card']
+        if not self.marks_for(col):
+            if col.get('_polymer_key'):col['_polymer_key']=False;card.set_legend([])
+            return
         s=self.current()
         if s['source']['kind']!='direct':
-            from deconv_tab import _charges_of
-            for i in self.shown:
-                q=s['rows'][i]
-                if not q.get('include'):continue
-                for z,mz in _charges_of(q['mass'],s['source']['result']):
-                    mark=ax.axvline(mz,color=FOCUS if i==self.chain else C['accent'],lw=1.,ls='--',alpha=.75)
-                    mark._no_scale=True
+            # Deconvoluted masses: the charge states of the selected mass only.
+            if self.chain is not None and 0<=self.chain<len(s['rows']):
+                from deconv_tab import _charges_of
+                for z,mz in _charges_of(s['rows'][self.chain]['mass'],s['source']['result']):
+                    mark=ax.axvline(mz,color=FOCUS,lw=1.,ls='--',alpha=.8);mark._no_scale=True
+            col['_polymer_key']=True;card.set_legend([(FOCUS,'charge states of the selected mass')])
             return
+        self._thin_labels(card,ax)
         for line in ax.lines:
             if type(line).__name__=='EnvelopeLine':line.set_color(C['faint']);line.set_alpha(.45);break
         for a in ax.collections:
@@ -757,35 +1283,89 @@ class PolymerWorkspace(PolymerResults):
         selected_group=self.mapping[self.chain] if self.chain is not None and self.chain<len(self.mapping) else -1
         selected=s['rows'][self.chain] if self.chain is not None and self.chain<len(s['rows']) else None
         single=bool(selected and selected['state']==3 and selected['isotopes']==1)
-        buckets={}
+        buckets={};present=set()
         for i in self.shown:
             q=s['rows'][i]
-            if not q.get('include') and i!=self.chain:continue
             focus=i==self.chain or not single and selected_group>=0 and self.mapping[i]==selected_group
-            key=('selected' if focus else q['charge'])
+            if focus:key='selected'
+            elif q['state'] in (1,2,5):key='none'
+            elif not q.get('include'):continue
+            else:key=q['charge'];present.add(abs(q['charge']))
             buckets.setdefault(key,[]).extend((m['mz'],m['height']) for m in q.get('members',[]))
-        for key,points in buckets.items():
+        for key,points in sorted(buckets.items(),key=lambda kv:{'none':0,'selected':2}.get(kv[0],1) if isinstance(kv[0],str) else 1):
             if not points:continue
-            x,y=zip(*points);colour=FOCUS if key=='selected' else COLOURS[(abs(key)-1)%len(COLOURS)]
-            marks=ax.vlines(x,0,y,color=colour,lw=1.8 if key=='selected' else 1.,alpha=.9,zorder=5)
+            x,y=zip(*points)
+            colour=FOCUS if key=='selected' else GREY if key=='none' else charge_colour(key)
+            marks=ax.vlines(x,0,y,color=colour,lw=1.8 if key=='selected' else 1.,alpha=.95,zorder=6 if key=='selected' else 5)
             marks._no_scale=True;marks.set_gid('polymer-charge-'+str(key))
+        sign='−' if s['options'].get('sign',1)<0 else '+'
+        legend=[(charge_colour(z),'%s%d'%(sign,z)) for z in sorted(present)]+[(GREY,'unassigned'),(FOCUS,'selected')]
+        col['_polymer_key']=True;card.set_legend(legend)
+    def _thin_labels(self,card,ax):
+        """The peak labels of the spectrum that would cover one another (a low spectrum tile) are left out."""
+        try:
+            renderer=card.canvas.get_renderer();kept=[]
+            for t in sorted([t for t in ax.texts if t.get_visible()],key=lambda t:-(t.xy[1] if hasattr(t,'xy') else 0)):
+                box=t.get_window_extent(renderer).expanded(1.04,1.0)
+                if any(box.overlaps(b) for b in kept):t.set_visible(False)
+                else:kept.append(box)
+        except Exception:pass
     def pick(self,col,mz,y=None):
-        if not self.marks_for(col):return False
-        s=self.current();targets=[]
-        if s['source']['kind']=='direct':
-            targets=[(m['mz'],i) for i in self.shown for m in s['rows'][i].get('members',[])]
-        else:
-            from deconv_tab import _charges_of
-            targets=[(m,i) for i in self.shown for _,m in _charges_of(s['rows'][i]['mass'],s['source']['result'])]
-        if not targets:return False
+        """A click on the mass spectrum: the row of that peak is selected (and shown in the table) and the
+        charge menu opens; a peak without a row gets the menu too."""
+        if not self.visible or self.current() is None or col.get('spec') is None:return False
+        s=self.current()
+        if not self.source_matches(col,s):return False
         peak=self.tab._nearest_peak(col,mz)
         if peak is None:return False
-        target,index=min(targets,key=lambda q:abs(q[0]-peak))
-        if abs(target-peak)>max(.004,abs(peak)*10e-6):return False
-        self.select_chain(index);return True
+        if s['source']['kind']=='direct':
+            targets=[(m['mz'],i) for i in range(len(s['rows'])) for m in s['rows'][i].get('members',[])]
+        else:
+            from deconv_tab import _charges_of
+            targets=[(m,i) for i in range(len(s['rows'])) for _,m in _charges_of(s['rows'][i]['mass'],s['source']['result'])]
+        hit=min(targets,key=lambda q:abs(q[0]-peak)) if targets else None
+        tol=max(.004,abs(peak)*10e-6)
+        if hit is not None and abs(hit[0]-peak)<=tol:
+            index=hit[1]
+            if index not in self.shown:self.charge.SetSelection(0);self.family.SetSelection(0);self.refill()
+            self.select_chain(index)
+            if s['source']['kind']=='direct':
+                wx.CallAfter(self.popup_charge_menu,col['spec_card'].canvas,self.charge_items(index,col,peak))
+            return True
+        if s['source']['kind']!='direct':return False
+        wx.CallAfter(self.popup_charge_menu,col['spec_card'].canvas,self.charge_items(None,col,peak))
+        return True
+
+    def report_data(self):
+        """What the HRMS report shows of the present run: neutral masses with their colours, the charge states
+        as listed, the mass distribution."""
+        s=self.current();groups=self.scoped_groups();masses=[]
+        for g in groups:
+            k=next((k for k,f in enumerate(s['families']) if any(i in f['matches'] for i in g['rows'])),None)
+            masses.append((g['mass'],g['height'],self.family_colour(k) if k is not None else (GREY if s['families'] else C['accent'])))
+        rows=[]
+        for i in self.shown:
+            q=s['rows'][i]
+            if q['state'] not in (0,3,4):continue
+            k,_=self.row_series(s,i)
+            rows.append([self.mass_text(s,q['mass']),signed(q['charge']) if q['state'] in (0,3) else '—',
+                         number(q.get('mz')) if q.get('mz') else '—',height_text(q['height']),
+                         q['isotopes'] or '—',self.family_name(s,k) if k is not None else ''])
+        d=s.get('distribution');dist=None
+        if d:
+            k=d.get('family',0)
+            dist=dict(mass=[g['mass'] for g in d['groups']],number=list(d['number']),weight=list(d['weight']),
+                      mn=d['mn'],mw=d['mw'],dispersity=d['dispersity'],used=d['used'],scope=self.distribution_scope(s,d),
+                      colour=self.family_colour(k-1) if 0<k<=len(s['families']) else C['accent'])
+        legend=[(self.family_colour(k),self.family_name(s,k)) for k in range(len(s['families']))]
+        return dict(masses=masses,rows=rows,distribution=dist,legend=legend)
+
+    # ------------------------------------------------------------------ saving, undo, legacy
     def snapshot(self):
-        return dict(kind='polymer_workspace',series=self.series,active=self.active,chain=self.chain,visible=self.visible,
-                    charge=self.charge.GetStringSelection(),family=self.family.GetSelection(),page=self.book.GetSelection(),
+        shared=[c['spec'] for c in getattr(self.tab,'cols',[]) if isinstance(c.get('spec'),np.ndarray)]
+        series=[pack_run(run,shared) for run in self.series]
+        return dict(kind='polymer_workspace',series=series,active=self.active,chain=self.chain,visible=self.visible,
+                    charge=self.charge.GetStringSelection(),family=self.family.GetSelection(),page=self._page,
                     method=self.method_values(),view=__import__('ms_project').views(self.tab))
     def undo_state(self):
         import undo
@@ -793,7 +1373,7 @@ class PolymerWorkspace(PolymerResults):
             self._undo_data=undo._copy(self.series);self._undo_token=self.outputs
         return dict(series=getattr(self,'_undo_data',[]),method=self.method_values(),active=self.active,
                     chain=self.chain,visible=self.visible,charge=self.charge.GetStringSelection(),
-                    family=self.family.GetSelection(),page=self.book.GetSelection(),kind='polymer_workspace')
+                    family=self.family.GetSelection(),page=self._page,kind='polymer_workspace')
     def restore(self,state):
         if state.get('kind')=='polymer_dock':
             self.reset();self.import_legacy(state)
@@ -804,13 +1384,12 @@ class PolymerWorkspace(PolymerResults):
                 mass=legacy[self.active]['chains'][old_chain]['mass']
                 index=next((i for i,q in enumerate(self.current()['rows']) if q['mass']==mass),None)
                 if index is not None:self.select_chain(index)
-            self.visible=bool(state.get('visible',True));self.tab._layout_rows()
+            self.visible=bool(state.get('visible',True));self.fit_layout(self.visible);self.tab._layout_rows()
             if state.get('view'):__import__('ms_project').set_views(self.tab,state['view'])
             return
         self._work_token+=1;self._set_busy(False)
-        self.series=copy.deepcopy(state.get('series',[]));self.active=state.get('active')
-        for run in self.series:
-            for family in run['families']:family['matches']={int(i):m for i,m in family['matches'].items()}
+        self.series=[unpack_run(run) for run in copy.deepcopy(state.get('series',[]))];self.active=state.get('active')
+        rebind(self.tab,self.series)
         self.active=self.active if isinstance(self.active,int) and 0<=self.active<len(self.series) else 0 if self.series else None
         self.chain=state.get('chain');chain=self.chain
         self.visible=bool(state.get('visible',True));self._bindings.clear();self.set_method(state.get('method',{}))
@@ -818,10 +1397,14 @@ class PolymerWorkspace(PolymerResults):
         else:self.rebuild_filters();self.refill()
         if state.get('charge') in self.charge.GetStrings():self.charge.SetStringSelection(state['charge'])
         self.family.SetSelection(min(max(0,state.get('family',0)),self.family.GetCount()-1))
-        self.book.SetSelection(min(2,max(0,state.get('page',0))))
+        self.set_page(state.get('page',0))
         s=self.current();self.chain=chain if s and isinstance(chain,int) and 0<=chain<len(s['rows']) else None
+        self.fit_layout(self.visible)
         self.refill();self.draw_distribution();self.redraw();self._watch();self.outputs=object();self.tab._layout_rows()
         if state.get('view'):__import__('ms_project').set_views(self.tab,state['view'])
+        if self.visible:
+            self.fit_layout(True)
+            wx.CallAfter(lambda:self and self.visible and self.fit_layout(True))
     def import_legacy(self,state):
         start=len(self.series)
         for s in state.get('series',[]):
@@ -843,14 +1426,17 @@ class PolymerWorkspace(PolymerResults):
                 families=[dict(repeat=s['repeat'],ends=s['ends'],tolerance=s['tolerance'],matches=matches)],
                 fields=[str(s['repeat']),str(s['ends']),str(s['tolerance']),'10','1000'],weight=s.get('weight',0),basis=s.get('basis',0),
                 metadata=s.get('metadata',[])))
+        rebind(self.tab,self.series[start:])
         if len(self.series)>start:self.active=start;self.select_series(start)
         self.visible=state.get('visible',True);self._changed()
     def add(self,record):
-        if record['source']['file']!=file_key(self.tab):raise ValueError('These results belong to another file')
+        if not same_file(self.tab,record['source']['file']):raise ValueError('These results belong to another file')
         if len(self.series)>=100:raise ValueError('Keep at most 100 polymer analyses in one file')
-        self.import_legacy(dict(series=[copy.deepcopy(record)],visible=True));self.tab._layout_rows()
+        self.import_legacy(dict(series=[copy.deepcopy(record)],visible=True));self.fit_layout(True);self.tab._layout_rows()
     def show_results(self):
-        self.visible=True;self._watch();self.refresh_inputs();self.tab._layout_rows();self.refill();self.redraw()
+        self.visible=True;self._watch();self.refresh_inputs();self.fit_layout(True);self.tab._layout_rows();self.refill();self.redraw()
+    def hide_results(self,e=None):
+        self.visible=False;self.Hide();self.fit_layout(False);self._changed();self.tab._layout_rows();self.redraw()
     def remove_analysis(self,e=None):
         if self._busy or self.active is None:return
         del self.series[self.active]
@@ -860,7 +1446,7 @@ class PolymerWorkspace(PolymerResults):
         self._changed()
     def reset(self):
         self._work_token+=1;self._set_busy(False);self.series=[];self.active=self.chain=None;self.visible=False
-        self._bindings.clear();self.outputs=None;self.Hide();self.rebuild_filters();self.refill()
+        self._bindings.clear();self.outputs=None;self.Hide();self.fit_layout(False);self.rebuild_filters();self.refill()
         if self in getattr(self.tab,'_polymer_frames',[]):self.tab._polymer_frames.remove(self)
     def export(self,e=None,path=None):
         s=self.current()
@@ -869,21 +1455,24 @@ class PolymerWorkspace(PolymerResults):
         if not path:return None
         if not path.lower().endswith('.xlsx'):path+='.xlsx'
         headers=['Analysis','Included','Neutral mass (Da)','Charge','m/z','Area / signal','Height','Response factor',
-                 'Isotope peaks','Assignment','First isotope m/z','Last isotope m/z','Spectrum']
+                 'Isotope peaks','Assignment','Series','Units (n)','First isotope m/z','Last isotope m/z','Spectrum']
         rows=[];meta=[('Tool','Polymer analysis'),('Mass equation','M = abs(charge) * (m/z - carrier per charge)'),
                       ('Precision','Full calculation precision'),('Charge merge','One neutral mass entry; corrected signals summed')]
         for ai,run in enumerate(self.series,1):
             meta.append(('Analysis %d input'%ai,'Measured spectrum' if run['source']['kind']=='direct' else 'Deconvoluted neutral masses'))
             meta.extend(('Analysis %d %s'%(ai,k),v) for k,v in run.get('metadata',[]))
-            for q in run['rows']:
+            for i,q in enumerate(run['rows']):
+                k,match=self.row_series(run,i)
                 rows.append([ai,bool(q.get('include')),q['mass'] or '',q['charge'] or '',q.get('mz') or '',q['area'],q['height'],
-                    q.get('response',1),q['isotopes'],Q.STATES[q['state']],q.get('first_mz',''),q.get('last_mz',''),run['source']['label']])
+                    q.get('response',1),q['isotopes'],Q.STATES[q['state']],self.family_name(run,k) if k is not None else '',
+                    match['n'] if match else '',q.get('first_mz',''),q.get('last_mz',''),run['source']['label']])
             meta.extend(('Analysis %d %s'%(ai,k),v) for k,v in run['options'].items())
             for i,q in enumerate(run['rows'],1):
                 for j,m in enumerate(q.get('members',[]),1):
                     meta.append(('Analysis %d assignment %d isotope %d'%(ai,i,j),'m/z %.17g; height %.17g; area %.17g'%(m['mz'],m['height'],m['area'])))
             for fi,f in enumerate(run['families'],1):
-                meta.extend([('Analysis %d series %d repeat (Da)'%(ai,fi),f['repeat']),('Analysis %d series %d ends (Da)'%(ai,fi),f['ends'])])
+                meta.extend([('Analysis %d series %d name'%(ai,fi),self.family_name(run,fi-1)),
+                             ('Analysis %d series %d repeat (Da)'%(ai,fi),f['repeat']),('Analysis %d series %d ends (Da)'%(ai,fi),f['ends'])])
                 for index,m in f['matches'].items():meta.append(('Analysis %d series %d assignment %s'%(ai,fi,index),'n %d; error %.17g Da; %.17g ppm'%(m['n'],m['delta'],m['ppm'])))
             d=run.get('distribution')
             if d:
@@ -891,4 +1480,4 @@ class PolymerWorkspace(PolymerResults):
                 for i,g in enumerate(d['groups']):meta.append(('Analysis %d neutral mass %d'%(ai,i+1),'mass %.17g; number fraction %.17g; mass fraction %.17g'%(g['mass'],d['number'][i],d['weight'][i])))
         try:__import__('lcms_compare_core').write_area_xlsx(path,headers,rows,meta)
         except (ValueError,OSError) as ex:return self.fail(ex)
-        self.tab.status('Polymer results exported');return path
+        self.say('Polymer results exported');return path

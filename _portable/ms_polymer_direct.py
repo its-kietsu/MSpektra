@@ -18,7 +18,7 @@ class DirectDialog(wx.Dialog):
         self.tab=tab;self.options=dict(options or {});self.result=None;self._ready=False
         self.inputs=list(tab.deconv_inputs())
         if not self.inputs:raise ValueError('Select a scan or a time range in HRMS first.')
-        self.SetFont(ui_font(10));self.SetBackgroundColour(C['bg'])
+        self.SetFont(ui_font(9));self.SetBackgroundColour(C['bg'])
         panel=wx.ScrolledWindow(self,style=wx.VSCROLL)
         panel.SetScrollRate(0,self.FromDIP(15))
         self.source=wx.Choice(panel,choices=[d['label'] for d in self.inputs])

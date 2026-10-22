@@ -213,18 +213,21 @@ def _dec_fields(kind):
 
 POLYMER_FIELDS=[
     ('charge_min','Charge from',_int(1,100),1),('charge_max','Charge to',_int(1,100),3),
-    ('carrier_label','Charge carrier',_choice('','H+ (proton)','Na+ (sodium)','K+ (potassium)',
-        'NH4+ (ammonium)','H+ loss','Cl- (chloride)','Formate','Acetate','Custom mass'),''),
+    # carriers as named in the deconvolution settings; the names of 4.56 stay valid
+    ('carrier_label','Charge carrier',_choice('','H⁺ (protonation)','Na⁺','K⁺','NH₄⁺',
+        'H⁺ loss (deprotonation)','Cl⁻ (chloride adduct)','Formate (HCOO⁻)','Acetate (CH₃COO⁻)',
+        'Custom mass','H+ (proton)','Na+ (sodium)','K+ (potassium)','NH4+ (ammonium)','H+ loss','Cl- (chloride)',
+        'Formate','Acetate'),''),
     ('carrier','Carrier mass per charge (Da)',_float(-10000,10000),1.007276467),
-    ('threshold_percent','Minimum height (%)',_float(.000001,100),5.),
-    ('isotope_tolerance','Spacing tolerance (m/z)',_float(.00000001,.249999),.01),
-    ('merge_da','Mass matching (Da)',_float(0,1),.02),('merge_ppm','Mass matching (ppm)',_float(0,1000),5.),
-    ('min_isotopes','Minimum isotope peaks',_int(2,20),3),
-    ('mass_mode','Mass basis',_int(0,2),0),('spectrum_type','Spectrum type',_choice('auto','profile','centroid'),'auto'),
-    ('repeat','Repeat mass (Da)',NUMTEXT,''),('ends','End group mass (Da)',NUMTEXT,''),
-    ('tolerance','Series tolerance (Da)',NUMTEXT,'.05'),('search_min','Repeat search from (Da)',NUMTEXT,'10'),
-    ('search_max','Repeat search to (Da)',NUMTEXT,'1000'),
-    ('weight','Signal',_int(0,1),0),('basis','Weight interpretation',_int(0,1),0)]
+    ('threshold_percent','Smallest peak (%)',_float(.000001,100),5.),
+    ('isotope_tolerance','Peak position tolerance (m/z)',_float(.00000001,.249999),.01),
+    ('merge_da','Same mass within (Da)',_float(0,1),.02),('merge_ppm','Same mass within (ppm)',_float(0,1000),5.),
+    ('min_isotopes','Isotope peaks needed',_int(2,20),3),
+    ('mass_mode','Mass from',_int(0,2),0),('spectrum_type','Data',_choice('auto','profile','centroid'),'auto'),
+    ('repeat','Repeat unit (Da)',NUMTEXT,''),('ends','End groups (Da)',NUMTEXT,''),
+    ('tolerance','Series tolerance (Da)',NUMTEXT,'0.05'),('search_min','Look for repeats from (Da)',NUMTEXT,'10'),
+    ('search_max','Look for repeats to (Da)',NUMTEXT,'1000'),
+    ('weight','Abundance from',_int(0,1),0),('basis','Count',_int(0,1),0)]
 
 def schema(kind):
     """{section: [(key, label, value type, program default)]} of a window kind."""

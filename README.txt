@@ -1,4 +1,4 @@
-MSpektra 4.56 - portable Windows package   (22.10.2026)
+MSpektra 4.57 - portable Windows package   (22.10.2026)
 ========================================================
 
 Analysis of LC-MS and HRMS data, with deconvolution:
@@ -39,6 +39,20 @@ The version is shown on the start screen, in the help window (?) of LCMS
 and HRMS Analysis, and in the first line of each log file. It went up by
 0.1 with every update until 3.3. Since 3.31 a small change adds 0.01, a
 large change 0.1 and a big change 1.0.
+
+4.57 (22.10.2026)
+More reliable polymer charges and a clearer polymer analysis.
+* Polymer analysis: charges are assigned more reliably. Two neighbouring
+  envelopes are no longer read as one higher charge, noise no longer
+  makes extra charges, and every peak of a +2 envelope stays +2.
+  Envelopes that overlap exactly are marked uncertain.
+* The polymer analysis fits the window inside HRMS Analysis: spectrum,
+  neutral masses and the table together, with the charges and carrier
+  in view. Click a peak to set its charge.
+* Series are named by their end groups and keep one colour everywhere.
+  Mn, Mw and dispersity are listed with the results.
+* A saved analysis with polymer results opens again after its folder
+  is moved, and large polymer results no longer stop saving.
 
 4.56 (22.10.2026)
 Clearer polymer analysis and peak selection.

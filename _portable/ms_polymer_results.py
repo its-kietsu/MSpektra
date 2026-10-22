@@ -17,6 +17,26 @@ def file_key(tab):
     return os.path.normcase(os.path.abspath(path))
 
 
+def same_file(tab, key):
+    """Results of this file: the same path, or the same file name (a data file moved with its analysis to
+    another folder or drive). Whether they belong to the spectrum shown is checked on the spectra themselves."""
+    here = file_key(tab)
+    if not isinstance(key, str):
+        return False
+    key = os.path.normcase(key)
+    return key == here or os.path.basename(key.rstrip(os.sep + '/')) == os.path.basename(here.rstrip(os.sep + '/'))
+
+
+def rebind(tab, series):
+    """Saved results opened with their analysis belong to the file of that analysis, wherever it is now (the
+    analysis resolves its data file relative to itself): their file key is set to it."""
+    key = file_key(tab)
+    for run in series or []:
+        source = run.get('source') if isinstance(run, dict) else None
+        if isinstance(source, dict):
+            source['file'] = key
+
+
 def capture_source(tab, options=None):
     """Keep the actual plotted spectra, not a later scan with a similar label."""
     inputs = list(tab.deconv_inputs())
@@ -104,7 +124,7 @@ class PolymerResults(wx.Panel):
         self._filling, self._restoring_source = False, False
         self._bindings = {}
         self.caption = wx.StaticText(self, label='Polymer analysis')
-        self.caption.SetFont(ui_font(10, 600))
+        self.caption.SetFont(ui_font(10, 700))
         self.note = wx.StaticText(self, label='', style=wx.ST_ELLIPSIZE_END)
         self.note.SetForegroundColour(wx.Colour(C['muted']))
         self.note.SetMinSize(self.FromDIP(wx.Size(180, -1)))
@@ -146,7 +166,7 @@ class PolymerResults(wx.Panel):
         return self.series[self.active] if self.active is not None and 0 <= self.active < len(self.series) else None
 
     def add(self, record):
-        if record['source']['file'] != file_key(self.tab):
+        if not same_file(self.tab, record['source']['file']):
             raise ValueError('These polymer results belong to another file. Reopen the source file first.')
         if callable(getattr(self.tab, 'busy_averaging', None)) and self.tab.busy_averaging():
             raise ValueError('Wait for averaging to finish before showing polymer results.')
@@ -241,7 +261,7 @@ class PolymerResults(wx.Panel):
 
     def source_matches(self, col, record=None):
         s = self.current() if record is None else record
-        if s is None or s['source']['file'] != file_key(self.tab) or col['e'] != s['source']['event'] or col.get('spec') is None:
+        if s is None or not same_file(self.tab, s['source']['file']) or col['e'] != s['source']['event'] or col.get('spec') is None:
             return False
         key = (s['id'], col['e'])
         spec = col['spec']
@@ -261,9 +281,8 @@ class PolymerResults(wx.Panel):
             self.tab.status('Wait for averaging to finish before showing this polymer spectrum.')
             return
         source = s['source']
-        current_file = file_key(self.tab)
-        if current_file != source['file']:
-            raise ValueError('These polymer results belong to another file.')
+        if not same_file(self.tab, source.get('file')):
+            return  # (results of another file: the spectra shown stay)
         col = next((c for c in self.tab.cols if c['e'] == source['event']), None)
         if col is None or self.source_matches(col):
             return
@@ -444,6 +463,7 @@ class PolymerResults(wx.Panel):
 
     def restore(self, state):
         self.series = state.get('series', [])
+        rebind(self.tab, self.series)
         self.active = state.get('active')
         if self.active is None or not 0 <= self.active < len(self.series):
             self.active = 0 if self.series else None

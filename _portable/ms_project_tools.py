@@ -25,38 +25,51 @@ def capture_polymer(tab):
     return result
 
 def restore_polymer(tab,states):
+    """Each saved polymer state on its own: one that cannot be shown (damaged, or a missing library) is left
+    out with a message; the rest of the analysis opens."""
+    problems=[]
+    for st in states or []:
+        try:_restore_polymer_state(tab,st)
+        except Exception as ex:
+            import traceback;traceback.print_exc()
+            problems.append(str(ex))
+    if problems:
+        try:tab.status('Polymer analysis not restored: '+problems[0])
+        except Exception:pass
+    return problems
+
+def _restore_polymer_state(tab,st):
     from ms_polymer_ui import PolymerFrame
-    for st in states:
-        if st.get('kind')=='polymer_workspace':
-            from ms_polymer_workspace import ensure_workspace
-            ensure_workspace(tab).restore(st)
-            continue
-        if st.get('kind')=='polymer_dock':
-            from ms_polymer_results import ensure_results
-            ensure_results(tab).restore(st)
-            continue
-        # The editable table, including excluded rows and response factors, is retained verbatim.
-        rows=[dict(include=r[0]=='1',mass=0,area=0,height=0) for r in st['grid']]
-        w=PolymerFrame(tab,rows,st['metadata'],st['page'],direct_options=st.get('direct_options'),link_source=st.get('link_source'))
-        if st.get('link_rows') is not None:w.link_rows=st['link_rows']
-        for i,row in enumerate(st['grid']):
-            for j,value in enumerate(row):w.input.SetCellValue(i,j,value)
-        w.weight.SetSelection(st['weight']);w.basis.SetSelection(st['basis'])
-        for c,v in zip((w.lo,w.hi,w.gap_tol,w.rmass,w.ends,w.match_tol),st['fields']):c.ChangeValue(v)
-        for table,(headers,rows) in zip((w.repeat_table,w.chain_table),st['tables']):w.fill(table,headers,rows)
-        w.dist_card.reset()
-        for line in st['lines']:
-            w.dist_card.ax.plot(line['x'],line['y'],color=line['colour'],marker=line['marker'],linestyle=line['style'],label=line['label'])
-        if st['lines']:
-            import unilcms as U
-            U.style_axes(w.dist_card.ax,'Species mass (Da)','Fraction');w.dist_card.ax.legend(fontsize=8)
-        w.outputs=st['outputs'];w.mode=st['mode'];w.on_page()
-        w.assignment=st.get('assignment');w.show_btn.Enable(w.assignment is not None)
-        w.result_text.ChangeValue(st['text']);w.status.SetLabel(st['status']);w.dist_card.draw()
-        if not hasattr(tab,'_polymer_frames'):tab._polymer_frames=[]
-        tab._polymer_frames.append(w)
-        w.Bind(wx.EVT_CLOSE,lambda e,f=w:(tab._polymer_frames.remove(f) if f in tab._polymer_frames else None,e.Skip()))
-        w.Show();__import__('ms_project').set_views(w,st['view'])
+    if st.get('kind')=='polymer_workspace':
+        from ms_polymer_workspace import ensure_workspace
+        ensure_workspace(tab).restore(st)
+        return
+    if st.get('kind')=='polymer_dock':
+        from ms_polymer_results import ensure_results
+        ensure_results(tab).restore(st)
+        return
+    # The editable table, including excluded rows and response factors, is retained verbatim.
+    rows=[dict(include=r[0]=='1',mass=0,area=0,height=0) for r in st['grid']]
+    w=PolymerFrame(tab,rows,st['metadata'],st['page'],direct_options=st.get('direct_options'),link_source=st.get('link_source'))
+    if st.get('link_rows') is not None:w.link_rows=st['link_rows']
+    for i,row in enumerate(st['grid']):
+        for j,value in enumerate(row):w.input.SetCellValue(i,j,value)
+    w.weight.SetSelection(st['weight']);w.basis.SetSelection(st['basis'])
+    for c,v in zip((w.lo,w.hi,w.gap_tol,w.rmass,w.ends,w.match_tol),st['fields']):c.ChangeValue(v)
+    for table,(headers,rows) in zip((w.repeat_table,w.chain_table),st['tables']):w.fill(table,headers,rows)
+    w.dist_card.reset()
+    for line in st['lines']:
+        w.dist_card.ax.plot(line['x'],line['y'],color=line['colour'],marker=line['marker'],linestyle=line['style'],label=line['label'])
+    if st['lines']:
+        import unilcms as U
+        U.style_axes(w.dist_card.ax,'Species mass (Da)','Fraction');w.dist_card.ax.legend(fontsize=8)
+    w.outputs=st['outputs'];w.mode=st['mode'];w.on_page()
+    w.assignment=st.get('assignment');w.show_btn.Enable(w.assignment is not None)
+    w.result_text.ChangeValue(st['text']);w.status.SetLabel(st['status']);w.dist_card.draw()
+    if not hasattr(tab,'_polymer_frames'):tab._polymer_frames=[]
+    tab._polymer_frames.append(w)
+    w.Bind(wx.EVT_CLOSE,lambda e,f=w:(tab._polymer_frames.remove(f) if f in tab._polymer_frames else None,e.Skip()))
+    w.Show();__import__('ms_project').set_views(w,st['view'])
 
 def _fit_fields(fit):
     return None if fit is None else {k:(list(getattr(fit,k)) if k in ('values','errors') else getattr(fit,k)) for k,_ in fit._fields_}

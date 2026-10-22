@@ -2704,6 +2704,8 @@ def closed_tiles(win):
 
 def tile_menu(win):
     """Close this tile, and the closed tiles to show again."""
+    if getattr(win, "no_tile_menu", False):  # (a part of a tile, such as the plots of the polymer analysis)
+        return []
     items = [(None, None), ("Close this tile", lambda: close_tile(win))]
     closed = closed_tiles(win)
     if closed:
@@ -2798,7 +2800,8 @@ def _spaced_locator(spacing_pt=32.0):
             try:
                 ax = self.axis.axes
                 h_pt = ax.get_position().height * ax.figure.get_size_inches()[1] * 72.0
-                self.set_params(nbins=int(max(2, min(6, round(h_pt / spacing_pt)))))
+                self.set_params(nbins=int(max(2, min(6, round(h_pt / spacing_pt)))),
+                                min_n_ticks=2 if h_pt < 60 else 3)  # (a very low plot: two ticks do not overlap)
             except Exception:
                 pass
             return MaxNLocator.__call__(self)
@@ -3098,15 +3101,18 @@ def flat(parent, label, kind="secondary", icon=None, tooltip=None, height=30, mi
 
 
 class Segmented(wx.Control):
-    """Two or more segments in a pill; the active one is a white chip."""
+    """Two or more segments in a pill; the active one is a white chip. points, weights: the font size and the
+    weights of the other segments and of the active one (inside a tile: points=9, weights=(400, 400), the
+    font of the controls)."""
 
-    def __init__(self, parent, labels, on_change):
+    def __init__(self, parent, labels, on_change, points=9.5, weights=(500, 700)):
         wx.Control.__init__(self, parent, style=wx.BORDER_NONE)
         self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
         self.labels, self.on_change = labels, on_change
         self.active, self.hover = 0, -1
         self.enabled = [True] * len(labels)
-        self.SetFont(ui_font(9.5, 600))
+        self.points, self.weights = points, weights
+        self.SetFont(ui_font(points, 600 if weights == (500, 700) else max(weights)))  # (sets the widths)
         dc = wx.ClientDC(self)
         dc.SetFont(self.GetFont())
         self.widths = [dc.GetTextExtent(l)[0] + self.FromDIP(28) for l in labels]
@@ -3174,7 +3180,7 @@ class Segmented(wx.Control):
                 col = C["muted"] if self.enabled[i] else "#A9B1BC"
                 if i == self.hover and self.enabled[i]:
                     col = C["text"]
-            gc.SetFont(ui_font(9.5, 700 if i == self.active else 500), wx.Colour(col))
+            gc.SetFont(ui_font(self.points, self.weights[1] if i == self.active else self.weights[0]), wx.Colour(col))
             tw, th = gc.GetTextExtent(lab)
             gc.DrawText(lab, x + (sw - tw) / 2.0, (h - th) / 2.0)
             x += sw

@@ -510,8 +510,8 @@ class HRMSTab(U.MSTab):
         if pk is not None and self.data:
             extra.append(("Find formulas for m/z %.4f\u2026" % pk, lambda m=pk: self.find_formulas(col, m)))
             dock = getattr(self, 'polymer_results', None)
-            if dock is not None and dock.visible and hasattr(dock, 'assign_from_spectrum'):
-                extra.append(("Assign polymer charge\u2026", lambda m=pk: dock.assign_from_spectrum(col, m)))
+            if dock is not None and dock.visible and hasattr(dock, 'spectrum_charge_items'):
+                extra.append(("Polymer charge", dock.spectrum_charge_items(col, pk)))
         if col["spec"] is not None and self.data:
             extra.append(("Check a formula\u2026", lambda: self.ask_formula(col)))
         if col.get("overlay"):

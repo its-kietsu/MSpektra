@@ -13,7 +13,7 @@ def source_rows(tab):
     import deconv_tab as D
     res=tab.dec.result
     if not res or not res.get('peaks'):
-        raise ValueError('No deconvolution result. Deconvolute a spectrum, then click Reload active result.')
+        raise ValueError('No deconvolution result: deconvolute the spectrum first')
     if res.get('tag')!='isodec' and res.get('params',{}).get('isotopes')=='resolved' and not D._grouped(res):
         raise ValueError('Group the isotope peaks into species first.')
     rows=[dict(mass=q['mass'],area=q.get('area',0),height=q.get('height',0),include=not q.get('added',False),
@@ -33,7 +33,7 @@ class PolymerFrame(wx.Frame):
         wx.Frame.__init__(self,wx.GetTopLevelParent(tab),title='Polymer analysis',size=tab.FromDIP(wx.Size(1040,800)))
         self.SetMinSize(self.FromDIP(wx.Size(800,650)))
         self.CentreOnParent()  # (inside the screen when it is shown: unidec_theme.fit_to_screen)
-        self.SetFont(ui_font(10));self.SetBackgroundColour(C['bg'])
+        self.SetFont(ui_font(9));self.SetBackgroundColour(C['bg'])
         self.tab=tab;self.metadata=list(metadata);self.outputs=None;self.mode=None
         self.direct_options=direct_options
         self.link_source=link_source
@@ -300,20 +300,3 @@ def menu_items(tab):
             ('Repeat units and end groups',lambda:open_workspace(tab,1)),
             ('Mass distribution',lambda:open_workspace(tab,2)),
             ('Use deconvoluted masses',lambda:open_workspace(tab,0,use_deconvolution=True))]
-
-def open_singly_charged(tab):
-    from ms_polymer_direct import prepare
-    try:
-        result=prepare(tab)
-        if result is None:return None
-        rows,meta,options=result
-        frame=PolymerFrame(tab,rows,meta,direct_options=options)
-    except Exception as ex:
-        import traceback
-        traceback.print_exc()
-        wx.MessageBox('Cannot open singly charged polymer analysis.\n\n'+str(ex),
-                      'Polymer analysis',wx.OK|wx.ICON_ERROR,wx.GetTopLevelParent(tab))
-        return None
-    watch_frame(tab,frame)
-    frame.status.SetLabel('Singly charged input. Untick unrelated species before calculating.')
-    frame.Show();return frame

@@ -2,8 +2,37 @@
 // Profile detection uses a short positive filter only on sufficiently sampled peaks.
 // Positions, heights and areas are measured from the original profile, never the filtered signal.
 namespace charge_profile {
-inline std::vector<DirectPeak> calculate(const double* x,const double* y,int n,const DirectParams& p) {
-    if(!p.profile)return poly_direct::calculate(x,y,n,p);
+// Noise of the smoothed profile in blocks of points: the smaller of 1.4826 x the median absolute deviation of
+// the smoothed values from the block median (peaks cover a small part of a block of a full profile, so the
+// median stays on the baseline) and of the raw values from the smoothed ones (a profile stored without its
+// baseline points holds peaks only: their shapes are smooth, the noise on them is not).
+inline std::vector<double> block_noise(const double* y,const std::vector<double>& smooth,int begin,int end,int block) {
+    std::vector<double> sigma;std::vector<double> v,r;
+    auto mad=[](std::vector<double>& u) {
+        auto mid=u.begin()+u.size()/2;std::nth_element(u.begin(),mid,u.end());double median=*mid;
+        for(auto& q:u)q=std::abs(q-median);
+        std::nth_element(u.begin(),mid,u.end());return 1.4826**mid;
+    };
+    for(int a=begin;a<end;a+=block) {
+        int b=std::min(end,a+block);
+        if(b-a<16 && !sigma.empty()){sigma.push_back(sigma.back());continue;}
+        v.assign(smooth.begin()+a,smooth.begin()+b);r.clear();
+        for(int i=a;i<b;++i)r.push_back(y[i]-smooth[i]);
+        sigma.push_back(std::min(mad(v),mad(r)));
+    }
+    return sigma;
+}
+// noise and snr (optional): the noise of the smoothed profile at each peak returned and the peak's height above
+// its local valleys in units of that noise (noise 0 and snr infinite for centroid data, where noise cannot be
+// told). Peaks are kept by height above their local valleys (threshold_percent of the highest).
+inline std::vector<DirectPeak> calculate(const double* x,const double* y,int n,const DirectParams& p,
+                                         std::vector<double>* noise=nullptr,std::vector<double>* snr=nullptr) {
+    if(!p.profile) {
+        auto out=poly_direct::calculate(x,y,n,p);
+        if(noise)noise->assign(out.size(),0.);
+        if(snr)snr->assign(out.size(),HUGE_VAL);
+        return out;
+    }
     if(!x || !y || n<1 || n>5000000 || !std::isfinite(p.mz_min) || !std::isfinite(p.mz_max) ||
        p.mz_min<0 || p.mz_max<=p.mz_min || !std::isfinite(p.threshold_percent) ||
        p.threshold_percent<=0 || p.threshold_percent>100 || !std::isfinite(p.isotope_tolerance) ||
@@ -25,9 +54,13 @@ inline std::vector<DirectPeak> calculate(const double* x,const double* y,int n,c
         while(b+1<end && y[b+1]>y[i]*.5)++b;
         widths.push_back(b-a+1);if(widths.size()==24)break;
     }
-    if(widths.empty())return poly_direct::calculate(x,y,n,p);
     std::sort(widths.begin(),widths.end());
-    if(widths[widths.size()/2]<4)return poly_direct::calculate(x,y,n,p);
+    if(widths.empty() || widths[widths.size()/2]<4) {   // (undersampled: every point is a peak top)
+        auto out=poly_direct::calculate(x,y,n,p);
+        if(noise)noise->assign(out.size(),0.);
+        if(snr)snr->assign(out.size(),HUGE_VAL);
+        return out;
+    }
     std::vector<double> smooth(y,y+n);
     constexpr double kernel[5]={1,4,6,4,1};
     for(int i=begin+2;i+2<end;++i) {
@@ -39,6 +72,10 @@ inline std::vector<DirectPeak> calculate(const double* x,const double* y,int n,c
     const double cutoff=top*p.threshold_percent/100.;
     int resolution=widths[widths.size()/2],distance=std::max(2,int(std::round(resolution*.7)));
     int reach=std::max(6,std::min(1000,resolution*3));
+    const int block=std::max(256,resolution*60);
+    const auto sigma=block_noise(y,smooth,begin,end,block);
+    if(noise)noise->clear();
+    if(snr)snr->clear();
     std::vector<int> maxima;
     for(int i=begin+1;i<end-1;++i) {
         if(smooth[i]<=smooth[i-1])continue;
@@ -70,6 +107,7 @@ inline std::vector<DirectPeak> calculate(const double* x,const double* y,int n,c
         if(left==i || right==i || (left==begin && smooth[left]>smooth[i]*.5) ||
            (right==end-1 && smooth[right]>smooth[i]*.5) ||
            smooth[i]-std::max(smooth[left],smooth[right])<cutoff)continue;
+        const double prominence=smooth[i]-std::max(smooth[left],smooth[right]);
         // Quantification regions do not overlap another resolved maximum.
         if(k>0 && kept[k-1]>left)left=int(std::min_element(smooth.begin()+kept[k-1],smooth.begin()+i+1)-smooth.begin());
         if(k+1<kept.size() && kept[k+1]<right)right=int(std::min_element(smooth.begin()+i,smooth.begin()+kept[k+1]+1)-smooth.begin());
@@ -100,7 +138,12 @@ inline std::vector<DirectPeak> calculate(const double* x,const double* y,int n,c
         double from=x[a],to=x[b];
         if(a>left && smooth[a]!=smooth[a-1])from=x[a-1]+(half-smooth[a-1])/(smooth[a]-smooth[a-1])*(x[a]-x[a-1]);
         if(b<right && smooth[b]!=smooth[b+1])to=x[b]+(smooth[b]-half)/(smooth[b]-smooth[b+1])*(x[b+1]-x[b]);
-        if(area>0 && (result.empty() || mz>result.back().mz))result.push_back({mz,mz,area,height,from,to,1});
+        if(area>0 && (result.empty() || mz>result.back().mz)) {
+            result.push_back({mz,mz,area,height,from,to,1});
+            double sd=sigma[std::min<size_t>(sigma.size()-1,size_t((i-begin)/block))];
+            if(noise)noise->push_back(sd);
+            if(snr)snr->push_back(sd>0?prominence/sd:HUGE_VAL);
+        }
         if(result.size()>5000)throw std::runtime_error("More than 5000 species: raise the peak threshold or narrow the m/z range");
     }
     if(result.empty())throw std::runtime_error("No complete peaks found; lower the threshold or widen the range");
