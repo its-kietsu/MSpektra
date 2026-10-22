@@ -780,6 +780,11 @@ def _domains_of(doc):
         out.append(Domain("ms:%d" % n, doc, lambda: ms_get(ms), lambda st: ms_set(ms, st),
                           lambda a, b: ms_describe(ms, a, b), page=lambda: _view_page(doc, ms),
                           busy=lambda why: _ms_busy(ms, why), order=2, passengers=_MS_PASSENGERS, tab=lambda: ms))
+        if type(ms).__name__ == 'HRMSTab':
+            out.append(Domain("polymer:%d" % n, doc, lambda: polymer_get(ms), lambda st: polymer_set(ms, st),
+                              lambda a,b: ('polymer analysis',None),page=lambda:_view_page(doc,ms),
+                              busy=lambda why: 'Wait for polymer analysis' if getattr(getattr(ms,'polymer_results',None),'_busy',False) else _ms_busy(ms,why),
+                              order=4,passengers=('active','chain','visible','charge','family','page'),tab=lambda:ms))
         dec = getattr(ms, "dec", None)
         if dec is not None and hasattr(dec, "results"):
             out.append(Domain("dec:%d" % n, doc, lambda: dec_get(dec), lambda st: dec_set(dec, st),
@@ -1051,6 +1056,16 @@ _CHROM_CTRLS = ("kind", "xic_mode", "smooth")
 _SPEC_CTRLS = ("use_bg", "binw")
 _MS_PASSENGERS = ("sel_peak", "fields", "xic_text", "note", "finder", "method")
 
+
+def polymer_get(tab):
+    dock=getattr(tab,'polymer_results',None)
+    if callable(getattr(dock,'undo_state',None)):
+        return dock.undo_state()
+    return dict(kind='polymer_workspace',series=[],method=dict(getattr(tab,'_polymer_method',{})),visible=False)
+
+def polymer_set(tab,state):
+    from ms_polymer_workspace import ensure_workspace
+    ensure_workspace(tab).restore(state)
 
 def ms_get(tab):
     if getattr(tab, "data", None) is None:

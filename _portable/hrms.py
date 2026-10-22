@@ -141,6 +141,14 @@ class HRMSTab(U.MSTab):
             U.MSTab.spectrum_tools(self)[4:] + [
             ("action", "polymer", "Polymer analysis ▾", "polymer", "Mass distribution, repeat units, chain lengths")]
 
+    def extra_result_tiles(self):
+        dock = getattr(self, 'polymer_results', None)
+        if dock is None:
+            return []
+        shown = dock.visible and (bool(dock.series) or getattr(dock, 'show_empty', False))
+        dock.Show(shown)
+        return [(dock, 'polymer', 2.8)] if shown else []
+
     def tool_action(self, key):
         if key == "polymer":
             from ms_polymer_ui import menu_items
@@ -249,6 +257,18 @@ class HRMSTab(U.MSTab):
         U.MSTab._build_cols(self, n)
         for col in self.cols:
             col["spec_card"].tools_supported = {"xic", "measure", "label", "formula"}
+            col["spec_card"].on_pick = lambda x,y,c=col: self._polymer_pick(c,x,y)
+
+    def _polymer_pick(self, col, x, y):
+        dock = getattr(self, 'polymer_results', None)
+        return bool(dock is not None and dock.pick(col, x, y))
+
+    def _close_search_tile(self, pane):
+        dock = getattr(self, 'polymer_results', None)
+        if dock is not None and pane is dock:
+            dock.hide_results()
+            return True
+        return U.MSTab._close_search_tile(self, pane)
 
     def _nearest_peak(self, col, x):
         spec = col["spec"]
@@ -348,6 +368,9 @@ class HRMSTab(U.MSTab):
     def spectrum_replaced(self, col):
         had_overlay = col.get("overlay") is not None
         U.MSTab.spectrum_replaced(self, col)
+        dock = getattr(self, 'polymer_results', None)
+        if dock is not None:
+            dock.spectrum_replaced(col)
         if had_overlay:
             self.exact_note.SetLabel("")
             self._rewrap()
@@ -486,6 +509,9 @@ class HRMSTab(U.MSTab):
         extra = []
         if pk is not None and self.data:
             extra.append(("Find formulas for m/z %.4f\u2026" % pk, lambda m=pk: self.find_formulas(col, m)))
+            dock = getattr(self, 'polymer_results', None)
+            if dock is not None and dock.visible and hasattr(dock, 'assign_from_spectrum'):
+                extra.append(("Assign polymer charge\u2026", lambda m=pk: dock.assign_from_spectrum(col, m)))
         if col["spec"] is not None and self.data:
             extra.append(("Check a formula\u2026", lambda: self.ask_formula(col)))
         if col.get("overlay"):

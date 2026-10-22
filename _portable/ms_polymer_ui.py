@@ -1,5 +1,6 @@
 """HRMS polymer workspace. All distribution, series and DP calculations are native."""
 import math
+import copy
 import wx
 import wx.grid as G
 import numpy as np
@@ -15,8 +16,9 @@ def source_rows(tab):
         raise ValueError('No deconvolution result. Deconvolute a spectrum, then click Reload active result.')
     if res.get('tag')!='isodec' and res.get('params',{}).get('isotopes')=='resolved' and not D._grouped(res):
         raise ValueError('Group the isotope peaks into species first.')
-    rows=[dict(mass=q['mass'],area=q.get('area',0),height=q.get('height',0),include=not q.get('added',False))
-          for q in res['peaks']]
+    rows=[dict(mass=q['mass'],area=q.get('area',0),height=q.get('height',0),include=not q.get('added',False),
+               mz=q.get('mz') if isinstance(q.get('mz'),(int,float)) else None,deconv_index=i)
+          for i,q in enumerate(res['peaks'])]
     if len(rows)>5000:raise ValueError('Too many species (at most 5000).')
     metadata=[('Source file',getattr(tab.frame,'path','') or getattr(getattr(tab,'data',None),'path','')),
                  ('Deconvolution method',res.get('tag','')),('Spectrum selection',str(res.get('input',''))),
@@ -27,25 +29,35 @@ def source_rows(tab):
     return rows,metadata
 
 class PolymerFrame(wx.Frame):
-    def __init__(self,tab,rows,metadata,page=0):
+    def __init__(self,tab,rows,metadata,page=0,direct_options=None,link_source=None):
         wx.Frame.__init__(self,wx.GetTopLevelParent(tab),title='Polymer analysis',size=tab.FromDIP(wx.Size(1040,800)))
         self.SetMinSize(self.FromDIP(wx.Size(800,650)))
         self.CentreOnParent()  # (inside the screen when it is shown: unidec_theme.fit_to_screen)
         self.SetFont(ui_font(10));self.SetBackgroundColour(C['bg'])
         self.tab=tab;self.metadata=list(metadata);self.outputs=None;self.mode=None
+        self.direct_options=direct_options
+        self.link_source=link_source
+        if self.link_source is None:
+            try:
+                from ms_polymer_results import capture_source
+                self.link_source=capture_source(tab,direct_options)
+            except (ValueError,AttributeError):pass
+        self.assignment=None
         self.weight=wx.Choice(self,choices=['Peak area','Peak height'])
         self.weight.SetSelection(0)
         self.basis=wx.Choice(self,choices=['Signal per molecule','Signal per unit mass'])
         self.basis.SetSelection(0)
-        reload_btn=U.flat(self,'Reload active result',handler=self.reload)
+        reload_btn=U.flat(self,'Choose spectrum…' if direct_options is not None else 'Reload active result',handler=self.reload)
         self.export_btn=U.flat(self,'Export results to Excel…',icon='export',handler=self.export)
         self.export_btn.Enable(False)
-        bar=wx.BoxSizer(wx.HORIZONTAL)
-        for control in (self.weight,self.basis,reload_btn,self.export_btn):
+        self.show_btn=U.flat(self,'Show in HRMS',handler=self.show_in_hrms)
+        self.show_btn.Enable(False)
+        bar=wx.WrapSizer(wx.HORIZONTAL)
+        for control in (self.weight,self.basis,reload_btn,self.export_btn,self.show_btn):
             bar.Add(control,0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(10))
         self.input=G.Grid(self)
-        self.input.CreateGrid(0,5)
-        for i,label in enumerate(('Use','Species mass (Da)','Integrated area','Peak height','Response factor')):
+        self.input.CreateGrid(0,7)
+        for i,label in enumerate(('Use','Species mass (Da)','Area / signal','Peak height','Response factor','Source m/z','Isotope peaks')):
             self.input.SetColLabelValue(i,label);self.input.SetColSize(i,self.FromDIP(70 if i==0 else 150))
         self.input.SetColFormatBool(0);self.input.SetRowLabelSize(self.FromDIP(48))
         self.input.SetMinSize(self.FromDIP(wx.Size(-1,150)))
@@ -61,7 +73,7 @@ class PolymerFrame(wx.Frame):
         ds=wx.BoxSizer(wx.VERTICAL);ds.Add(calc,0,wx.ALL,self.FromDIP(8));ds.Add(self.result_text,0,wx.EXPAND|wx.LEFT|wx.RIGHT,self.FromDIP(8));ds.Add(self.dist_card,1,wx.EXPAND|wx.ALL,self.FromDIP(8));self.dist.SetSizer(ds)
         self.lo,self.hi,self.gap_tol=[wx.TextCtrl(self.repeat,value=s,size=self.FromDIP(wx.Size(85,-1))) for s in ('10','1000','0.05')]
         self.repeat_table=self.table(self.repeat,('Repeat mass (Da)','Supported gaps','One-repeat gaps','Ranking score'))
-        rs=wx.BoxSizer(wx.VERTICAL);rb=wx.BoxSizer(wx.HORIZONTAL)
+        rs=wx.BoxSizer(wx.VERTICAL);rb=wx.WrapSizer(wx.HORIZONTAL)
         for control in (wx.StaticText(self.repeat,label='Search from'),self.lo,wx.StaticText(self.repeat,label='to (Da)'),self.hi,
                         wx.StaticText(self.repeat,label='Gap tolerance (Da)'),self.gap_tol,U.flat(self.repeat,'Find candidates','primary',handler=self.find_repeats)):
             rb.Add(control,0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(8))
@@ -69,13 +81,13 @@ class PolymerFrame(wx.Frame):
         self.repeat_table.Bind(wx.EVT_LIST_ITEM_ACTIVATED,self.use_repeat)
         self.repeat_table.SetToolTip('Double click a row to use its repeat mass')
         self.rmass,self.ends,self.match_tol=[wx.TextCtrl(self.chain,value=s,size=self.FromDIP(wx.Size(100,-1))) for s in ('','','0.05')]
-        cs=wx.BoxSizer(wx.VERTICAL);cb=wx.BoxSizer(wx.HORIZONTAL)
+        cs=wx.BoxSizer(wx.VERTICAL);cb=wx.WrapSizer(wx.HORIZONTAL)
         for control in (wx.StaticText(self.chain,label='Repeat mass (Da)'),self.rmass,wx.StaticText(self.chain,label='End groups E (Da)'),self.ends,
                         wx.StaticText(self.chain,label='Tolerance (Da)'),self.match_tol):
             cb.Add(control,0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(8))
         cs.Add(cb,0,wx.ALL,self.FromDIP(8))
         buttons=wx.BoxSizer(wx.HORIZONTAL)
-        for control in (U.flat(self.chain,'Assign chain lengths','primary',handler=self.assign),U.flat(self.chain,'Find end group offsets',handler=self.find_offsets)):
+        for control in (U.flat(self.chain,'Assign and show in HRMS','primary',handler=lambda e:self.assign(e,show=True)),U.flat(self.chain,'Find end group offsets',handler=self.find_offsets)):
             buttons.Add(control,0,wx.RIGHT,self.FromDIP(8))
         cs.Add(buttons,0,wx.ALL,self.FromDIP(8))
         self.chain_table=self.table(self.chain,('Species','Mass (Da)','n / DP','Predicted (Da)','Error (Da)','Error (ppm)','Matched'))
@@ -118,21 +130,36 @@ class PolymerFrame(wx.Frame):
         return str(v)
     def invalidate(self,e=None):
         self.outputs=self.mode=None;self.export_btn.Enable(False)
+        self.assignment=None;self.show_btn.Enable(False)
         self.result_text.ChangeValue('')
         self.repeat_table.DeleteAllItems();self.chain_table.DeleteAllItems();self.dist_card.reset();self.dist_card.draw()
         self.status.SetLabel('Inputs changed: results cleared.' if e else '')
         if e:e.Skip()
     def load_rows(self,rows):
+        self.link_rows=copy.deepcopy(rows)
         if self.input.GetNumberRows():self.input.DeleteRows(0,self.input.GetNumberRows())
         if rows:self.input.AppendRows(len(rows))
         for i,r in enumerate(rows):
-            for j,value in enumerate(('1' if r['include'] else '',r['mass'],r['area'],r['height'],1)):
+            for j,value in enumerate(('1' if r['include'] else '',r['mass'],r['area'],r['height'],1,r.get('mz') or '',r.get('isotopes',''))):
                 self.input.SetCellValue(i,j,str(value))
             self.input.SetReadOnly(i,2);self.input.SetReadOnly(i,3)
+            self.input.SetReadOnly(i,5);self.input.SetReadOnly(i,6)
         self.invalidate()
     def reload(self,e=None):
+        if self.direct_options is not None:
+            from ms_polymer_direct import prepare
+            try:result=prepare(self.tab,self.direct_options)
+            except (ValueError,RuntimeError,OSError) as ex:self.status.SetLabel(str(ex));return None
+            if result is None:return None
+            rows,meta,self.direct_options=result
+            from ms_polymer_results import capture_source
+            self.link_source=capture_source(self.tab,self.direct_options)
+            self.metadata=meta;self.load_rows(rows);return True
         try:rows,meta=source_rows(self.tab)
         except ValueError as ex:self.invalidate();self.status.SetLabel(str(ex));return None
+        from ms_polymer_results import capture_source
+        try:self.link_source=capture_source(self.tab)
+        except ValueError:self.link_source=None
         self.metadata=meta;self.load_rows(rows);return True
     def data(self):
         if self.input.IsCellEditControlEnabled():self.input.SaveEditControlValue();self.input.HideCellEditControl();self.input.DisableCellEditControl()
@@ -152,6 +179,11 @@ class PolymerFrame(wx.Frame):
         self.invalidate()
         return self.data()
     def finish(self,mode,header,rows,meta,inputs):
+        # Keep the input peak list, including isotope counts, with exported results.
+        if self.direct_options is not None:
+            meta=list(meta)+[('Input peak %d'%r[0],
+                'm/z %s; mass %.15g Da; signal %.15g; response %.15g; isotopes %s'%(
+                    self.input.GetCellValue(r[0]-1,5),r[1],r[2],r[3],self.input.GetCellValue(r[0]-1,6))) for r in inputs]
         self.mode=mode;self.outputs=(header,rows,self.metadata+[
             ('Tool',mode),('Weight signal',self.weight.GetStringSelection()),('Weight interpretation',self.basis.GetStringSelection()),
             ('Response correction','Signal / response factor'),
@@ -184,14 +216,22 @@ class PolymerFrame(wx.Frame):
     def use_repeat(self,e):
         value=self.repeat_table.GetItemText(e.GetIndex())
         self.rmass.ChangeValue(value);self.book.SetSelection(2);self.invalidate()
-    def assign(self,e=None):
+    def assign(self,e=None,show=False):
         try:
             rows=self.start();repeat,ends,tol=[float(c.GetValue()) for c in (self.rmass,self.ends,self.match_tol)]
             result=N.assign([r[1] for r in rows],repeat,ends,tol)
             output=[[r[0],r[1],result['dp'][i],result['predicted'][i],result['delta'][i],result['ppm'][i],bool(result['matched'][i])] for i,r in enumerate(rows)]
             header=['Species','Mass (Da)','n / DP','Predicted (Da)','Error (Da)','Error (ppm)','Matched'];self.fill(self.chain_table,header,output)
             self.finish('Chain lengths',header,output,[('Repeat mass (Da)',repeat),('End groups E (Da)',ends),('Tolerance (Da)',tol),('Equation','M = n × repeat + E')],rows)
-            self.status.SetLabel('%d of %d species match the series'%(sum(result['matched']),len(rows)));return result
+            self.status.SetLabel('%d of %d species match the series'%(sum(result['matched']),len(rows)))
+            if self.link_source is not None and any(result['matched']):
+                from ms_polymer_results import make_assignment
+                self.assignment=make_assignment(self,rows,result,repeat,ends,tol)
+                self.show_btn.Enable(True)
+            if show:
+                if self.assignment is None:raise ValueError('No linked chains found. Check the assignment or choose the source spectrum again.')
+                self.show_in_hrms()
+            return result
         except (ValueError,RuntimeError,OSError) as ex:return self.failure(ex)
     def find_offsets(self,e=None):
         try:
@@ -201,6 +241,18 @@ class PolymerFrame(wx.Frame):
             self.finish('End-group offset candidates',header,output,[('Repeat mass (Da)',repeat),('Tolerance (Da)',tol)],rows)
             self.status.SetLabel('%d end group offsets (modulo the repeat mass)'%len(result));return result
         except (ValueError,RuntimeError,OSError) as ex:return self.failure(ex)
+    def show_in_hrms(self,e=None):
+        if self.assignment is None:return None
+        try:
+            from ms_polymer_results import ensure_results
+            dock=ensure_results(self.tab)
+            dock.add(self.assignment)
+        except (ValueError,RuntimeError,OSError) as ex:
+            self.status.SetLabel('Cannot show results: '+str(ex));return None
+        self.Close()
+        parent=wx.GetTopLevelParent(self.tab)
+        parent.Show();parent.Raise()
+        return dock
     def export(self,e=None,path=None):
         if self.input.IsCellEditControlEnabled():
             self.input.SaveEditControlValue();self.input.HideCellEditControl();self.input.DisableCellEditControl()
@@ -216,6 +268,12 @@ class PolymerFrame(wx.Frame):
         try:K.write_area_xlsx(path,header,rows,meta)
         except (ValueError,OSError) as ex:self.status.SetLabel('Export failed: %s'%ex);return None
         return path
+
+def watch_frame(tab,frame):
+    if not hasattr(tab,'_polymer_frames'):tab._polymer_frames=[]
+    if frame not in tab._polymer_frames:tab._polymer_frames.append(frame)
+    frame.Bind(wx.EVT_CLOSE,lambda e:(tab._polymer_frames.remove(frame) if frame in tab._polymer_frames else None,e.Skip()))
+
 
 def open_tools(tab,page=0):
     notice=None
@@ -233,12 +291,29 @@ def open_tools(tab,page=0):
         frame.status.SetLabel(notice)
         frame.result_text.ChangeValue(notice)
         tab.status(notice)
-    if not hasattr(tab,'_polymer_frames'):tab._polymer_frames=[]
-    tab._polymer_frames.append(frame)
-    frame.Bind(wx.EVT_CLOSE,lambda e:(tab._polymer_frames.remove(frame) if frame in tab._polymer_frames else None,e.Skip()))
+    watch_frame(tab,frame)
     frame.Show();return frame
 
 def menu_items(tab):
-    return [('Mass distribution (Mn / Mw / Đ)…',lambda:open_tools(tab,0)),
-            ('Repeat unit finder…',lambda:open_tools(tab,1)),
-            ('Chain lengths / end groups…',lambda:open_tools(tab,2))]
+    from ms_polymer_workspace import open_workspace
+    return [('Open polymer analysis',lambda:open_workspace(tab)),
+            ('Repeat units and end groups',lambda:open_workspace(tab,1)),
+            ('Mass distribution',lambda:open_workspace(tab,2)),
+            ('Use deconvoluted masses',lambda:open_workspace(tab,0,use_deconvolution=True))]
+
+def open_singly_charged(tab):
+    from ms_polymer_direct import prepare
+    try:
+        result=prepare(tab)
+        if result is None:return None
+        rows,meta,options=result
+        frame=PolymerFrame(tab,rows,meta,direct_options=options)
+    except Exception as ex:
+        import traceback
+        traceback.print_exc()
+        wx.MessageBox('Cannot open singly charged polymer analysis.\n\n'+str(ex),
+                      'Polymer analysis',wx.OK|wx.ICON_ERROR,wx.GetTopLevelParent(tab))
+        return None
+    watch_frame(tab,frame)
+    frame.status.SetLabel('Singly charged input. Untick unrelated species before calculating.')
+    frame.Show();return frame

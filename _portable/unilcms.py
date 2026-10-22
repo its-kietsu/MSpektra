@@ -3597,6 +3597,7 @@ class PeakTable(wx.Panel):
         m.Destroy()
 
     def set_peaks(self, peaks, units):
+        had_rows=bool(self.list.GetItemCount())
         self.list.DeleteAllItems()
         self.list.SetColumn(5, self._col("Height (%s)" % units if units else "Height", 5))
         self.list.SetColumn(6, self._col("Area (%s\u00b7s)" % units if units else "Area", 6))
@@ -3610,6 +3611,8 @@ class PeakTable(wx.Panel):
         self.info = ("%d peak%s in %s" % (len(peaks), "s" if len(peaks) != 1 else "", ", ".join(traces))
                      if peaks else "")
         self.Refresh()
+        if had_rows!=bool(peaks) and callable(getattr(self,'on_content_changed',None)):
+            self.on_content_changed()
 
     def _col(self, text, n):
         c = wx.ListItem()
@@ -3871,11 +3874,11 @@ class SplitBox(wx.Panel):
         self.relayout()
 
     def _visible(self):
-        self.panes = [p for p in self.all_panes if p not in self.closed]
-        self.weights = [w for p, w in zip(self.all_panes, self.all_weights) if p not in self.closed]
+        self.panes = [p for p in self.all_panes if p not in self.closed and not getattr(p,'auto_hidden',False)]
+        self.weights = [w for p, w in zip(self.all_panes, self.all_weights) if p in self.panes]
         for p in self.all_panes:
             try:
-                p.Show(p not in self.closed)
+                p.Show(p in self.panes)
             except RuntimeError:
                 pass
 
@@ -4086,11 +4089,11 @@ class StackBox(wx.Panel):
         self.relayout()
 
     def _update_visible(self):
-        self.panes = [p for p in self.all_panes if p not in self.closed]
-        self.weights = [w for p, w in zip(self.all_panes, self.all_weights) if p not in self.closed]
+        self.panes = [p for p in self.all_panes if p not in self.closed and not getattr(p,'auto_hidden',False)]
+        self.weights = [w for p, w in zip(self.all_panes, self.all_weights) if p in self.panes]
         for p in self.all_panes:
             try:
-                p.Show(p not in self.closed)
+                p.Show(p in self.panes)
             except RuntimeError:
                 pass
 
@@ -4199,7 +4202,7 @@ class StackBox(wx.Panel):
                     except Exception:
                         want = 0
                     out[i] = int(max(self.min, 0.30 * H)) if want is None else unit
-            return out
+            return self._height_floors(out)
         if self.shape is not None and self.mode() == "journal":
             # journal proportions: each tile as high as a copied image of it
             # would be for its width (the view scrolls); tables get a fixed share
@@ -4226,7 +4229,7 @@ class StackBox(wx.Panel):
                         out[i] = int(max(self.min, low, sc_i * (H - self.gap)))
                         continue
                     out[i] = int(max(self.min, low, sc_i * min(want, 0.62 * H)))
-            return out
+            return self._height_floors(out)
         free = [i for i in range(n) if out[i] is None]
         rest = max(0, avail - sum(h for h in out if h is not None))
         # the others share the rest by weight; a tile below the minimum gets
@@ -4247,6 +4250,15 @@ class StackBox(wx.Panel):
             for i, p in enumerate(self.panes):
                 if self.frac.get(p) is None and _is_plot_tile(p):
                     out[i] = max(out[i], low)
+        return self._height_floors(out)
+
+    def _height_floors(self, heights):
+        """Optional minimum height for a tile containing its own controls and plots."""
+        out=list(heights)
+        for i,pane in enumerate(self.panes):
+            floor=getattr(pane,'tile_min_height',None)
+            if callable(floor):
+                out[i]=max(out[i],int(floor()))
         return out
 
     def total(self, H=None, W=None):
@@ -5511,6 +5523,7 @@ class MSTab(TabBase):
         self.scroller.set_box(self.rows)
         self.bottom = SplitBox(self.rows, wx.HORIZONTAL)
         self.table = PeakTable(self.bottom, self.select_peak, self.delete_peak)
+        self.table.on_content_changed=self._layout_rows
         self.bottom.set_panes([self.table], [1])
         self.extras = {}  # key -> (row or None, table or None, weight); deconvolution, calibration
         self.panels = []  # objects with overlay(col, ax) drawn onto the spectra
@@ -5722,7 +5735,13 @@ class MSTab(TabBase):
         panes = chroms + self.xic_rows + srows + specs
         kinds = ["main"] * len(chroms) + ["xic"] * len(self.xic_rows) + ["search"] * len(srows) + \
             ["spec"] * len(specs)
-        tables = [getattr(self, "hrms_details", self.table)]
+        for row, kind, weight in getattr(self, "extra_result_tiles", lambda: [])():
+            panes.append(row)
+            kinds.append(kind)
+            defaults[kind] = weight
+        primary=getattr(self, "hrms_details", self.table)
+        primary.auto_hidden=not (primary.has_content() if callable(getattr(primary,'has_content',None)) else bool(self.table.list.GetItemCount()))
+        tables = [primary]
         for key in ("dec", "cal"):
             if key in self.extras:
                 row, table, w = self.extras[key]
@@ -5734,6 +5753,7 @@ class MSTab(TabBase):
                     tables.append(table)
         panes.append(self.bottom)
         kinds.append("table")
+        self.bottom.auto_hidden=all(getattr(t,'auto_hidden',False) for t in tables)
         tw = [self.bottom.weight_of(t, 1.0) for t in tables]
         self.bottom.set_panes(tables, tw)
         weights = [self.rows.weight_of(p, defaults[k]) for p, k in zip(panes, kinds)]

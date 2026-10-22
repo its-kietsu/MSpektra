@@ -98,6 +98,17 @@ class DetailsCard(wx.Panel):
         self.peaks.Show(not isotope)
         self.isotopes.Show(isotope)
         self.Layout()
+        self.content_changed()
+
+    def has_content(self):
+        return bool(self.values or self.tab.table.list.GetItemCount())
+
+    def content_changed(self):
+        content=self.has_content()
+        if content!=getattr(self,'_had_content',None):
+            self._had_content=content
+            if getattr(self.tab,'hrms_details',None) is self:
+                wx.CallAfter(self.tab._layout_rows)
 
     def refresh_result(self, ent):
         if ent is not self._ent:
@@ -108,6 +119,7 @@ class DetailsCard(wx.Panel):
             self.values = []
             self.isotopes.set_rows([])
             self._last = None
+            self.content_changed()
             return
         sel = ent.sel
         peaks = ent.res.get('peaks') or []
@@ -134,6 +146,7 @@ class DetailsCard(wx.Panel):
                     self.isotopes.select(k)
         finally:
             self._updating = False
+            self.content_changed()
 
     def select_isotope(self, index):
         dec = self.tab.dec

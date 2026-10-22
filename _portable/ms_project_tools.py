@@ -5,15 +5,20 @@ import numpy as np
 def capture_polymer(tab):
     result=[]
     for w in getattr(tab,'_polymer_frames',[]):
+        if w and getattr(w,'polymer_dock',False):
+            if w.series or getattr(w,'show_empty',False):result.append(w.snapshot())
+            continue
         if not w or not w.IsShown():continue
-        grid=[[w.input.GetCellValue(i,j) for j in range(5)] for i in range(w.input.GetNumberRows())]
+        grid=[[w.input.GetCellValue(i,j) for j in range(w.input.GetNumberCols())] for i in range(w.input.GetNumberRows())]
         tables=[]
         for t in (w.repeat_table,w.chain_table):
             tables.append(([t.GetColumn(j).GetText() for j in range(t.GetColumnCount())],
                            [[t.GetItemText(i,j) for j in range(t.GetColumnCount())] for i in range(t.GetItemCount())]))
         lines=[dict(x=np.asarray(l.get_xdata()),y=np.asarray(l.get_ydata()),colour=l.get_color(),
                     marker=l.get_marker(),style=l.get_linestyle(),label=l.get_label()) for l in w.dist_card.ax.lines]
-        result.append(dict(metadata=w.metadata,grid=grid,weight=w.weight.GetSelection(),basis=w.basis.GetSelection(),
+        result.append(dict(metadata=w.metadata,grid=grid,direct_options=getattr(w,'direct_options',None),
+                           link_source=getattr(w,'link_source',None),link_rows=getattr(w,'link_rows',None),
+                           assignment=getattr(w,'assignment',None),weight=w.weight.GetSelection(),basis=w.basis.GetSelection(),
                            fields=[c.GetValue() for c in (w.lo,w.hi,w.gap_tol,w.rmass,w.ends,w.match_tol)],
                            page=w.book.GetSelection(),outputs=w.outputs,mode=w.mode,tables=tables,lines=lines,
                            text=w.result_text.GetValue(),status=w.status.GetLabel(),view=__import__('ms_project').views(w)))
@@ -22,9 +27,18 @@ def capture_polymer(tab):
 def restore_polymer(tab,states):
     from ms_polymer_ui import PolymerFrame
     for st in states:
+        if st.get('kind')=='polymer_workspace':
+            from ms_polymer_workspace import ensure_workspace
+            ensure_workspace(tab).restore(st)
+            continue
+        if st.get('kind')=='polymer_dock':
+            from ms_polymer_results import ensure_results
+            ensure_results(tab).restore(st)
+            continue
         # The editable table, including excluded rows and response factors, is retained verbatim.
         rows=[dict(include=r[0]=='1',mass=0,area=0,height=0) for r in st['grid']]
-        w=PolymerFrame(tab,rows,st['metadata'],st['page'])
+        w=PolymerFrame(tab,rows,st['metadata'],st['page'],direct_options=st.get('direct_options'),link_source=st.get('link_source'))
+        if st.get('link_rows') is not None:w.link_rows=st['link_rows']
         for i,row in enumerate(st['grid']):
             for j,value in enumerate(row):w.input.SetCellValue(i,j,value)
         w.weight.SetSelection(st['weight']);w.basis.SetSelection(st['basis'])
@@ -37,6 +51,7 @@ def restore_polymer(tab,states):
             import unilcms as U
             U.style_axes(w.dist_card.ax,'Species mass (Da)','Fraction');w.dist_card.ax.legend(fontsize=8)
         w.outputs=st['outputs'];w.mode=st['mode'];w.on_page()
+        w.assignment=st.get('assignment');w.show_btn.Enable(w.assignment is not None)
         w.result_text.ChangeValue(st['text']);w.status.SetLabel(st['status']);w.dist_card.draw()
         if not hasattr(tab,'_polymer_frames'):tab._polymer_frames=[]
         tab._polymer_frames.append(w)

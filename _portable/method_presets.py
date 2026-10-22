@@ -66,8 +66,9 @@ NUMTEXT = ("numtext",)  # a number typed in a field of the deconvolution setting
 SECTION_LABELS = {"ms": "Mass spectrometry view", "pda": "PDA view", "window": "MS and PDA link",
                   "deconvolution": "Deconvolution", "compare": "Compare view", "calibration": "Calibration",
                   "exact_mass": "Exact mass", "formula_finder": "Formula finder", "mass_shifts": "Mass shifts"}
+SECTION_LABELS['polymer']='Polymer analysis'
 # sections of each file (applied to the file or to every open file) and of the window (all files)
-PER_FILE = {"lcms": ("ms", "pda"), "hrms": ("ms", "exact_mass", "formula_finder")}
+PER_FILE = {"lcms": ("ms", "pda"), "hrms": ("ms", "exact_mass", "formula_finder", "polymer")}
 WINDOW_WIDE = {"lcms": ("deconvolution", "mass_shifts", "compare", "window"),
                "hrms": ("deconvolution", "mass_shifts", "calibration")}
 
@@ -210,6 +211,21 @@ def _dec_fields(kind):
     return [(k, lab, spec if spec is not None else _int(0, N_DECONV_PRESETS[kind] - 1), None) for k, lab, spec in _DEC]
 
 
+POLYMER_FIELDS=[
+    ('charge_min','Charge from',_int(1,100),1),('charge_max','Charge to',_int(1,100),3),
+    ('carrier_label','Charge carrier',_choice('','H+ (proton)','Na+ (sodium)','K+ (potassium)',
+        'NH4+ (ammonium)','H+ loss','Cl- (chloride)','Formate','Acetate','Custom mass'),''),
+    ('carrier','Carrier mass per charge (Da)',_float(-10000,10000),1.007276467),
+    ('threshold_percent','Minimum height (%)',_float(.000001,100),5.),
+    ('isotope_tolerance','Spacing tolerance (m/z)',_float(.00000001,.249999),.01),
+    ('merge_da','Mass matching (Da)',_float(0,1),.02),('merge_ppm','Mass matching (ppm)',_float(0,1000),5.),
+    ('min_isotopes','Minimum isotope peaks',_int(2,20),3),
+    ('mass_mode','Mass basis',_int(0,2),0),('spectrum_type','Spectrum type',_choice('auto','profile','centroid'),'auto'),
+    ('repeat','Repeat mass (Da)',NUMTEXT,''),('ends','End group mass (Da)',NUMTEXT,''),
+    ('tolerance','Series tolerance (Da)',NUMTEXT,'.05'),('search_min','Repeat search from (Da)',NUMTEXT,'10'),
+    ('search_max','Repeat search to (Da)',NUMTEXT,'1000'),
+    ('weight','Signal',_int(0,1),0),('basis','Weight interpretation',_int(0,1),0)]
+
 def schema(kind):
     """{section: [(key, label, value type, program default)]} of a window kind."""
     if kind == "lcms":
@@ -217,7 +233,8 @@ def schema(kind):
                 "deconvolution": _dec_fields(kind), "mass_shifts": SHIFT_FIELDS, "compare": COMPARE_FIELDS}
     if kind == "hrms":
         return {"ms": _ms_fields(True), "exact_mass": EXACT_FIELDS, "formula_finder": FINDER_FIELDS,
-                "calibration": CAL_FIELDS, "deconvolution": _dec_fields(kind), "mass_shifts": SHIFT_FIELDS}
+                "calibration": CAL_FIELDS, "deconvolution": _dec_fields(kind), "mass_shifts": SHIFT_FIELDS,
+                "polymer":POLYMER_FIELDS}
     raise MethodError("Unknown window kind: %r" % (kind,))
 
 
@@ -721,6 +738,9 @@ def _compare_set(fr, v):
 
 def _section_get(fr, doc, kind, sec):
     a = _attrs(doc) if doc is not None else {}
+    if sec == 'polymer':
+        from ms_polymer_workspace import method_get
+        return method_get(a['ms'])
     if sec == "ms":
         return a["ms"].method_get()
     if sec == "pda":
@@ -759,6 +779,9 @@ def capture(window):
 
 def _apply_file(doc, kind, sec, v):
     a = _attrs(doc)
+    if sec == 'polymer':
+        from ms_polymer_workspace import method_set
+        method_set(a['ms'],v)
     if sec == "ms":
         a["ms"].method_set(v)
     elif sec == "pda":
