@@ -4153,7 +4153,8 @@ class StackBox(wx.Panel):
             s, b = s if isinstance(s, tuple) else (s, 0)
             ok = bool(s) and float(s) > 0
             out.append(float(s) if ok else 0.0)
-            base.append(int(b) if ok else 0)
+            # (share 0 with pixels: a tile of that height, kept out of the window's share)
+            base.append(int(b) if ok or (s is not None and b and int(b) > 0) else 0)
         if bases is not None:
             bases[:] = base
         return out
@@ -4189,8 +4190,12 @@ class StackBox(wx.Panel):
             unit = int(max(self.min, (H - self.gap * (k - 1)) / float(k)))
             fixed = sum(out[i] for i in top if out[i] is not None)
             free = [i for i in top if out[i] is None]
+            held = [i for i in range(n) if shares[i] <= 0 and bases[i] > 0]  # tiles of a set height
+            for i in held:
+                if out[i] is None:
+                    out[i] = int(bases[i])
             if free:
-                rest = H - self.gap * (k - 1) - fixed
+                rest = H - self.gap * (k - 1) - fixed - sum(out[i] + self.gap for i in held)
                 ts = sum(shares[i] for i in free)
                 left = max(0, rest - sum(bases[i] for i in free))
                 each = max(left / ts, self.FromDIP(self.fit_floor) if self.fit_share is not None else 0)
@@ -4265,6 +4270,9 @@ class StackBox(wx.Panel):
             floor=getattr(pane,'tile_min_height',None)
             if callable(floor):
                 out[i]=max(out[i],int(floor()))
+            exact=getattr(pane,'tile_height',None)  # (a tile of its own height in every mode)
+            if callable(exact):
+                out[i]=max(1,int(exact()))
         return out
 
     def total(self, H=None, W=None):

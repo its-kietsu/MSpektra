@@ -257,11 +257,7 @@ class HRMSTab(U.MSTab):
         U.MSTab._build_cols(self, n)
         for col in self.cols:
             col["spec_card"].tools_supported = {"xic", "measure", "label", "formula"}
-            col["spec_card"].on_pick = lambda x,y,c=col: self._polymer_pick(c,x,y)
-
-    def _polymer_pick(self, col, x, y):
-        dock = getattr(self, 'polymer_results', None)
-        return bool(dock is not None and dock.pick(col, x, y))
+            # (no click on the spectrum for the polymer analysis: its right click menu has Polymer charge)
 
     def _close_search_tile(self, pane):
         dock = getattr(self, 'polymer_results', None)

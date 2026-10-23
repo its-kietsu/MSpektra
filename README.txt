@@ -1,4 +1,4 @@
-MSpektra 4.57 - portable Windows package   (22.10.2026)
+MSpektra 4.58 - portable Windows package   (23.10.2026)
 ========================================================
 
 Analysis of LC-MS and HRMS data, with deconvolution:
@@ -39,6 +39,17 @@ The version is shown on the start screen, in the help window (?) of LCMS
 and HRMS Analysis, and in the first line of each log file. It went up by
 0.1 with every update until 3.3. Since 3.31 a small change adds 0.01, a
 large change 0.1 and a big change 1.0.
+
+4.58 (23.10.2026)
+Polymer analysis in one tile, and more species found.
+* Polymer analysis in one tile: choose the charge, find the repeat unit
+  and end groups from the suggestions shown under them, assign the series
+  and calculate the distribution. The tile scrolls instead of squeezing
+  the chromatogram and spectrum.
+* Find species finds more species where envelopes overlap, and starts
+  each envelope at its first isotope peak, also for larger chains.
+* A left click on the spectrum no longer sets a charge, so a double
+  click shows the full range again. Set charges with a right click.
 
 4.57 (22.10.2026)
 More reliable polymer charges and a clearer polymer analysis.

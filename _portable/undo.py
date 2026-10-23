@@ -784,7 +784,7 @@ def _domains_of(doc):
             out.append(Domain("polymer:%d" % n, doc, lambda: polymer_get(ms), lambda st: polymer_set(ms, st),
                               lambda a,b: ('polymer analysis',None),page=lambda:_view_page(doc,ms),
                               busy=lambda why: 'Wait for polymer analysis' if getattr(getattr(ms,'polymer_results',None),'_busy',False) else _ms_busy(ms,why),
-                              order=4,passengers=('active','chain','visible','charge','family','page'),tab=lambda:ms))
+                              order=4,passengers=('active','chain','visible','charge','family','page','views'),tab=lambda:ms))
         dec = getattr(ms, "dec", None)
         if dec is not None and hasattr(dec, "results"):
             out.append(Domain("dec:%d" % n, doc, lambda: dec_get(dec), lambda st: dec_set(dec, st),
@@ -1063,7 +1063,7 @@ def polymer_get(tab):
         return dock.undo_state()
     from ms_polymer_workspace import default_method
     return dict(kind='polymer_workspace',series=[],method=default_method(tab),visible=False,active=None,chain=None,
-                charge='All charges',family=0,page=0)
+                charge='All charges',family=0,page=0,views=[0,1])
 
 def polymer_set(tab,state):
     from ms_polymer_workspace import ensure_workspace

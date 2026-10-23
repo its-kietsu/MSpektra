@@ -73,6 +73,35 @@ bool unimodal(const std::vector<DirectPeak>& peaks,const std::vector<int>& indic
     }
     return true;
 }
+// Height of an isotope peak in front of two known ones, from the ratios of such a pattern (Poisson like: each
+// peak is the previous one times a factor that falls by 1/k, so h0 = h1^2 / (2 h2)); no composition model.
+// The measured height may be half to twice that (plus the noise), as overlapping signals add to the peaks.
+bool plausible_start(double h0,double h1,double h2,double noise) {
+    if(h2<=0)return false;
+    const double predicted=h1*h1/(2.*h2);
+    return h0>=.5*predicted-noise && h0<=2.*predicted+noise;
+}
+// The second isotope peak of a species is at most RISE_PER_DA x its mass times as tall as the first (13C, 2H,
+// 17O, 29Si...: about 0.0009 per dalton for carbon only compounds, 0.001 for siloxanes; 1.5x that for peaks that
+// other signals raise). A steeper rise means the first peak is another species (a peak of an envelope a few
+// daltons lighter), not the monoisotopic peak; no composition model, only this upper bound.
+constexpr double RISE_PER_DA=.0015;
+// Profile peaks are compared by their mean heights above the local baseline (area / half height width: a
+// small peak's apex includes the baseline under it, and a broad low bump has a large area), centroids by their
+// heights.
+bool rise_ok(const std::vector<DirectPeak>& peaks,int first,int second,int z) {
+    const double bound=std::max(.05,RISE_PER_DA*z*peaks[first].mz),noise=std::max(noise_at(first),noise_at(second));
+    const auto& a=peaks[first];const auto& b=peaks[second];
+    const double wa=a.last_mz-a.first_mz,wb=b.last_mz-b.first_mz;
+    if(wa>0 && wb>0 && a.area>0 && b.area>0)return b.area/wb<=bound*a.area/wa+3.*noise;
+    return b.height<=bound*a.height+3.*noise;
+}
+// A peak whose mean height above the local baseline (area / half height width) is SEED_SNR times the noise
+// (always for centroids, whose noise is not known).
+bool clear_peak(const std::vector<DirectPeak>& peaks,int k) {
+    const double w=peaks[k].last_mz-peaks[k].first_mz;
+    return w<=0 || noise_at(k)<=0 || peaks[k].area/w>=SEED_SNR*noise_at(k);
+}
 int nearest(const std::vector<DirectPeak>& peaks,double value,double tolerance) {
     auto it=std::lower_bound(peaks.begin(),peaks.end(),value-tolerance,
                             [](const DirectPeak& a,double b){return a.mz<b;});
@@ -420,6 +449,27 @@ API int poly_charge_find(const double* x,const double* y,int n,const ChargeParam
             if(!taken.empty() && !trim_ends(c,taken))continue;
         }
         {
+            // A first peak much lower than the second is another species (see rise_ok): the envelope starts
+            // after it. Too few peaks left: no envelope of this charge here.
+            bool valid=true;
+            while(valid && c.indices.size()>=2 && !rise_ok(peaks,c.indices[0],c.indices[1],c.z)) {
+                if(int(c.indices.size())-1<p.min_isotopes)valid=false;
+                else c.indices.erase(c.indices.begin());
+            }
+            if(!valid)continue;
+        }
+        if(int(c.indices.size())>p.min_isotopes) {
+            // A group that dips and rises at its start (its first peak lower than the free strong peak one
+            // spacing before and than its own second peak) is two envelopes: the first peak is the second isotope
+            // peak of the free one (a species two daltons lighter, say); this one starts at its second peak.
+            const double step=spacing/c.z,tol=std::min(p.isotope_tolerance,step*.10);
+            const int k0=c.indices[0],k1=c.indices[1];
+            const int q=nearest(peaks,peaks[k0].mz-step,2*tol);
+            if(q>=0 && q<k0 && !used[q] && seeds[q] && peaks[q].height>=peaks[k0].height &&
+               peaks[k1].height>peaks[k0].height && rise_ok(peaks,q,k0,c.z))
+                c.indices.erase(c.indices.begin());
+        }
+        {
             // Weak end peaks of this group that are a larger part of a group of another charge belong to that
             // group (the last isotope peaks of a strong +1 envelope running into a weak +2 envelope).
             std::set<int> near,yield;
@@ -435,6 +485,30 @@ API int poly_charge_find(const double* x,const double* y,int n,const ChargeParam
             }
             Candidate trimmed=c;
             if(!yield.empty() && trim_ends(trimmed,yield))c=std::move(trimmed);
+        }
+        {
+            // The first isotope peak of an envelope is the monoisotopic one. Overlapping signals can move a
+            // neighbouring peak by a few hundredths, so the spacing to M misses the narrow window of sequence() and
+            // the envelope starts at M+1 (neutral mass 1.0034 Da too high). Take the peak one isotope spacing before
+            // the start when it is free (in no group, nobody else's peak), measured like the others, not much taller
+            // than the next peak, not a stub of it, and the pattern stays unimodal.
+            const double step=spacing/c.z,reach=std::min(4.*p.isotope_tolerance,step*.1);
+            for(int again=0;again<2 && c.indices.size()>=3;++again) {
+                const int first=c.indices.front();
+                const int k=nearest(peaks,peaks[first].mz-step,reach);
+                if(k<0 || k>=first || used[k] || !touching[k].empty() ||
+                   peaks[k].height<.25*peaks[first].height || peaks[k].height>1.5*peaks[first].height ||
+                   !rise_ok(peaks,k,first,c.z) ||
+                   // (a second step back, when overlap also moved M+1, needs a steeper rise and no noise allowance)
+                   (again && peaks[k].height>.5*peaks[first].height) ||
+                   !plausible_start(peaks[k].height,peaks[first].height,peaks[c.indices[1]].height,
+                                    again?0.:2.*std::max(noise_at(k),noise_at(first))) ||
+                   (p.profile && !seeds[k] &&
+                    !profile_support(peaks[k],peaks[first].area,peaks[first].last_mz-peaks[first].first_mz)))break;
+                std::vector<int> longer(c.indices);longer.insert(longer.begin(),k);
+                if(!unimodal(peaks,longer))break;
+                c.indices=std::move(longer);
+            }
         }
         std::set<int> contenders;
         for(int k:c.indices)contenders.insert(touching[k].begin(),touching[k].end());
@@ -467,6 +541,69 @@ API int poly_charge_find(const double* x,const double* y,int n,const ChargeParam
         const bool outside=c.z<p.charge_min || c.z>p.charge_max;
         rows.push_back(summarize(peaks,group,alternative||outside?0:c.z,alternative?1:outside?5:0,
                                  alternative?alternative:outside?c.z:0,p,c.error,false));members.push_back(std::move(group));
+    }
+    {
+        // Envelopes under a larger one: the isotope peaks after the first two belong to (or sit under) another
+        // envelope, or overlapping signals moved them a few hundredths, so no group of min_isotopes free peaks
+        // on the lattice exists (a species two daltons lighter than a strong one: its M+2 is the other's M).
+        // A strong free peak, a free second isotope peak of a plausible height, and peaks present at the next
+        // positions (anyone's, within the wider reach the monoisotopic step back uses) make an envelope of its
+        // own peaks, if exactly one charge of the range fits.
+        std::vector<int> order;
+        for(size_t i=0;i<peaks.size();++i)if(seeds[i] && !used[i])order.push_back(int(i));
+        std::sort(order.begin(),order.end(),[&](int a,int b){return peaks[a].height>peaks[b].height;});
+        for(int i:order) {
+            if(used[i])continue;
+            std::vector<int> found;int fz=0,fits=0;
+            const double width=peaks[i].last_mz-peaks[i].first_mz;
+            // (charges outside the range are looked at too: their peaks must not be read as an envelope in it)
+            for(int z=1;z<=std::min(100,std::max(p.charge_max,6));++z) {
+                const double step=spacing/z,tol=std::min(p.isotope_tolerance,step*.10),
+                             reach=std::min(4.*p.isotope_tolerance,step*.1);
+                if(p.profile && width>0 && step<width*.85)continue;
+                // A free peak of a plausible height one spacing before (weaker than the cutoff for strong peaks)
+                // is the first isotope peak; the strong one is then the second (one step only: a peak like that
+                // before it too makes no clear start).
+                int s=i;
+                const int before=nearest(peaks,peaks[i].mz-step,2*tol);
+                if(before>=0 && before<i && !used[before] && peaks[before].height>=.3*peaks[i].height &&
+                   rise_ok(peaks,before,i,z) &&
+                   (!p.profile || seeds[before] || profile_support(peaks[before],peaks[i].area,width))) {
+                    const int earlier=nearest(peaks,peaks[before].mz-step,2*tol);
+                    if(earlier>=0 && earlier<before && !used[earlier] && peaks[earlier].height>=.3*peaks[before].height &&
+                       rise_ok(peaks,earlier,before,z))continue;
+                    s=before;
+                }
+                const int j=s==i?nearest(peaks,peaks[i].mz+step,2*tol):i;
+                if(j<=s || peaks[j].height<.25*peaks[s].height)continue;
+                const double ws=peaks[s].last_mz-peaks[s].first_mz;
+                auto broad=[&](int q){double w=peaks[q].last_mz-peaks[q].first_mz;return ws>0 && w>1.5*ws;};
+                std::vector<int> lattice{s,j};
+                for(int k=2;k<p.min_isotopes && lattice.size()==size_t(k);++k) {
+                    int q=nearest(peaks,peaks[s].mz+k*step,reach);
+                    if(q>lattice.back())lattice.push_back(q);
+                }
+                if(int(lattice.size())<p.min_isotopes)continue;
+                // (peaks of this charge, free or not: another charge fitting too is no clear case)
+                ++fits;
+                // (a broad weak bump is no isotope peak)
+                if(used[j] || z<p.charge_min || z>p.charge_max || !rise_ok(peaks,s,j,z) ||
+                   !clear_peak(peaks,s) || !clear_peak(peaks,j) || (broad(j) && !seeds[j]))continue;
+                if(p.profile && !seeds[j] && !profile_support(peaks[j],peaks[i].area,width))continue;
+                std::vector<int> group{s,j};
+                for(size_t k=2;k<lattice.size();++k) {
+                    const int q=lattice[k];
+                    if(used[q] || std::abs(peaks[q].mz-peaks[group.back()].mz-step)>2*tol ||
+                       (p.profile && !seeds[q] && !profile_support(peaks[q],peaks[i].area,width)))break;
+                    group.push_back(q);
+                }
+                if(!unimodal(peaks,group))continue;
+                found=group;fz=z;
+            }
+            if(fits!=1 || !fz)continue;
+            for(int k:found)used[k]=1;
+            rows.push_back(summarize(peaks,found,fz,0,0,p,0,false));members.push_back(found);
+        }
     }
     for(size_t i=0;i<peaks.size();++i)if(!used[i] && seeds[i]) {
         rows.push_back(summarize(peaks,{int(i)},0,2,0,p));

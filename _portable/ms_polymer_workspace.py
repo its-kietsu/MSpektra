@@ -16,7 +16,7 @@ from ms_polymer_results import PolymerResults,capture_source,file_key,same_file,
 COLOURS=(C['accent'],'#168579','#9D58B1','#9B6A20')  # charges +1, +2, +3, +4 (and on)
 SERIES_COLOURS=('#2A62C4','#D97706','#7C3AED','#0E9F6E','#DB2777','#0891B2','#65A30D','#9B6A20')
 GREY='#AEB6C2'
-SECTIONS=('Charge states','Repeat units','Mass distribution')
+RB_H=24  # (DIP: a row of small ribbon buttons)
 MASS_NAMES=['First isotope peak','Tallest isotope peak','Mean of the isotope peaks']
 
 def charge_colour(z):return COLOURS[(abs(int(z))-1)%len(COLOURS)] if z else GREY
@@ -126,6 +126,7 @@ def open_workspace(tab,page=0,use_deconvolution=False):
         dock.visible=True;dock.refresh_inputs();dock.set_page(page)
         dock._watch();dock.fit_layout(True);tab._layout_rows();dock.Show()
         dock.refill();dock.redraw()
+        if callable(getattr(tab,'keep_in_view',None)):tab.keep_in_view([dock])  # (a small window: scrolled to it)
         if use_deconvolution:dock.use_deconvolution()
         return dock
     except (ValueError,RuntimeError,OSError) as ex:
@@ -342,8 +343,19 @@ class PeakCharge(wx.Dialog):
         if not math.isfinite(mass) or mass==0:raise ValueError('Enter a finite carrier mass')
         return self.sign*self.charge.GetValue(),label,mass,self.isotopes.GetValue()
 
+class FlatPlot(U.PlotCard):
+    """A plot inside the polymer tile: no edge and no title (the legend in its first row; the toggles above name
+    it). The title stays empty when a saved view is put back (4.57 named these plots)."""
+    title=property(lambda self:'',lambda self,value:None)
+    def _paint(self,e):
+        if self.pair is not None:return U.PlotCard._paint(self,e)
+        U.paint_card(self,self._hh,U.inner_frame,self._draw_header,self._header_key())
+
 class PolymerWorkspace(PolymerResults):
     show_empty=True
+    BODY_DIP=300  # (height of the plot and the table: the plots with their axis titles)
+    SIDE_DIP=12  # (the space inside the edge of the tile)
+    LIST_DIP=184  # (a list of suggestions: seven rows and more by scrolling)
     def __init__(self,tab):
         wx.Panel.__init__(self,tab.rows,style=wx.BORDER_NONE)
         self.tab=tab;self.SetBackgroundColour(C['bg']);self.SetFont(ui_font(9))
@@ -353,144 +365,192 @@ class PolymerWorkspace(PolymerResults):
         self.options=dict(Q.DEFAULTS);self._method=dict(getattr(tab,'_polymer_method',{}))
         self._profile_explicit='profile' in self._method
         self._carrier_chosen=bool(self._method.get('carrier_label'))
-        self._work_token=0;self._exact_fields={};self.unavailable='';self._page=0;self._layout=None
-        self._said=None;self.charge_values=[None,'uncertain'];self._plot_groups=[]
+        self._work_token=0;self._exact_fields={};self.unavailable='';self._layout=None
+        self._said=None;self.charge_values=[None,'uncertain'];self._plot_groups=[];self._assigned_rows=[]
+        self._plot=0;self._table=1  # plot: 0 neutral masses, 1 mass distribution; table: 0 series, 1 charge assignments
+        self._base=None;self._base_key=None
         self.carriers=carriers(1)
-        self._build_header()
-        self.pages=[self._build_charge_page(),self._build_repeat_page(),self._build_dist_page()]
-        outer=wx.BoxSizer(wx.VERTICAL)
-        outer.Add(self.header,0,wx.EXPAND|wx.BOTTOM,self.FromDIP(10))
-        for p in self.pages:outer.Add(p,1,wx.EXPAND)
-        self.SetSizer(outer);self.SetMinSize(self.FromDIP(wx.Size(100,200)))
-        self.set_method(self._method);self.refresh_inputs();self._watch();self.set_page(0);self.Hide()
+        card=self.header=self.card=PW.Card(self);card.SetFont(ui_font(9));card.no_tile_menu=True
+        self._build_header();self._build_finder();self._build_body()
+        side,gap=self.FromDIP(self.SIDE_DIP),self.FromDIP(8);box=wx.BoxSizer(wx.VERTICAL)
+        for w,top in [(self.flow,side),(PW.Line(card),gap),(self.finder,gap),(PW.Line(card),gap),(self.split,gap)]:
+            box.Add(w,1 if w is self.split else 0,wx.EXPAND|wx.TOP,top)
+        box.AddSpacer(side)
+        frame=wx.BoxSizer(wx.HORIZONTAL);frame.Add(box,1,wx.EXPAND|wx.LEFT|wx.RIGHT,side)
+        card.SetSizer(frame)
+        outer=wx.BoxSizer(wx.VERTICAL);outer.Add(card,1,wx.EXPAND);self.SetSizer(outer)
+        self.SetMinSize(self.FromDIP(wx.Size(100,200)))
+        # the wheel over the tile scrolls the column of tiles
+        for w in [card,self.flow,self.finder,self.split,self.plot_column,self.table_column]+self.groups_panels:
+            w.Bind(wx.EVT_MOUSEWHEEL,lambda e,w=w:U.forward_wheel(w,e))
+        for c in (self.mass_card,self.dist_card):c.Bind(wx.EVT_SHOW,lambda e,c=c:(e.Skip(),wx.CallAfter(self._shown_plot,c)))
+        self.set_method(self._method);self.refresh_inputs();self._watch();self.set_views(0,1);self.Hide()
 
     # ------------------------------------------------------------------ building
-    def _build_header(self):
-        h=self.header=PW.Card(self);gap=self.FromDIP(8)
-        title=PW.label(h,'Polymer analysis',bold=True)
-        self.runs=wx.Choice(h);self.runs.SetMinSize(self.FromDIP(wx.Size(170,-1)))
-        self.z0=wx.SpinCtrl(h,min=1,max=100,initial=1,size=self.FromDIP(wx.Size(54,-1)))
-        self.z1=wx.SpinCtrl(h,min=1,max=100,initial=3,size=self.FromDIP(wx.Size(54,-1)))
-        self.carrier=wx.Choice(h);self.carrier.SetMinSize(self.FromDIP(wx.Size(96,-1)))
-        self.find_btn=U.flat(h,'Find species','primary',handler=self.find_species)
-        self.settings_btn=U.flat(h,'⚙',handler=self.settings,tooltip='Settings',padx=10)
-        self.more_btn=U.flat(h,'•••',handler=lambda e:self.more_menu(),tooltip='More',padx=10)
-        row=wx.BoxSizer(wx.HORIZONTAL)
-        row.Add(title,0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(14))
-        row.Add(self.runs,0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(18))
-        for w,space in [(PW.label(h,'Charges'),6),(self.z0,6),(PW.label(h,'to'),6),(self.z1,18),
-                        (PW.label(h,'Carrier'),6),(self.carrier,14),(self.find_btn,0)]:
+    def _panel(self,parent):
+        p=wx.Panel(parent,style=wx.BORDER_NONE);p.SetBackgroundColour(PW.WHITE);p.SetFont(ui_font(9))
+        self.groups_panels.append(p);return p
+    def _add(self,row,parent,items):
+        for w,space in items:
+            if isinstance(w,str):w=PW.label(parent,w)
             row.Add(w,0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(space))
-        row.AddStretchSpacer(1)
-        row.Add(self.settings_btn,0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(6))
-        row.Add(self.more_btn,0,wx.ALIGN_CENTER_VERTICAL)
-        self.section=U.Segmented(h,list(SECTIONS),self.section_changed,points=9,weights=(400,400))
-        self.charge=wx.Choice(h,choices=['All charges','Uncertain']);self.charge.SetSelection(0)
-        self.family=wx.Choice(h,choices=['All series']);self.family.SetSelection(0)
-        for c in (self.charge,self.family):c.SetMinSize(self.FromDIP(wx.Size(110,-1)))
-        self.note=PW.label(h,'',muted=True)
-        row2=wx.BoxSizer(wx.HORIZONTAL)
-        row2.Add(self.section,0,wx.ALIGN_CENTER_VERTICAL)
-        row2.AddStretchSpacer(1)
-        for w,space in [(PW.label(h,'Show',muted=True),6),(self.charge,6),(self.family,12),(self.note,0)]:
-            row2.Add(w,0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(space))
-        box=wx.BoxSizer(wx.VERTICAL)
-        box.Add(row,0,wx.EXPAND|wx.LEFT|wx.RIGHT|wx.TOP,self.FromDIP(12))
-        box.Add(row2,0,wx.EXPAND|wx.LEFT|wx.RIGHT|wx.TOP|wx.BOTTOM,self.FromDIP(10))
-        h.SetSizer(box)
+
+    def _build_header(self):
+        """The tool row: the run and Find species, then what is shown (charge, series); settings at the right. A
+        narrow window puts the second part on a line of its own."""
+        self.groups_panels=[]
+        self.flow=PW.Flow(self.card,gap=9,vgap=8,lines=False);self.flow.on_height=self._height_changed
+        g1=self._panel(self.flow);g2=self._panel(self.flow);g3=self._panel(self.flow)
+        title=PW.label(g1,'Polymer analysis',bold=True)
+        self.runs=wx.Choice(g1);self.runs.SetMinSize(self.FromDIP(wx.Size(170,-1)))
+        self.z0=wx.SpinCtrl(g1,min=1,max=100,initial=1,size=self.FromDIP(wx.Size(54,-1)))
+        self.z1=wx.SpinCtrl(g1,min=1,max=100,initial=3,size=self.FromDIP(wx.Size(54,-1)))
+        self.carrier=wx.Choice(g1);self.carrier.SetMinSize(self.FromDIP(wx.Size(96,-1)))
+        self.find_btn=U.flat(g1,'Find species','primary',handler=self.find_species)
+        row=wx.BoxSizer(wx.HORIZONTAL)
+        self._add(row,g1,[(title,14),(self.runs,18),('Charges',6),(self.z0,6),('to',6),(self.z1,18),('Carrier',6),
+                          (self.carrier,14),(self.find_btn,0)])
+        g1.SetSizer(row)
+        # what is shown: the charge (everything below shows its masses) and the series
+        self.charge=PW.KeyChoice(g2,self.filter_changed);self.charge.SetItems(['All charges'],['All · 0 masses'])
+        self.family=wx.Choice(g2,choices=['All series']);self.family.SetSelection(0)
+        row=wx.BoxSizer(wx.HORIZONTAL)
+        self._add(row,g2,[(PW.label(g2,'Show',muted=True),6),(self.charge.choice,6),(self.family,0)])
+        g2.SetSizer(row)
+        self.settings_btn=U.flat(g3,'⚙',handler=self.settings,tooltip='Settings',padx=10)
+        self.more_btn=U.flat(g3,'•••',handler=lambda e:self.more_menu(),tooltip='More',padx=10)
+        row=wx.BoxSizer(wx.HORIZONTAL);self._add(row,g3,[(self.settings_btn,6),(self.more_btn,0)]);g3.SetSizer(row)
+        self.tool_groups=[g1,g2];self.flow.right=g3;self.flow.set_items(self.tool_groups)
         self.carrier.Bind(wx.EVT_CHOICE,self.carrier_changed)
         self.runs.Bind(wx.EVT_CHOICE,lambda e:self.select_series(self.runs.GetSelection()))
-        self.charge.Bind(wx.EVT_CHOICE,self.filter_changed);self.family.Bind(wx.EVT_CHOICE,self.filter_changed)
         for c in (self.z0,self.z1):c.Bind(wx.EVT_SPINCTRL,self.charges_changed)
+        self.family.Bind(wx.EVT_CHOICE,self.filter_changed)
 
-    def _build_charge_page(self):
-        page=wx.Panel(self);page.SetBackgroundColour(C['bg'])
-        self.split=U.SplitBox(page,wx.HORIZONTAL,min_size=120)
-        self.mass_card=U.PlotCard(self.split,'Neutral masses','',mode='zoom');self.mass_card.no_tile_menu=True
+    def _suggestions(self,parent,columns,kind):
+        t=PW.Table(parent,'',columns,empty='Press Find',flat=True,note=True)
+        t.SetMinSize(wx.Size(-1,self.FromDIP(self.LIST_DIP)))
+        t.on_select=lambda i:self.use_candidate(i,kind);t.on_activate=lambda i:self.use_candidate(i,kind)
+        t.extra_menu=lambda:[('Use this mass',lambda:self.use_candidate(t.selected()[0],kind) if t.selected() else None)]
+        return t
+
+    def _build_finder(self):
+        """The series finder: repeat unit and end groups, each with its suggestions; the tolerance and Assign series,
+        the weighting of the mass distribution and its result."""
+        f=self.finder=wx.Panel(self.card,style=wx.BORDER_NONE);f.SetBackgroundColour(PW.WHITE);f.SetFont(ui_font(9))
+        F=FIELD_DEFAULTS;size=self.FromDIP(wx.Size(76,-1));C_=PW.Column
+        # repeat unit (the range searched is in the settings)
+        left=self._panel(f)
+        self.repeat=wx.TextCtrl(left,value=F['repeat'],size=size);self.repeat.SetToolTip('Da')
+        self.lo=wx.TextCtrl(left,value=F['search_min'],size=self.FromDIP(wx.Size(60,-1)))
+        self.hi=wx.TextCtrl(left,value=F['search_max'],size=self.FromDIP(wx.Size(60,-1)))
+        for c in (self.lo,self.hi):c.Hide()
+        self.find_repeat_btn=U.flat(left,'Find',height=26,padx=10,handler=self.find_repeats,tooltip='Find repeat units')
+        self.repeat_list=self._suggestions(left,[C_('mass','Mass (Da)','right',80,1.),C_('support','Gaps','right',50,.5),
+                                                 C_('single','Single gaps','right',70,.5)],'repeat')
+        # end groups
+        mid=self._panel(f)
+        self.ends=wx.TextCtrl(mid,value=F['ends'],size=size);self.ends.SetToolTip('Da')
+        self.find_ends_btn=U.flat(mid,'Find',height=26,padx=10,handler=self.find_offsets,tooltip='Find end groups')
+        self.ends_list=self._suggestions(mid,[C_('mass','Mass (Da)','right',80,1.),C_('support','Masses','right',60,.5)],'offset')
+        for p,label,field,btn,lst in ((left,'Repeat unit',self.repeat,self.find_repeat_btn,self.repeat_list),
+                                      (mid,'End groups',self.ends,self.find_ends_btn,self.ends_list)):
+            row=wx.BoxSizer(wx.HORIZONTAL);name=PW.label(p,label);name.SetFont(ui_font(9,600))
+            self._add(row,p,[(name,8),(field,6),(btn,0)])
+            box=wx.BoxSizer(wx.VERTICAL);box.Add(row,0);box.Add(lst,1,wx.EXPAND|wx.TOP,self.FromDIP(6));p.SetSizer(box)
+        # tolerance and Assign series; the mass distribution
+        right=self._panel(f)
+        self.tol=wx.TextCtrl(right,value=F['tolerance'],size=self.FromDIP(wx.Size(56,-1)));self.tol.SetToolTip('Tolerance (Da)')
+        self.assign_btn=U.flat(right,'Assign series','primary',height=26,padx=10,handler=self.assign_series)
+        self.weight=wx.Choice(right,choices=['Area','Height']);self.weight.SetSelection(0)
+        self.basis=wx.Choice(right,choices=['Per molecule','Per mass']);self.basis.SetSelection(0)
+        self.weight.SetToolTip('Abundance from');self.basis.SetToolTip('Count')
+        self.calc_btn=U.flat(right,'Calculate',height=26,padx=10,handler=self.calculate_distribution)
+        self.summary=PW.Summary(right);self.summary.SetFont(ui_font(9,600))
+        r1=wx.BoxSizer(wx.HORIZONTAL);name=PW.label(right,'±');name.SetFont(ui_font(9,600))
+        self._add(r1,right,[(name,6),(self.tol,10),(self.assign_btn,0)])
+        r2=wx.BoxSizer(wx.HORIZONTAL);name=PW.label(right,'Distribution');name.SetFont(ui_font(9,600))
+        self._add(r2,right,[(name,8),(self.weight,6),(self.basis,8),(self.calc_btn,0)])
+        box=wx.BoxSizer(wx.VERTICAL);box.Add(r1,0);box.Add(r2,0,wx.TOP,self.FromDIP(14))
+        box.Add(self.summary,0,wx.TOP|wx.LEFT,self.FromDIP(10));right.SetSizer(box)
+        row=wx.BoxSizer(wx.HORIZONTAL)
+        for k,(p,share) in enumerate(((left,1.),(mid,.8),(right,1.))):
+            if k:row.Add(PW.Line(f,wx.VERTICAL),0,wx.EXPAND|wx.LEFT|wx.RIGHT,self.FromDIP(14))
+            row.Add(p,int(share*10),wx.EXPAND)
+        f.SetSizer(row)
+        for c in (self.repeat,self.ends,self.tol,self.lo,self.hi):c.Bind(wx.EVT_TEXT,self.fields_changed)
+        for c in (self.repeat,self.ends):c.Bind(wx.EVT_KILL_FOCUS,self.format_field)
+        self.weight.Bind(wx.EVT_CHOICE,self.invalidate_distribution);self.basis.Bind(wx.EVT_CHOICE,self.invalidate_distribution)
+
+    def _column(self,parent):
+        p=wx.Panel(parent,style=wx.BORDER_NONE);p.SetBackgroundColour(PW.WHITE);p.SetFont(ui_font(9))
+        top=wx.BoxSizer(wx.HORIZONTAL);box=wx.BoxSizer(wx.VERTICAL)
+        box.Add(top,0,wx.EXPAND|wx.BOTTOM,self.FromDIP(4));p.SetSizer(box)
+        return p,top,box
+
+    def _build_body(self):
+        split=self.split=U.SplitBox(self.card,wx.HORIZONTAL,gap=22,min_size=150);split.SetBackgroundColour(PW.WHITE)
+        split.SetMinSize(wx.Size(-1,self.FromDIP(self.BODY_DIP)))
+        # the plot: neutral masses of the charge chosen, or the mass distribution
+        col,top,box=self._column(split);self.plot_column=col
+        self.plot_buttons=[PW.Toggle(col,'Masses',lambda:self.set_views(plot=0,user=True),icon='ms'),
+                           PW.Toggle(col,'Distribution',lambda:self.set_views(plot=1,user=True),icon='pda')]
+        for k,b in enumerate(self.plot_buttons):top.Add(b,0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(4))
+        self.mass_card=FlatPlot(col,'','',mode='zoom');self.mass_card.no_tile_menu=True
         self.mass_card.on_pick=self.pick_mass;self.mass_card.on_view=self.draw_mass
         self.mass_card.on_menu=lambda x,y:[('Show all masses',self.mass_card.reset_view)]
         self.mass_card.image_name=lambda:self.image_name('neutral_masses')
+        card=self.dist_card=FlatPlot(col,'','',mode='zoom');card.no_tile_menu=True
+        card.on_menu=lambda x,y:[('Show all masses',card.reset_view)]
+        card.image_name=lambda:self.image_name('mass_distribution')
+        for c in (self.mass_card,self.dist_card):box.Add(c,1,wx.EXPAND)
+        # the series assigned, or the charge assignments of every peak
         C_=PW.Column
-        self.chain_table=PW.Table(self.split,'Charge assignments',[
+        col,top,box=self._column(split);self.table_column=col
+        self.table_buttons=[PW.Toggle(col,'Series',lambda:self.set_views(table=0,user=True),icon='list'),
+                            PW.Toggle(col,'Charge assignments',lambda:self.set_views(table=1,user=True),icon='table')]
+        for b in self.table_buttons:top.Add(b,0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(4))
+        self.table_info=self._info_label(col)
+        top.Add(self.table_info,1,wx.ALIGN_CENTER_VERTICAL|wx.LEFT,self.FromDIP(6))
+        self.assign_table=PW.Table(col,'Series',[C_('series','Series','left',90,2.,swatch=True),C_('n','Units (n)','right',56,.4),
+            C_('mass','Mass (Da)','right',80,1.),C_('error','Error (Da)','right',66,.6)],empty='Assign a series to list its chains',flat=True)
+        self.assign_table.on_select=self.select_assignment
+        self.assign_table.extra_menu=lambda:[('Remove this series',self.remove_series)] if self.family.GetSelection()>0 else []
+        self.chain_table=PW.Table(col,'Charge assignments',[
             C_('use','Use','center',30,0,check=True),C_('mass','Mass (Da)','right',70,.6),C_('z','z','center',34,.2),
             C_('mz','m/z','right',70,.6),C_('height','Height','right',56,.3),C_('iso','Isotopes','right',62,.2),
             C_('series','Series','left',110,3.,swatch=True),C_('n','Units (n)','right',56,.4,shown=False,optional=True),
             C_('area','Area','right',60,.6,shown=False,optional=True),
             C_('response','Response factor','right',70,.5,shown=False,optional=True),
             C_('state','Assignment','left',80,.8,shown=False,optional=True)],
-            multi=True,empty='Find species to list their charge states')
+            multi=True,empty='Find species to list their charge states',flat=True)
         t=self.chain_table
         t.on_select=self.select_table;t.on_check=self.check_row;t.on_cell=self.table_cell;t.on_delete=self.delete_assignments
         t.on_activate=lambda n:self.open_charge_menu_for_row(self.shown[n]) if 0<=n<len(self.shown) else None
         t.extra_menu=lambda:[('Set charge',self.charge_items(self.chain)) if self.chain is not None else ('Set charge',None),
             ('Include or exclude',self.toggle_selected),('Response factor…',self.edit_response),(None,None),
             ('Delete selected peaks',self.delete_assignments),('Export Excel…',self.export)]
-        self.split.set_panes([self.mass_card,self.chain_table],[1.15,1.])
-        s=wx.BoxSizer(wx.VERTICAL);s.Add(self.split,1,wx.EXPAND);page.SetSizer(s)
-        return page
+        for table in (self.assign_table,self.chain_table):
+            table.on_info=lambda text,table=table:self._table_info(table,text);box.Add(table,1,wx.EXPAND)
+        split.set_panes([self.plot_column,self.table_column],[1.1,1.])
 
-    def _build_repeat_page(self):
-        page=wx.Panel(self);page.SetBackgroundColour(C['bg'])
-        self.repeat_split=U.SplitBox(page,wx.HORIZONTAL,min_size=120)
-        card=self.series_card=PW.Card(self.repeat_split,'Find series',top=30);card.no_tile_menu=True
-        F=FIELD_DEFAULTS;size=self.FromDIP(wx.Size(84,-1))
-        self.repeat=wx.TextCtrl(card,value=F['repeat'],size=size);self.ends=wx.TextCtrl(card,value=F['ends'],size=size)
-        self.tol=wx.TextCtrl(card,value=F['tolerance'],size=size)
-        self.lo=wx.TextCtrl(card,value=F['search_min'],size=self.FromDIP(wx.Size(60,-1)))
-        self.hi=wx.TextCtrl(card,value=F['search_max'],size=self.FromDIP(wx.Size(60,-1)))
-        # three rows (a field and its button each): it fits a low tile; the range searched for repeat units
-        # is set in the settings
-        self.assign_btn=U.flat(card,'Assign series','primary',height=28,handler=self.assign_series)
-        grid=wx.FlexGridSizer(cols=3,hgap=self.FromDIP(10),vgap=self.FromDIP(7))
-        for text,c,b in [('Repeat unit (Da)',self.repeat,U.flat(card,'Find',height=28,handler=self.find_repeats,tooltip='Find repeat units')),
-                         ('End groups (Da)',self.ends,U.flat(card,'Find',height=28,handler=self.find_offsets,tooltip='Find end groups')),
-                         ('Tolerance (Da)',self.tol,self.assign_btn)]:
-            grid.Add(PW.label(card,text),0,wx.ALIGN_CENTER_VERTICAL);grid.Add(c,0,wx.ALIGN_CENTER_VERTICAL)
-            grid.Add(b,0,wx.EXPAND)
-        for c in (self.lo,self.hi):c.Hide()
-        box=wx.BoxSizer(wx.VERTICAL);box.AddSpacer(self.FromDIP(34))
-        box.Add(grid,0,wx.LEFT|wx.RIGHT|wx.BOTTOM,self.FromDIP(14));card.SetSizer(box)
-        C_=PW.Column
-        self.candidates=PW.Table(self.repeat_split,'Candidates',[C_('mass','Mass (Da)','right',80,1.),
-            C_('support','Gaps','right',50,.5),C_('single','Single gaps','right',70,.5)],empty='Find repeat units first')
-        self.candidates.on_activate=self.use_candidate
-        self.candidates.extra_menu=lambda:[('Use this mass',lambda:self.use_candidate(self.candidates.selected()[0]) if self.candidates.selected() else None)]
-        self.assign_table=PW.Table(self.repeat_split,'Series',[C_('series','Series','left',90,2.,swatch=True),C_('n','Units (n)','right',56,.4),
-            C_('mass','Mass (Da)','right',80,1.),C_('error','Error (Da)','right',66,.6)],empty='Assign a series to list its chains')
-        self.assign_table.on_select=self.select_assignment
-        self.assign_table.extra_menu=lambda:[('Remove this series',self.remove_series)] if self.family.GetSelection()>0 else []
-        self.repeat_split.set_panes([card,self.candidates,self.assign_table],[.95,.8,1.25])
-        s=wx.BoxSizer(wx.VERTICAL);s.Add(self.repeat_split,1,wx.EXPAND);page.SetSizer(s)
-        for c in (self.repeat,self.ends,self.tol,self.lo,self.hi):c.Bind(wx.EVT_TEXT,self.fields_changed)
-        for c in (self.repeat,self.ends):c.Bind(wx.EVT_KILL_FOCUS,self.format_field)
-        return page
-
-    def _build_dist_page(self):
-        page=wx.Panel(self);page.SetBackgroundColour(C['bg'])
-        self.dist_split=U.SplitBox(page,wx.HORIZONTAL,min_size=120)
-        card=self.dist_card=U.PlotCard(self.dist_split,'Mass distribution','',mode='zoom');card.no_tile_menu=True
-        card.on_menu=lambda x,y:[('Show all masses',card.reset_view)]
-        card.image_name=lambda:self.image_name('mass_distribution')
-        bar=self.dist_bar=wx.Panel(card);bar.SetBackgroundColour(PW.WHITE)
-        self.weight=wx.Choice(bar,choices=['Peak area','Peak height']);self.weight.SetSelection(0)
-        self.basis=wx.Choice(bar,choices=['Signal per molecule','Signal per mass']);self.basis.SetSelection(0)
-        row=wx.BoxSizer(wx.HORIZONTAL)
-        for w,space in [(PW.label(bar,'Abundance from',muted=True),6),(self.weight,14),(PW.label(bar,'Count',muted=True),6),
-                        (self.basis,14),(U.flat(bar,'Calculate',height=26,handler=self.calculate_distribution),0)]:
-            row.Add(w,0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(space))
-        bar.SetSizer(row)
-        card.Bind(wx.EVT_SIZE,lambda e:(self._place_dist_bar(),e.Skip()))
-        self.summary=PW.ResultCard(self.dist_split);self.summary.no_tile_menu=True
-        self.dist_split.set_panes([card,self.summary],[2.6,1.])
-        s=wx.BoxSizer(wx.VERTICAL);s.Add(self.dist_split,1,wx.EXPAND);page.SetSizer(s)
-        self.weight.Bind(wx.EVT_CHOICE,self.invalidate_distribution);self.basis.Bind(wx.EVT_CHOICE,self.invalidate_distribution)
-        return page
-
-    def _place_dist_bar(self):
-        card,bar=self.dist_card,self.dist_bar
-        dc=wx.ClientDC(card);dc.SetFont(ui_font(10,700))
-        x=self.FromDIP(14)+dc.GetTextExtent(card.title)[0]+self.FromDIP(18)
-        w,h=bar.GetBestSize();bar.SetSize(x,self.FromDIP(3),min(w,max(0,card.GetClientSize()[0]-x-self.FromDIP(10))),h)
+    def _shown_plot(self,card):
+        """A plot shown again: drawn at its size now."""
+        if not self or self.IsBeingDeleted() or not card.IsShown():return
+        card.place()
+        if card is self.dist_card:self.draw_distribution()
+        else:self.draw_mass()
+    def steps_changed(self):
+        """A control of the tool row or the finder changed its width (charge and series names, the result)."""
+        for p in getattr(self,'groups_panels',[]):p.InvalidateBestSize();p.Layout()
+        self.finder.Layout();self.flow.place()
+    def _info_label(self,parent):
+        t=wx.StaticText(parent,label='',style=wx.ST_ELLIPSIZE_END)
+        t.SetBackgroundColour(PW.WHITE);t.SetForegroundColour(wx.Colour(C['muted']));t.SetMinSize(wx.Size(self.FromDIP(20),-1))
+        return t
+    def _set_info(self,label,text):
+        if label.GetLabel()!=text:label.SetLabel(text);label.GetContainingSizer().Layout()
+    def _table_info(self,table,text):
+        if table is (self.assign_table,self.chain_table)[self._table]:self._set_info(self.table_info,text)
 
     def image_name(self,what):
         s=self.current()
@@ -499,45 +559,92 @@ class PolymerWorkspace(PolymerResults):
 
     # ------------------------------------------------------------------ layout in HRMS Analysis
     def fit_layout(self,on):
-        """While the analysis is open the column of tiles fits the window: a low chromatogram, the spectrum and
-        this tile. Closing it gives back the tile heights of before."""
+        """While the analysis is open this tile has its own height (it does not fit the window): the chromatogram
+        and the spectrum keep the heights they have without it (taller when the window has room) and the column
+        scrolls when the window is small. Closing it gives back the tile heights of before."""
         rows=self.tab.rows
         keys=('frac','fit_share','fit_first','fit_floor','fit_label','mode_key','default_mode')
         if on and self._layout is None:
             self._layout={k:copy.copy(getattr(rows,k)) for k in keys}
             rows.frac={};rows.fit_share=self._fit_share;rows.fit_floor=0
-            rows.fit_label='Polymer analysis fills the window'
+            rows.fit_label='Plots fill the window'
             rows.mode_key,rows.default_mode='polymer_tile_mode','two'
         elif not on and self._layout is not None:
             for k,v in self._layout.items():setattr(rows,k,v)
             self._layout=None
         elif on:
             rows.frac={}  # (tile heights of another layout, such as those of a saved analysis)
+        self._base_key=None
         try:rows.relayout();self.tab.scroller.refit();self.tab.scroller.Scroll(0,0)
         except (RuntimeError,AttributeError):pass
+    def _base_heights(self):
+        """{tile: height} of the other tiles as they are without this tile (the layout of before)."""
+        rows=self.tab.rows;lay=self._layout
+        if lay is None:return {}
+        panes=[p for p in rows.panes if p is not self];weights=[w for p,w in zip(rows.panes,rows.weights) if p is not self]
+        st=U.settings()
+        key=(rows.view_h,rows.GetClientSize()[0],tuple(id(p) for p in panes),st.get(lay['mode_key']),st.get('tile_scale'),
+             tuple(sorted((id(p),f) for p,f in lay['frac'].items())))
+        if key==self._base_key:return self._base
+        saved={k:getattr(rows,k) for k in tuple(lay)+('panes','weights')}
+        try:
+            for k,v in lay.items():setattr(rows,k,v)
+            rows.panes,rows.weights=panes,weights
+            hs=rows.heights()
+        finally:
+            for k,v in saved.items():setattr(rows,k,v)
+        self._base,self._base_key=dict(zip(panes,hs)),key
+        return self._base
     def _fit_share(self,pane):
-        """(share, pixels) of the tiles that fill the window: a low chromatogram, the spectrum, this tile."""
-        tab=self.tab;H=max(1,tab.rows.view_h)
-        if pane is self:
-            return 1.6,self.header.GetBestSize()[1]+self.FromDIP(120)
-        chroms=tab._chrom_tiles();specs=tab._spec_tiles()
+        """(share, pixels): this tile its own height; the chromatogram its height of before; the spectrum at least a
+        readable height and the room the window has left (never lower to make room for this tile: the column
+        scrolls); the other tiles their heights of before."""
+        tab=self.tab;rows=tab.rows
+        if pane is self:return 0,self.tile_height()
         n=len(getattr(pane,'cards',[]) or [1])
-        if pane in chroms:
-            return 1e-4,max(tab.rows.min,min(self.FromDIP(140),int(.2*H)))*n
-        if pane in specs:
-            return 1.0*n,max(tab.rows.min,self.FromDIP(120))*n
-        return None
-    def tile_min_height(self):
-        return self.header.GetBestSize()[1]+self.FromDIP(160)
+        if pane in tab._chrom_tiles():  # (its height of before: never a thin strip)
+            return 1e-6,self._base_heights().get(pane) or max(rows.min,self.FromDIP(150))*n
+        if pane in tab._spec_tiles():
+            return 1.0*n,max(rows.min,self.FromDIP(230 if n==1 else 170))*n
+        h=self._base_heights().get(pane)
+        return None if h is None else (0,h)
+    def tile_height(self):
+        """The height of this tile: the tool row (on two lines when the window is narrow), the series finder, the
+        plot and the table."""
+        w=self.GetSize()[0] if self.GetSize()[0]>50 else self.tab.rows.GetClientSize()[0]
+        inner=max(1,w-2*self.FromDIP(self.SIDE_DIP))
+        self.flow.SetMinSize(wx.Size(-1,self.flow.height_for(inner)))
+        return self.card.GetSizer().CalcMin()[1]
+    def _height_changed(self):
+        """The tool row needs another height (a narrower window): the column is laid out again."""
+        if not self or self.IsBeingDeleted() or not self.visible or self._layout is None:return
+        try:self.tab.rows.relayout();self.tab.scroller.refit()
+        except (RuntimeError,AttributeError):pass
 
-    # ------------------------------------------------------------------ sections
-    def page(self):return self._page
+    # ------------------------------------------------------------------ the plot and the table shown
+    def page(self):
+        """The section of 4.57 (saved analyses, the polymer menu): 0 charge states, 1 repeat units, 2 mass
+        distribution."""
+        return 2 if self._plot==1 else 1 if self._table==0 else 0
     def set_page(self,i):
-        self._page=min(2,max(0,int(i)))
-        for k,p in enumerate(self.pages):p.Show(k==self._page)
-        self.section.set_active(self._page)
-        if self._page==2:self.draw_distribution()
-        self.Layout()
+        i=min(2,max(0,int(i)))
+        self.set_views(*{0:(0,1),1:(0,0),2:(1,0)}[i])
+    def views(self):return [self._plot,self._table]
+    def set_views(self,plot=None,table=None,user=False):
+        if plot is not None:self._plot=min(1,max(0,int(plot)))
+        if table is not None:self._table=min(1,max(0,int(table)))
+        for k,b in enumerate(self.plot_buttons):b.set_active(k==self._plot)
+        for k,b in enumerate(self.table_buttons):b.set_active(k==self._table)
+        self.mass_card.Show(self._plot==0);self.dist_card.Show(self._plot==1)
+        self.assign_table.Show(self._table==0);self.chain_table.Show(self._table==1)
+        for c in (self.plot_column,self.table_column):c.Layout()
+        table=(self.assign_table,self.chain_table)[self._table];self._set_info(self.table_info,table.info_text())
+        if self._plot==1:self.draw_distribution()
+        else:self.draw_mass()
+        if user:
+            if plot==1 and self.current() and not self.current().get('distribution') and self.scoped_groups():
+                self.calculate_distribution()
+            self._changed()
     def section_changed(self,i):
         self.set_page(i)
         if i==2 and self.current() and not self.current().get('distribution') and self.scoped_groups():
@@ -778,11 +885,18 @@ class PolymerWorkspace(PolymerResults):
     def family_colour(self,i):return SERIES_COLOURS[i%len(SERIES_COLOURS)]
     def rebuild_filters(self):
         s=self.current();old=self.charge.GetStringSelection();family=self.family.GetSelection()
-        charges=sorted({q['charge'] for q in s['rows'] if q['charge'] and q['state'] in (0,3)},key=abs) if s else []
+        rows=s['rows'] if s else []
+        charges=sorted({q['charge'] for q in rows if q['charge'] and q['state'] in (0,3)},key=abs)
         self.charge_values=[None]+charges+['uncertain']
-        labels=['All charges']+[signed(z) for z in charges]+['Uncertain']
-        self.charge.SetItems(labels);self.charge.SetSelection(labels.index(old) if old in labels else 0)
+        keys=['All charges']+[signed(z) for z in charges]+['Uncertain']
+        uncertain=sum(q['state'] in (1,2,5) for q in rows)
+        labels=(['All · %d masses'%len(rows)]+['%s · %d masses'%(signed(z),sum(q['charge']==z for q in rows)) for z in charges]+
+                ['Uncertain · %d'%uncertain])
+        order=list(range(1,len(charges)+1))+[0]+([len(keys)-1] if uncertain else [])  # (the charges, All, Uncertain)
+        self.charge.SetItems(keys,labels,order)
+        self.charge.SetSelection(keys.index(old) if old in keys and keys.index(old) in order else 0)
         self.family.SetItems(['All series']+[self.family_name(s,i) for i in range(len(s['families']))] if s else ['All series'])
+        self.family.InvalidateBestSize();self.steps_changed()
         self.family.SetSelection(min(max(0,family),self.family.GetCount()-1))
     def charge_value(self):
         i=self.charge.GetSelection()
@@ -849,10 +963,8 @@ class PolymerWorkspace(PolymerResults):
                     if family is not None and i not in family:continue
                     self.shown.append(i);rows.append(self.table_row(s,i))
                 n=len(self.scoped_groups())
-                self.note.SetLabel(self.unavailable or '%d · %d mass%s'%(len(self.shown),n,'' if n==1 else 'es'))
-                info='%d assignments · %d mass%s'%(len(self.shown),n,'' if n==1 else 'es')
-            else:
-                self.note.SetLabel(self.unavailable);info=''
+                info=self.unavailable or '%d assignments · %d mass%s'%(len(self.shown),n,'' if n==1 else 'es')
+            else:info=self.unavailable
             self.chain_table.set_rows(rows,info)
             if self.chain is not None and self.chain not in self.shown:self.chain=None
             if self.chain is not None:self.chain_table.select(self.shown.index(self.chain))
@@ -1137,21 +1249,40 @@ class PolymerWorkspace(PolymerResults):
             result=N.candidates([g['mass'] for g in groups],repeat=self._number(self.repeat,'repeat unit') if offset else None,
                                 lo=self._number(self.lo,'search range'),hi=self._number(self.hi,'search range'),
                                 tolerance=self._number(self.tol,'tolerance'))
-            self.current()['candidates']=dict(kind='offset' if offset else 'repeat',values=result)
+            s=self.current();found=dict(kind='offset' if offset else 'repeat',values=result)
+            if offset:
+                s['offsets']=found
+                if (s.get('candidates') or {}).get('kind')=='offset':s.pop('candidates')
+            else:
+                if (s.get('candidates') or {}).get('kind')=='offset' and 'offsets' not in s:s['offsets']=s['candidates']
+                s['candidates']=found
             self.draw_candidates();self._changed()
             self.say('%d %s'%(len(result),'end group masses' if offset else 'repeat units'));return result
         except (ValueError,RuntimeError,OSError) as ex:return self.fail(ex)
+    def suggestions(self,s,kind):
+        """The suggestions of run s found by Find: kind 'repeat' (repeat units) or 'offset' (end groups)."""
+        if not s:return []
+        c=s.get('offsets') if kind=='offset' else None
+        if c is None:
+            c=s.get('candidates')
+            if not c or c.get('kind','repeat')!=kind:return []
+        return c.get('values') or []
     def draw_candidates(self):
-        s=self.current();c=s.get('candidates') if s else None
-        offset=bool(c and c['kind']=='offset')
-        self.candidates.title='End groups' if offset else 'Repeat units'
-        self.candidates.set_rows([dict(cells=['%.4f'%v['mass'],v['support'],v['single']]) for v in (c['values'] if c else [])],
-                                 'double click to use' if c and c['values'] else '')
-    def use_candidate(self,index):
-        s=self.current();c=s.get('candidates') if s else None
-        if c and 0<=index<len(c['values']):
-            control=self.ends if c['kind']=='offset' else self.repeat
-            self.set_field(control,repr(float(c['values'][index]['mass'])));self.fields_changed()
+        s=self.current()
+        self.repeat_list.set_rows([dict(cells=['%.4f'%v['mass'],v['support'],v['single']]) for v in self.suggestions(s,'repeat')])
+        self.ends_list.set_rows([dict(cells=['%.4f'%v['mass'],v['support']]) for v in self.suggestions(s,'offset')])
+        for lst,kind,field in ((self.repeat_list,'repeat',self.repeat),(self.ends_list,'offset',self.ends)):
+            try:v=float(self.field_text(field))  # (the suggestion in the field is marked)
+            except ValueError:continue
+            k=next((k for k,c in enumerate(self.suggestions(s,kind)) if abs(c['mass']-v)<1e-9),None)
+            if k is not None:lst.select(k)
+    def use_candidate(self,index,kind='repeat'):
+        """A suggestion clicked: its mass in the field."""
+        values=self.suggestions(self.current(),kind)
+        if 0<=index<len(values):
+            control=self.ends if kind=='offset' else self.repeat
+            self.set_field(control,repr(float(values[index]['mass'])));self.fields_changed()
+            (self.ends_list if kind=='offset' else self.repeat_list).select(index,show=False)
     def assign_series(self,e=None):
         try:
             # A shown series must not keep a revised series from taking rows it did not match before; excluded
@@ -1168,7 +1299,7 @@ class PolymerWorkspace(PolymerResults):
             old=next((i for i,f in enumerate(s['families']) if f['repeat']==repeat and f['ends']==ends),None)
             if old is None:s['families'].append(family);old=len(s['families'])-1
             else:s['families'][old]=family
-            self.rebuild_filters();self.family.SetSelection(old+1);self.refill();self.redraw();self._changed()
+            self.rebuild_filters();self.family.SetSelection(old+1);self.set_views(table=0);self.refill();self.redraw();self._changed()
             self.say('%s: %d masses'%(self.family_name(s,old),len({g['mass'] for g in groups if any(r in matches for r in g['rows'])})))
             return family
         except (ValueError,RuntimeError,OSError) as ex:return self.fail(ex)
@@ -1228,7 +1359,7 @@ class PolymerWorkspace(PolymerResults):
             d=self.recalculate_distribution(s,dict(charge=self.charge_value(),family=max(0,self.family.GetSelection()),
                                                    signal=self.weight.GetSelection(),basis=self.basis.GetSelection()))
             if d is None:return None
-            self.draw_distribution();self._changed()
+            self.set_views(plot=1);self._changed()
             from types import SimpleNamespace
             return SimpleNamespace(mn=d['mn'],mw=d['mw'],dispersity=d['dispersity'],used=d['used'])
         except (ValueError,RuntimeError,OSError) as ex:return self.fail(ex)
@@ -1246,7 +1377,7 @@ class PolymerWorkspace(PolymerResults):
             w=max(step*.36,1e-3)
             ax.bar(x-w/2,d['number'],width=w,color=colour,label='Number fraction')
             ax.bar(x+w/2,d['weight'],width=w,color='#E39A3B',label='Mass fraction')
-            ax.legend(fontsize=8,frameon=False,loc='upper right')
+            card.set_legend([(colour,'Number fraction'),('#E39A3B','Mass fraction')])
             card.full=(x.min()-step,x.max()+step);ax.set_xlim(card.full)
             ax.set_ylim(0,max(np.max(d['number']),np.max(d['weight']))*1.1)
             U.style_axes(ax,'Mass (Da)','Fraction')
@@ -1257,8 +1388,8 @@ class PolymerWorkspace(PolymerResults):
             ax.text(.5,.5,'Find species first' if not s else 'Calculate to see the mass distribution',
                     transform=ax.transAxes,ha='center',va='center',fontsize=9,color=C['muted'])
             card.full=None;card.set_legend([])
-            self.summary.set_values([],'',note='No result yet' if s else '')
-        card.draw();self._place_dist_bar()
+            self.summary.set_values([],'',note='')
+        card.draw();self.steps_changed()
 
     # ------------------------------------------------------------------ the mass spectrum
     def overlay(self,col,ax):
@@ -1310,32 +1441,6 @@ class PolymerWorkspace(PolymerResults):
                 if any(box.overlaps(b) for b in kept):t.set_visible(False)
                 else:kept.append(box)
         except Exception:pass
-    def pick(self,col,mz,y=None):
-        """A click on the mass spectrum: the row of that peak is selected (and shown in the table) and the
-        charge menu opens; a peak without a row gets the menu too."""
-        if not self.visible or self.current() is None or col.get('spec') is None:return False
-        s=self.current()
-        if not self.source_matches(col,s):return False
-        peak=self.tab._nearest_peak(col,mz)
-        if peak is None:return False
-        if s['source']['kind']=='direct':
-            targets=[(m['mz'],i) for i in range(len(s['rows'])) for m in s['rows'][i].get('members',[])]
-        else:
-            from deconv_tab import _charges_of
-            targets=[(m,i) for i in range(len(s['rows'])) for _,m in _charges_of(s['rows'][i]['mass'],s['source']['result'])]
-        hit=min(targets,key=lambda q:abs(q[0]-peak)) if targets else None
-        tol=max(.004,abs(peak)*10e-6)
-        if hit is not None and abs(hit[0]-peak)<=tol:
-            index=hit[1]
-            if index not in self.shown:self.charge.SetSelection(0);self.family.SetSelection(0);self.refill()
-            self.select_chain(index)
-            if s['source']['kind']=='direct':
-                wx.CallAfter(self.popup_charge_menu,col['spec_card'].canvas,self.charge_items(index,col,peak))
-            return True
-        if s['source']['kind']!='direct':return False
-        wx.CallAfter(self.popup_charge_menu,col['spec_card'].canvas,self.charge_items(None,col,peak))
-        return True
-
     def report_data(self):
         """What the HRMS report shows of the present run: neutral masses with their colours, the charge states
         as listed, the mass distribution."""
@@ -1365,15 +1470,15 @@ class PolymerWorkspace(PolymerResults):
         shared=[c['spec'] for c in getattr(self.tab,'cols',[]) if isinstance(c.get('spec'),np.ndarray)]
         series=[pack_run(run,shared) for run in self.series]
         return dict(kind='polymer_workspace',series=series,active=self.active,chain=self.chain,visible=self.visible,
-                    charge=self.charge.GetStringSelection(),family=self.family.GetSelection(),page=self._page,
-                    method=self.method_values(),view=__import__('ms_project').views(self.tab))
+                    charge=self.charge.GetStringSelection(),family=self.family.GetSelection(),page=self.page(),
+                    views=self.views(),method=self.method_values(),view=__import__('ms_project').views(self.tab))
     def undo_state(self):
         import undo
         if getattr(self,'_undo_token',None) is not self.outputs:
             self._undo_data=undo._copy(self.series);self._undo_token=self.outputs
         return dict(series=getattr(self,'_undo_data',[]),method=self.method_values(),active=self.active,
                     chain=self.chain,visible=self.visible,charge=self.charge.GetStringSelection(),
-                    family=self.family.GetSelection(),page=self._page,kind='polymer_workspace')
+                    family=self.family.GetSelection(),page=self.page(),views=self.views(),kind='polymer_workspace')
     def restore(self,state):
         if state.get('kind')=='polymer_dock':
             self.reset();self.import_legacy(state)
@@ -1397,7 +1502,9 @@ class PolymerWorkspace(PolymerResults):
         else:self.rebuild_filters();self.refill()
         if state.get('charge') in self.charge.GetStrings():self.charge.SetStringSelection(state['charge'])
         self.family.SetSelection(min(max(0,state.get('family',0)),self.family.GetCount()-1))
-        self.set_page(state.get('page',0))
+        views=state.get('views')
+        if isinstance(views,(list,tuple)) and len(views)==2:self.set_views(*views)
+        else:self.set_page(state.get('page',0))
         s=self.current();self.chain=chain if s and isinstance(chain,int) and 0<=chain<len(s['rows']) else None
         self.fit_layout(self.visible)
         self.refill();self.draw_distribution();self.redraw();self._watch();self.outputs=object();self.tab._layout_rows()
