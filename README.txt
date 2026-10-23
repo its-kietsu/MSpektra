@@ -1,4 +1,4 @@
-MSpektra 4.58 - portable Windows package   (23.10.2026)
+MSpektra 4.59 - portable Windows package   (23.10.2026)
 ========================================================
 
 Analysis of LC-MS and HRMS data, with deconvolution:
@@ -39,6 +39,17 @@ The version is shown on the start screen, in the help window (?) of LCMS
 and HRMS Analysis, and in the first line of each log file. It went up by
 0.1 with every update until 3.3. Since 3.31 a small change adds 0.01, a
 large change 0.1 and a big change 1.0.
+
+4.59 (23.10.2026)
+Polymer series take every chain; distributions of several series.
+* Polymer analysis: finding the repeat unit and end groups, Assign series
+  and the series table use the first isotope peak of each species, also
+  when the masses are shown from the tallest isotope peak. Long chains
+  whose second isotope peak is the tallest now join their series.
+* The mass distribution can show several series at once, each as a curve
+  in its colour, as relative abundance or normalized, with its own Mn,
+  Mw and dispersity in a table. It has its own charge choice: one charge
+  or all charges, with a chain seen at several charges counted once.
 
 4.58 (23.10.2026)
 Polymer analysis in one tile, and more species found.

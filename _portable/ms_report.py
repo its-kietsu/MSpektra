@@ -1100,19 +1100,30 @@ def _polymer_blocks(rep, tab, tmp):
     dist = d["distribution"]
     if dist:
         f, ax = new_fig(11.0, 5.0)
-        x = np.asarray(dist["mass"], float)
-        step = float(np.median(np.diff(np.sort(x)))) if len(x) > 1 else 1.0
-        w = max(step * 0.36, 1e-3)
-        ax.bar(x - w / 2, dist["number"], width=w, color=dist["colour"], label="Number fraction")
-        ax.bar(x + w / 2, dist["weight"], width=w, color="#E39A3B", label="Mass fraction")
-        style(ax, "Mass (Da)", "Fraction")
-        ax.legend(fontsize=6.3, frameon=False, loc="upper right")
+        base = "number" if dist.get("fraction", 0) == 0 else "weight"
+        key = ("own_" if dist.get("scale", 0) == 1 else "") + base
+        curves = dist.get("curves") or [dict(name="", colour=dist["colour"], mass=dist["mass"],
+                                             number=dist["number"], weight=dist["weight"])]
+        for c in curves:  # (one curve per series shown, its share of all the chains shown)
+            x = np.asarray(c["mass"], float)
+            order = np.argsort(x)
+            ax.plot(x[order], np.asarray(c.get(key, c[base]), float)[order], "-o", color=c["colour"], lw=1.4, ms=3.5,
+                    label=c["name"] or None)
+        style(ax, "Mass (Da)", "Number fraction" if base == "number" else "Mass fraction")
+        if any(c["name"] for c in curves):
+            ax.legend(fontsize=6.3, frameon=False, loc="upper right")
         figp = save_fig(f, os.path.join(tmp, "a_polymer_distribution.png"), left=0.13, right=0.97, top=0.95,
                         bottom=0.2)
-        res = [["Mn", "%.1f Da" % dist["mn"]], ["Mw", "%.1f Da" % dist["mw"]], ["Đ", "%.4f" % dist["dispersity"]],
-               ["Masses", "%d" % dist["used"]]]
-        rep.add("pair", [("figure", figp, 11.0)],
-                [("table", ["Mass distribution", esc(dist["scope"])], res, [2.6, 3.8], None)], 6.6)
+        if len(curves) > 1:  # (Mn, Mw and Đ of each series shown)
+            res = [[esc(c["name"]), "%.1f" % c["mn"], "%.1f" % c["mw"], "%.4f" % c["dispersity"], "%d" % c["used"]]
+                   for c in curves]
+            rep.add("figure", figp, 11.0)
+            rep.add("table", ["Series", "Mn (Da)", "Mw (Da)", "Đ", "Masses"], res, [6.0, 2.4, 2.4, 2.0, 1.8], None)
+        else:
+            res = [["Mn", "%.1f Da" % dist["mn"]], ["Mw", "%.1f Da" % dist["mw"]], ["Đ", "%.4f" % dist["dispersity"]],
+                   ["Masses", "%d" % dist["used"]]]
+            rep.add("pair", [("figure", figp, 11.0)],
+                    [("table", ["Mass distribution", esc(dist["scope"])], res, [2.6, 3.8], None)], 6.6)
 
 
 def build_hrms(frame, fields, tmp):

@@ -24,6 +24,12 @@ def number(value):
     return '%.4f'%value if isinstance(value,(float,np.floating)) and math.isfinite(value) else '—' if value is None else str(value)
 def signed(z):return ('+%d'%z if z>0 else '−%d'%-z) if z else '—'
 def height_text(v):return '%.1e'%v if v else '0'
+def first_mass(q):
+    """The neutral mass of a row from its first isotope peak (the row's own mass comes from the peak "Mass from"
+    chooses); rows without isotope peaks (deconvolution masses) keep theirs."""
+    z=abs(int(q.get('charge') or 0));first,mz=q.get('first_mz'),q.get('mz')
+    if not z or not first or not mz or not q.get('mass'):return q.get('mass')
+    return q['mass']+z*(first-mz)
 
 def carriers(sign):
     """Charge carriers as in the deconvolution settings (Na⁺, ...): [(label, mass per charge)], then Custom mass."""
@@ -461,17 +467,25 @@ class PolymerWorkspace(PolymerResults):
         right=self._panel(f)
         self.tol=wx.TextCtrl(right,value=F['tolerance'],size=self.FromDIP(wx.Size(56,-1)));self.tol.SetToolTip('Tolerance (Da)')
         self.assign_btn=U.flat(right,'Assign series','primary',height=26,padx=10,handler=self.assign_series)
+        self.dist_charge=wx.Choice(right,choices=['All charges']);self.dist_charge.SetSelection(0)
+        self.dist_charge.SetToolTip('Charges');self.dist_charge_values=[None]
         self.weight=wx.Choice(right,choices=['Area','Height']);self.weight.SetSelection(0)
         self.basis=wx.Choice(right,choices=['Per molecule','Per mass']);self.basis.SetSelection(0)
         self.weight.SetToolTip('Abundance from');self.basis.SetToolTip('Count')
         self.calc_btn=U.flat(right,'Calculate',height=26,padx=10,handler=self.calculate_distribution)
-        self.summary=PW.Summary(right);self.summary.SetFont(ui_font(9,600))
+        self.summary=PW.Summary(right);self.summary.SetFont(ui_font(9,600));self.summary.Hide()
+        C_=PW.Column
+        self.dist_list=PW.Table(right,'Distribution',[C_('show','Show','center',40,0,check=True),
+            C_('series','Series','left',100,2.,swatch=True),C_('mn','Mn','right',56,.5),C_('mw','Mw','right',56,.5),
+            C_('d','Đ','right',48,.4),C_('n','Masses','right',50,.3)],flat=True)
+        self.dist_list.SetMinSize(self.FromDIP(wx.Size(-1,104)));self.dist_keys=[0];self._dist_checked=[]
+        self.dist_list.on_check=self.toggle_dist_series
         r1=wx.BoxSizer(wx.HORIZONTAL);name=PW.label(right,'±');name.SetFont(ui_font(9,600))
         self._add(r1,right,[(name,6),(self.tol,10),(self.assign_btn,0)])
         r2=wx.BoxSizer(wx.HORIZONTAL);name=PW.label(right,'Distribution');name.SetFont(ui_font(9,600))
-        self._add(r2,right,[(name,8),(self.weight,6),(self.basis,8),(self.calc_btn,0)])
+        self._add(r2,right,[(name,8),(self.dist_charge,6),(self.weight,6),(self.basis,8),(self.calc_btn,0)])
         box=wx.BoxSizer(wx.VERTICAL);box.Add(r1,0);box.Add(r2,0,wx.TOP,self.FromDIP(14))
-        box.Add(self.summary,0,wx.TOP|wx.LEFT,self.FromDIP(10));right.SetSizer(box)
+        box.Add(self.dist_list,1,wx.EXPAND|wx.TOP,self.FromDIP(8));right.SetSizer(box)
         row=wx.BoxSizer(wx.HORIZONTAL)
         for k,(p,share) in enumerate(((left,1.),(mid,.8),(right,1.))):
             if k:row.Add(PW.Line(f,wx.VERTICAL),0,wx.EXPAND|wx.LEFT|wx.RIGHT,self.FromDIP(14))
@@ -479,7 +493,7 @@ class PolymerWorkspace(PolymerResults):
         f.SetSizer(row)
         for c in (self.repeat,self.ends,self.tol,self.lo,self.hi):c.Bind(wx.EVT_TEXT,self.fields_changed)
         for c in (self.repeat,self.ends):c.Bind(wx.EVT_KILL_FOCUS,self.format_field)
-        self.weight.Bind(wx.EVT_CHOICE,self.invalidate_distribution);self.basis.Bind(wx.EVT_CHOICE,self.invalidate_distribution)
+        for c in (self.dist_charge,self.weight,self.basis):c.Bind(wx.EVT_CHOICE,self.invalidate_distribution)
 
     def _column(self,parent):
         p=wx.Panel(parent,style=wx.BORDER_NONE);p.SetBackgroundColour(PW.WHITE);p.SetFont(ui_font(9))
@@ -495,6 +509,12 @@ class PolymerWorkspace(PolymerResults):
         self.plot_buttons=[PW.Toggle(col,'Masses',lambda:self.set_views(plot=0,user=True),icon='ms'),
                            PW.Toggle(col,'Distribution',lambda:self.set_views(plot=1,user=True),icon='pda')]
         for k,b in enumerate(self.plot_buttons):top.Add(b,0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,self.FromDIP(4))
+        self.dist_show=wx.Choice(col,choices=['Number fraction','Mass fraction']);self.dist_show.SetSelection(0)
+        self.dist_show.Bind(wx.EVT_CHOICE,self.dist_show_changed);self.dist_show.Hide()
+        self.dist_scale=wx.Choice(col,choices=['Relative abundance','Normalized']);self.dist_scale.SetSelection(0)
+        self.dist_scale.Bind(wx.EVT_CHOICE,self.dist_show_changed);self.dist_scale.Hide()
+        top.AddStretchSpacer(1);top.Add(self.dist_show,0,wx.ALIGN_CENTER_VERTICAL)
+        top.Add(self.dist_scale,0,wx.ALIGN_CENTER_VERTICAL|wx.LEFT,self.FromDIP(6))
         self.mass_card=FlatPlot(col,'','',mode='zoom');self.mass_card.no_tile_menu=True
         self.mass_card.on_pick=self.pick_mass;self.mass_card.on_view=self.draw_mass
         self.mass_card.on_menu=lambda x,y:[('Show all masses',self.mass_card.reset_view)]
@@ -635,7 +655,8 @@ class PolymerWorkspace(PolymerResults):
         if table is not None:self._table=min(1,max(0,int(table)))
         for k,b in enumerate(self.plot_buttons):b.set_active(k==self._plot)
         for k,b in enumerate(self.table_buttons):b.set_active(k==self._table)
-        self.mass_card.Show(self._plot==0);self.dist_card.Show(self._plot==1)
+        self.mass_card.Show(self._plot==0);self.dist_card.Show(self._plot==1);self.dist_show.Show(self._plot==1)
+        self.dist_scale.Show(self._plot==1)
         self.assign_table.Show(self._table==0);self.chain_table.Show(self._table==1)
         for c in (self.plot_column,self.table_column):c.Layout()
         table=(self.assign_table,self.chain_table)[self._table];self._set_info(self.table_info,table.info_text())
@@ -874,6 +895,7 @@ class PolymerWorkspace(PolymerResults):
         self._method.update({k:v for k,v in self.options.items() if k in Q.DEFAULTS})
         for c,v in zip((self.repeat,self.ends,self.tol,self.lo,self.hi),s.get('fields',[])):self.set_field(c,v)
         self.weight.SetSelection(s.get('weight',0));self.basis.SetSelection(s.get('basis',0))
+        self.dist_show.SetSelection(s.get('dist_fraction',0));self.dist_scale.SetSelection(s.get('dist_scale',0))
         self.show_source();self.refresh_inputs()
         self.input_index=next((i for i,d in enumerate(self.inputs) if d.get('e',0)==s['source'].get('event',0)),self.input_index)
         if self.inputs:self.set_carriers()
@@ -895,9 +917,19 @@ class PolymerWorkspace(PolymerResults):
         order=list(range(1,len(charges)+1))+[0]+([len(keys)-1] if uncertain else [])  # (the charges, All, Uncertain)
         self.charge.SetItems(keys,labels,order)
         self.charge.SetSelection(keys.index(old) if old in keys and keys.index(old) in order else 0)
+        old=self.dist_charge_value();d=s.get('distribution') if s else None
+        if d and d.get('charge')!='uncertain':old=d.get('charge')
+        self.dist_charge_values=[None]+charges
+        self.dist_charge.SetItems(['All charges']+[signed(z) for z in charges])
+        self.dist_charge.SetSelection(self.dist_charge_values.index(old) if old in self.dist_charge_values else 0)
+        self.dist_charge.InvalidateBestSize()
         self.family.SetItems(['All series']+[self.family_name(s,i) for i in range(len(s['families']))] if s else ['All series'])
+        self.fill_dist_list()
         self.family.InvalidateBestSize();self.steps_changed()
         self.family.SetSelection(min(max(0,family),self.family.GetCount()-1))
+    def dist_charge_value(self):
+        i=self.dist_charge.GetSelection()
+        return self.dist_charge_values[i] if 0<=i<len(self.dist_charge_values) else None
     def charge_value(self):
         i=self.charge.GetSelection()
         return self.charge_values[i] if 0<=i<len(self.charge_values) else None
@@ -914,16 +946,20 @@ class PolymerWorkspace(PolymerResults):
             self.unavailable='';return groups,mapping
         except Q.Unavailable as ex:
             self.unavailable=str(ex);return [],[-1]*len(rows)
-    def groups_for(self,s,charge=None,family=0):
+    def groups_for(self,s,charge=None,family=0,first=False):
         """Neutral masses of run s: included rows of that charge (None all, 'uncertain' none) and series
-        (0 all, else the series number)."""
+        (0 all, else the series number). first: each mass from the first isotope peak, whatever "Mass from"
+        says (series work: from n = 30 or so the second isotope peak is often the tallest, and a mass from it
+        is 1 Da off the series)."""
         if not s or charge=='uncertain':return []
         f=s['families'][family-1] if 0<family<=len(s['families']) else None
         matches=set(f['matches']) if f else None
-        rows=[dict(q,include=bool(q.get('include')) and (matches is None or i in matches)) for i,q in enumerate(s['rows'])]
+        rows=[dict(q,include=bool(q.get('include')) and (matches is None or i in matches),
+                   **({'mass':first_mass(q)} if first else {})) for i,q in enumerate(s['rows'])]
         return self.merge(rows,s['options'],charge)[0]
-    def scoped_groups(self,include_family=True):
-        return self.groups_for(self.current(),self.charge_value(),self.family.GetSelection() if include_family else 0)
+    def scoped_groups(self,include_family=True,first=False):
+        return self.groups_for(self.current(),self.charge_value(),self.family.GetSelection() if include_family else 0,
+                               first=first)
     def mass_text(self,s,mass):
         if not mass or mass<=0:return '—'
         if s['source'].get('kind')!='direct':
@@ -1244,7 +1280,7 @@ class PolymerWorkspace(PolymerResults):
         return v
     def _candidates(self,offset):
         try:
-            groups=self.scoped_groups()
+            groups=self.scoped_groups(first=True)
             if not groups:raise ValueError('Find species first')
             result=N.candidates([g['mass'] for g in groups],repeat=self._number(self.repeat,'repeat unit') if offset else None,
                                 lo=self._number(self.lo,'search range'),hi=self._number(self.hi,'search range'),
@@ -1287,7 +1323,7 @@ class PolymerWorkspace(PolymerResults):
         try:
             # A shown series must not keep a revised series from taking rows it did not match before; excluded
             # rows and the charge shown still count.
-            s=self.current();groups=self.scoped_groups(include_family=False)
+            s=self.current();groups=self.scoped_groups(include_family=False,first=True)
             if not s or not groups:raise ValueError('Find species first')
             repeat,ends,tol=self._number(self.repeat,'repeat unit'),self._number(self.ends,'end groups'),self._number(self.tol,'tolerance')
             result=N.assign([g['mass'] for g in groups],repeat,ends,tol);matches={}
@@ -1307,17 +1343,20 @@ class PolymerWorkspace(PolymerResults):
         s=self.current();i=self.family.GetSelection()-1
         if not s or not 0<=i<len(s['families']):return
         del s['families'][i]
+        moved=lambda keys:[k-1 if k>i+1 else k for k in keys if k!=i+1]
+        if s.get('dist_shown'):s['dist_shown']=moved(s['dist_shown'])
         d=s.get('distribution')
-        if d and d.get('family',0)>i:
-            if d['family']==i+1:s['distribution']=None
-            else:d['family']-=1
+        if d:
+            shown=moved(d.get('shown') or [d.get('family',0)])
+            if shown:self.recalculate_distribution(s,dict(d,shown=shown))
+            else:s['distribution']=None
         self.family.SetSelection(0);self.rebuild_filters();self.refill();self.redraw();self.draw_distribution();self._changed()
     def draw_assignments(self):
         s=self.current();index=self.family.GetSelection()-1;self._assigned_rows=[];rows=[]
         families=range(len(s['families'])) if s and index<0 else [index] if s and index<len(s['families']) else []
         for k in families:
             f=s['families'][k]
-            for g in self.groups_for(s,self.charge_value(),k+1):
+            for g in self.groups_for(s,self.charge_value(),k+1,first=True):
                 i=next((i for i in g['rows'] if i in f['matches']),None)
                 if i is None:continue
                 m=f['matches'][i]
@@ -1330,57 +1369,134 @@ class PolymerWorkspace(PolymerResults):
         if not self._filling and 0<=index<len(self._assigned_rows):self.select_chain(self._assigned_rows[index])
 
     # ------------------------------------------------------------------ mass distribution
+    DIST_ALL='#6B7280'
+    def dist_name(self,s,k):return 'All masses' if k==0 else self.family_name(s,k-1)
+    def dist_colour(self,s,k):return self.DIST_ALL if k==0 else self.family_colour(k-1)
+    def dist_shown(self):
+        """The series ticked to show (0: all masses, else the series number)."""
+        return [k for k in self.dist_keys if k in self._dist_checked]
+    def toggle_dist_series(self,n):
+        """The Show box of row n of the distribution table clicked."""
+        if not 0<=n<len(self.dist_keys):return
+        k=self.dist_keys[n]
+        self._dist_checked=[x for x in self._dist_checked if x!=k] if k in self._dist_checked else self._dist_checked+[k]
+        self.dist_list_changed()
+    def fill_dist_list(self):
+        """'All masses' and the series of the run, ticked as shown, each with its Mn, Mw and Đ when calculated."""
+        s=self.current();d=s.get('distribution') if s else None
+        self.dist_keys=[0]+(list(range(1,len(s['families'])+1)) if s else [])
+        shown=(s.get('dist_shown') if s else None) or (d.get('shown') or [d.get('family',0)] if d else None) or \
+              [max(0,self.family.GetSelection())]
+        curves={c['key']:c for c in self.curves_of(d)} if d else {}
+        self._dist_checked=[k for k in self.dist_keys if k in shown];rows=[]
+        for k in self.dist_keys:
+            c=curves.get(k);values=['%.1f'%c['mn'],'%.1f'%c['mw'],'%.4f'%c['dispersity'],c['used']] if c else ['','','','']
+            rows.append(dict(cells=['',self.dist_name(s,k) if s else 'All masses']+values,check=k in shown,
+                             colours={1:self.dist_colour(s,k) if s else self.DIST_ALL}))
+        self.dist_list.set_rows(rows)
+    def dist_list_changed(self,e=None):
+        s=self.current()
+        if s:
+            s['dist_shown']=self.dist_shown()
+            if s.get('distribution') and s['dist_shown']:self.invalidate_distribution()
+            else:self._changed()
+    def dist_key(self):
+        """The values each curve shows: its share of all the chains shown or its own fractions (number or mass)."""
+        return ('own_' if self.dist_scale.GetSelection()==1 else '')+('number' if self.dist_show.GetSelection()==0 else 'weight')
+    def dist_show_changed(self,e=None):
+        s=self.current()
+        if s:s['dist_fraction']=self.dist_show.GetSelection();s['dist_scale']=self.dist_scale.GetSelection()
+        self.draw_distribution();self._changed()
     def invalidate_distribution(self,e=None):
-        """The signal or count choice changed: a calculated distribution is calculated again with it."""
+        """A choice of the distribution changed: a calculated distribution is calculated again with it."""
         s=self.current()
         if s:
             s['weight']=self.weight.GetSelection();s['basis']=self.basis.GetSelection()
             d=s.get('distribution')
-            if d:self.recalculate_distribution(s,dict(d,signal=s['weight'],basis=s['basis']))
-        self.draw_distribution()
+            if d:self.recalculate_distribution(s,dict(d,signal=s['weight'],basis=s['basis'],charge=self.dist_charge_value(),
+                                                      shown=self.dist_shown() or d.get('shown')))
+        self.fill_dist_list();self.draw_distribution()
         if e:self._changed();e.Skip()
+    def curve_groups(self,s,k,charge):
+        """Neutral masses of curve k: all masses (k 0), or the chains of series k among the charges chosen (Assign
+        series took the charge shown then; a chain seen at several charges is one mass with their signals added)."""
+        if k==0:return self.groups_for(s,charge,0)
+        f=s['families'][k-1];groups=self.groups_for(s,charge,0,first=True)
+        if not groups:return []
+        fit=N.assign([g['mass'] for g in groups],f['repeat'],f['ends'],f['tolerance'])['matched']
+        return [g for g,m in zip(groups,fit) if m]
+    @staticmethod
+    def curves_of(d):
+        """The curves of a distribution; one saved before 4.59 is its own single curve."""
+        if d.get('curves'):return d['curves']
+        return [dict(key=d.get('family',0),mass=[g['mass'] for g in d['groups']],number=list(d['number']),
+                     weight=list(d['weight']),own_number=list(d['number']),own_weight=list(d['weight']),
+                     mn=d['mn'],mw=d['mw'],dispersity=d['dispersity'],used=d['used'])]
     def recalculate_distribution(self,s,d):
-        """The distribution of run s for the choices of d (charge, series, signal, count), or none."""
+        """The distribution of run s for the choices of d (charge, series shown, signal, count), or none. Each
+        series has its own Mn, Mw and Đ; its curve is its share of all the chains shown (number or mass)."""
         try:
-            groups=self.groups_for(s,d.get('charge'),d.get('family',0))
-            if not groups:raise ValueError('No masses left for the mass distribution')
-            weights=[g['area' if d.get('signal',0)==0 else 'height'] for g in groups]
-            summary,nf,wf=N.distribution([g['mass'] for g in groups],weights,basis=d.get('basis',0))
-            s['distribution']=dict(mn=summary.mn,mw=summary.mw,dispersity=summary.dispersity,used=summary.used,
-                groups=copy.deepcopy(groups),number=nf.copy(),weight=wf.copy(),charge=d.get('charge'),
-                family=d.get('family',0),signal=d.get('signal',0),basis=d.get('basis',0))
+            shown=[k for k in (d.get('shown') or [d.get('family',0)]) if 0<=k<=len(s['families'])]
+            if not shown:raise ValueError('Choose a series to show')
+            signal,basis=d.get('signal',0),d.get('basis',0);curves=[];chains={}
+            for k in shown:
+                groups=self.curve_groups(s,k,d.get('charge'))
+                if not groups:continue
+                masses=[g['mass'] for g in groups];weights=[g['area' if signal==0 else 'height'] for g in groups]
+                summary,nf,wf=N.distribution(masses,weights,basis=basis)
+                counts=[w if basis==0 else w/m for m,w in zip(masses,weights)]
+                for m,n in zip(masses,counts):chains[round(m,4)]=(m,n)
+                curves.append(dict(key=k,groups=copy.deepcopy(groups),own=(nf.copy(),wf.copy()),counts=counts,
+                                   mn=summary.mn,mw=summary.mw,dispersity=summary.dispersity,used=summary.used))
+            if not curves:raise ValueError('No masses left for the mass distribution')
+            total=sum(n for m,n in chains.values());mass_total=sum(m*n for m,n in chains.values())
+            first=curves[0]
+            s['distribution']=dict(mn=first['mn'],mw=first['mw'],dispersity=first['dispersity'],used=first['used'],
+                groups=first['groups'],number=first['own'][0],weight=first['own'][1],charge=d.get('charge'),
+                family=first['key'],signal=signal,basis=basis,shown=[c['key'] for c in curves],
+                curves=[dict(key=c['key'],mass=[g['mass'] for g in c['groups']],
+                             number=[n/total for n in c['counts']],
+                             weight=[g['mass']*n/mass_total for g,n in zip(c['groups'],c['counts'])],
+                             own_number=[float(v) for v in c['own'][0]],own_weight=[float(v) for v in c['own'][1]],
+                             mn=c['mn'],mw=c['mw'],dispersity=c['dispersity'],used=c['used']) for c in curves])
             return s['distribution']
         except (ValueError,RuntimeError,OSError) as ex:
             s['distribution']=None;self.say(str(ex));return None
     def calculate_distribution(self,e=None):
         try:
             s=self.current()
-            if not s or not self.scoped_groups():raise ValueError('Find species first' if not s else 'No masses with these choices')
-            d=self.recalculate_distribution(s,dict(charge=self.charge_value(),family=max(0,self.family.GetSelection()),
+            if not s or not s['rows']:raise ValueError('Find species first')
+            shown=self.dist_shown() or [max(0,self.family.GetSelection())];s['dist_shown']=shown
+            d=self.recalculate_distribution(s,dict(charge=self.dist_charge_value(),family=shown[0],shown=shown,
                                                    signal=self.weight.GetSelection(),basis=self.basis.GetSelection()))
-            if d is None:return None
+            self.fill_dist_list()
+            if d is None:self.draw_distribution();return None
             self.set_views(plot=1);self._changed()
             from types import SimpleNamespace
             return SimpleNamespace(mn=d['mn'],mw=d['mw'],dispersity=d['dispersity'],used=d['used'])
         except (ValueError,RuntimeError,OSError) as ex:return self.fail(ex)
     def distribution_scope(self,s,d,masses=True):
-        k=d.get('family',0)
-        what=self.family_name(s,k-1) if 0<k<=len(s['families']) else 'All series'
-        if d.get('charge') not in (None,'uncertain'):what+=' · %s'%signed(d['charge'])
-        return '%s · %d masses'%(what,len(d['groups'])) if masses else what
+        curves=self.curves_of(d)
+        what=self.dist_name(s,curves[0]['key']) if len(curves)==1 else '%d series'%len(curves)
+        what+=' · %s'%(signed(d['charge']) if d.get('charge') not in (None,'uncertain') else 'All charges')
+        return '%s · %d masses'%(what,sum(c['used'] for c in curves)) if masses else what
     def draw_distribution(self):
         card=self.dist_card;card.reset();card.set_legend([]);s=self.current();d=s.get('distribution') if s else None;ax=card.ax
+        if s:self.dist_show.SetSelection(s.get('dist_fraction',0));self.dist_scale.SetSelection(s.get('dist_scale',0))
         if d:
-            x=np.array([g['mass'] for g in d['groups']]);k=d.get('family',0)
-            colour=self.family_colour(k-1) if 0<k<=len(s['families']) else C['accent']
-            step=np.median(np.diff(np.sort(x))) if len(x)>1 else 1.
-            w=max(step*.36,1e-3)
-            ax.bar(x-w/2,d['number'],width=w,color=colour,label='Number fraction')
-            ax.bar(x+w/2,d['weight'],width=w,color='#E39A3B',label='Mass fraction')
-            card.set_legend([(colour,'Number fraction'),('#E39A3B','Mass fraction')])
-            card.full=(x.min()-step,x.max()+step);ax.set_xlim(card.full)
-            ax.set_ylim(0,max(np.max(d['number']),np.max(d['weight']))*1.1)
-            U.style_axes(ax,'Mass (Da)','Fraction')
+            key=self.dist_key();legend=[];lo=hi=None;top=0.
+            for c in self.curves_of(d):
+                x=np.asarray(c['mass'],dtype=float);y=np.asarray(c.get(key,c[key.replace('own_','')]),dtype=float)
+                order=np.argsort(x)
+                colour=self.dist_colour(s,c['key'])
+                ax.plot(x[order],y[order],'-o',color=colour,lw=1.6,ms=4.5)
+                legend.append((colour,self.dist_name(s,c['key'])))
+                lo=x.min() if lo is None else min(lo,x.min());hi=x.max() if hi is None else max(hi,x.max());top=max(top,y.max())
+            allx=np.sort(np.concatenate([np.asarray(c['mass'],dtype=float) for c in self.curves_of(d)]))
+            step=np.median(np.diff(allx)) if len(allx)>1 else 1.
+            card.set_legend(legend)
+            card.full=(lo-step,hi+step);ax.set_xlim(card.full);ax.set_ylim(0,top*1.1 if top>0 else 1)
+            U.style_axes(ax,'Mass (Da)','Number fraction' if key.endswith('number') else 'Mass fraction')
             self.summary.set_values([('Mn','%.1f Da'%d['mn']),('Mw','%.1f Da'%d['mw']),('Đ','%.4f'%d['dispersity']),
                                      ('Masses','%d'%d['used'])],self.distribution_scope(s,d,masses=False))  # (as in the report)
         else:
@@ -1461,7 +1577,10 @@ class PolymerWorkspace(PolymerResults):
             k=d.get('family',0)
             dist=dict(mass=[g['mass'] for g in d['groups']],number=list(d['number']),weight=list(d['weight']),
                       mn=d['mn'],mw=d['mw'],dispersity=d['dispersity'],used=d['used'],scope=self.distribution_scope(s,d),
-                      colour=self.family_colour(k-1) if 0<k<=len(s['families']) else C['accent'])
+                      colour=self.family_colour(k-1) if 0<k<=len(s['families']) else C['accent'],
+                      fraction=s.get('dist_fraction',0),scale=s.get('dist_scale',0),
+                      curves=[dict(c,name=self.dist_name(s,c['key']),colour=self.dist_colour(s,c['key']))
+                              for c in self.curves_of(d)])
         legend=[(self.family_colour(k),self.family_name(s,k)) for k in range(len(s['families']))]
         return dict(masses=masses,rows=rows,distribution=dist,legend=legend)
 
@@ -1585,6 +1704,11 @@ class PolymerWorkspace(PolymerResults):
             if d:
                 for k in ('mn','mw','dispersity','used','charge','family','signal','basis'):meta.append(('Analysis %d distribution %s'%(ai,k),d[k]))
                 for i,g in enumerate(d['groups']):meta.append(('Analysis %d neutral mass %d'%(ai,i+1),'mass %.17g; number fraction %.17g; mass fraction %.17g'%(g['mass'],d['number'][i],d['weight'][i])))
+                for c in d.get('curves') or []:
+                    name=self.dist_name(run,c['key'])
+                    meta.append(('Analysis %d distribution of %s'%(ai,name),'Mn %.17g; Mw %.17g; dispersity %.17g; masses %d'%(c['mn'],c['mw'],c['dispersity'],c['used'])))
+                    for m,n,w in zip(c['mass'],c['number'],c['weight']):
+                        meta.append(('Analysis %d %s mass'%(ai,name),'mass %.17g; share of the chains shown %.17g; mass share %.17g'%(m,n,w)))
         try:__import__('lcms_compare_core').write_area_xlsx(path,headers,rows,meta)
         except (ValueError,OSError) as ex:return self.fail(ex)
         self.say('Polymer results exported');return path
